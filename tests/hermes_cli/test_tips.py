@@ -22,7 +22,7 @@ class TestTipsCorpus:
             assert tip.strip(), f"Tip {i} is empty or whitespace-only"
 
     def test_max_length_reasonable(self):
-        """Tips should fit on a single terminal line (~120 chars max)."""
+        """Tips should fit on a single terminal line."""
         for i, tip in enumerate(TIPS):
             assert len(tip) <= 150, (
                 f"Tip {i} too long ({len(tip)} chars): {tip[:60]}..."

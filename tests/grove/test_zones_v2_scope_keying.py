@@ -23,7 +23,6 @@ import pytest
 from grove.zones import (
     ZoneClassifier,
     _load_and_validate_overlay,
-    merge_zone_schemas,
 )
 
 
@@ -115,7 +114,9 @@ def test_tool_declaring_unknown_class_refused(tmp_path: Path) -> None:
         ZoneClassifier(_write(tmp_path, schema))
 
 
-# ── Loader version acceptance: v1 loads, v2 loads, other hard-rejects ─────────
+# ── Loader version acceptance: v2 loads; v1 and every other version rejected ──
+# zones-v2-scope-keying P2 (D2): the loader is now v2-ONLY — the v1 category-keyed
+# parse path is retired.
 _V1_MIN = """
 schema_version: 1
 zones:
@@ -124,14 +125,12 @@ zones:
   red:    {sovereign: [command.execute.sudo]}
 tool_zones:
   read_file: green
-  write_file: yellow
 """
 
 
-def test_loader_accepts_v1(tmp_path: Path) -> None:
-    clf = ZoneClassifier(_write(tmp_path, _V1_MIN))
-    assert clf.classify("read_file").zone == "green"
-    assert clf.classify("write_file").zone == "yellow"
+def test_loader_rejects_v1(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="expected 2"):
+        ZoneClassifier(_write(tmp_path, _V1_MIN))
 
 
 def test_loader_accepts_v2(tmp_path: Path) -> None:
@@ -141,7 +140,7 @@ def test_loader_accepts_v2(tmp_path: Path) -> None:
 
 def test_loader_rejects_other_version(tmp_path: Path) -> None:
     schema = _V2_MIN.replace("schema_version: 2", "schema_version: 3")
-    with pytest.raises(ValueError, match="expected 1 or 2"):
+    with pytest.raises(ValueError, match="expected 2"):
         ZoneClassifier(_write(tmp_path, schema))
 
 
@@ -205,22 +204,10 @@ def test_overlay_valid_keys_accepted(tmp_path: Path) -> None:
     assert data == {"schema_version": 1, "red_denied_by_policy": ["priv:"]}
 
 
-# ── Merge-idiom regression [zones.py:702 / R-4] — no silent yellow default ────
-def test_merge_refuses_overlay_tool_without_default_zone() -> None:
-    repo = {"schema_version": 1, "tool_zones": {}}
-    overlay = {
-        "schema_version": 1,
-        "tool_zones": {"newtool": {"rules": [{"match_pattern": "x", "zone": "green"}]}},
-    }
-    with pytest.raises(ValueError, match="no resolvable default_zone"):
-        merge_zone_schemas(repo, overlay)
-
-
-def test_merge_accepts_overlay_tool_with_explicit_default() -> None:
-    repo = {"schema_version": 1, "tool_zones": {}}
-    overlay = {"schema_version": 1, "tool_zones": {"newtool": {"default_zone": "green"}}}
-    merged = merge_zone_schemas(repo, overlay)
-    assert merged["tool_zones"]["newtool"]["default_zone"] == "green"
+# zones-v2-scope-keying P2 (D2): the v1 overlay tool_zones MERGE machinery is
+# retired — a v2 overlay carries no classification content, so merge_zone_schemas
+# is a passthrough and the "no silent yellow default" (`or "yellow"`) idiom it
+# once held is gone. The overlay-refusal tests above are the surviving guard.
 
 
 # ── Governed set-diff: repo v2 derives byte-identical vs v1 baseline ──────────

@@ -6,8 +6,14 @@ Covers:
   ``_build_skip_observations(hard=True)`` — the GATE-A directive text plus
   the ``is_hard_denial`` / ``disposition`` metadata.
 * The soft-deny Observation keeps its original decline-to-run wording.
-* Phase 3b: malformed regex in ``zones.schema.yaml`` raises
-  ``SchemaConfigurationError`` at load time — agent does not start.
+
+(zones-v2-scope-keying P2 retired the v1 regex/hierarchical-rule schema and
+its ``SchemaConfigurationError`` load-time validation, so the former Phase 3b
+``TestRegexFailHard`` suite — which exercised ``check_pattern_safety`` and
+``classify_command_string`` on a v1 ``tool_zones.<tool>.rules`` schema — was
+deleted. Shell command classification is now EFFECT-based via
+``grove.shell_effects.classify_shell_effect``; v2 schema-load validation is
+covered in the zones module's own tests.)
 
 kaizen-voice Sprint B2 removed the red-zone STRIKE COUNTER and its tests:
 post-§VI a RED halt is an ``AndonResolutionHalt`` resolved upstream by
@@ -20,15 +26,12 @@ inert dead code. RED drive-loop / classify_and_mint behavior is covered by
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 
 from grove.dispatcher import Dispatcher
-from grove.errors import SchemaConfigurationError
 from grove.intents import ToolIntent
-from grove.zones import ZoneClassifier
 
 
 @pytest.fixture
@@ -86,113 +89,3 @@ class TestHardDenialObservation:
         assert "Andon" not in obs.value
         assert obs.metadata.get("disposition") == "deny"
         assert obs.metadata.get("is_hard_denial", False) is False
-
-
-# ── Phase 3b — regex fail-hard at schema load ────────────────────────
-
-
-class TestRegexFailHard:
-    def test_malformed_pattern_raises_schema_configuration_error(
-        self, tmp_path: Path,
-    ):
-        """A rule whose pattern fails ``check_pattern_safety`` MUST
-        raise ``SchemaConfigurationError`` at load time. The agent
-        does not start with malformed governance."""
-        schema = tmp_path / "zones.schema.yaml"
-        schema.write_text("""
-schema_version: 1
-zones:
-  green:
-    auto_approve: []
-  yellow:
-    proposes: []
-  red:
-    sovereign: []
-tool_zones:
-  terminal:
-    default_zone: yellow
-    rules:
-      - match_pattern: ".*"
-        zone: green
-        reason: "catch-all rejected by safety check"
-""")
-        with pytest.raises(SchemaConfigurationError) as exc_info:
-            ZoneClassifier(schema)
-        message = str(exc_info.value)
-        # Message MUST name the offending tool and the failure reason.
-        assert "terminal" in message
-        assert "rules[0]" in message
-        assert "match_pattern" in message
-
-    def test_invalid_zone_value_raises(self, tmp_path: Path):
-        schema = tmp_path / "zones.schema.yaml"
-        schema.write_text("""
-schema_version: 1
-zones:
-  green:
-    auto_approve: []
-  yellow:
-    proposes: []
-  red:
-    sovereign: []
-tool_zones:
-  terminal:
-    default_zone: yellow
-    rules:
-      - match_pattern: "^sudo"
-        zone: invalid_zone
-        reason: ""
-""")
-        with pytest.raises(SchemaConfigurationError) as exc_info:
-            ZoneClassifier(schema)
-        assert "invalid_zone" in str(exc_info.value)
-
-    def test_non_dict_rule_entry_raises(self, tmp_path: Path):
-        schema = tmp_path / "zones.schema.yaml"
-        schema.write_text("""
-schema_version: 1
-zones:
-  green:
-    auto_approve: []
-  yellow:
-    proposes: []
-  red:
-    sovereign: []
-tool_zones:
-  terminal:
-    default_zone: yellow
-    rules:
-      - "not a mapping"
-""")
-        with pytest.raises(SchemaConfigurationError):
-            ZoneClassifier(schema)
-
-    def test_valid_schema_loads_successfully(self, tmp_path: Path):
-        """Sanity check — a well-formed schema MUST still load
-        cleanly (no false-positive on a good rule)."""
-        schema = tmp_path / "zones.schema.yaml"
-        schema.write_text("""
-schema_version: 1
-zones:
-  green:
-    auto_approve: []
-  yellow:
-    proposes: []
-  red:
-    sovereign: []
-tool_zones:
-  terminal:
-    default_zone: yellow
-    rules:
-      - match_pattern: "^sudo\\\\s+.*"
-        zone: red
-        reason: "Privilege escalation requires sovereign approval."
-""")
-        # Should not raise.
-        clf = ZoneClassifier(schema)
-        result = clf.classify_command_string(
-            command="sudo apt-get update",
-            action="command.terminal",
-            tool_id="terminal",
-        )
-        assert result.zone == "red"

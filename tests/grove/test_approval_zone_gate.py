@@ -23,20 +23,16 @@ from grove.zones import ZoneClassifier
 
 
 _SCHEMA = """
-    schema_version: 1
-    zones:
-      green:
-        auto_approve:
-          - command.execute.echo
-      yellow:
-        proposes:
-          - command.dangerous.*
-      red:
-        sovereign:
-          - command.execute.sudo
-          - command.execute.su
-          - command.execute.doas
-    tool_zones: {}
+    schema_version: 2
+    effect_classes:
+      read_only:       {derives: green}
+      contained_write: {derives: green}
+      workspace_write: {derives: yellow}
+      external_effect: {derives: yellow}
+      governance:      {derives: red}
+      operator_only:   {derives: red}
+    default_unmatched: yellow
+    tool_effects: {}
 """
 
 

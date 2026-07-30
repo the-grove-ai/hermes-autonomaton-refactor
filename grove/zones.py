@@ -1,59 +1,38 @@
-"""Zone classifier for the Grove Autonomaton.
+"""Zone classifier for the Grove Autonomaton (v2 · scope-keyed).
 
-Reads the repo policy schema at ``config/zones.schema.yaml`` and optionally
-merges an operator overlay from ``~/.grove/zones.autonomaton.yaml``, then
-exposes a pure ``classify(action) -> ZoneResult`` query. No enforcement, no
-prompts, no blocking. Sprint 06a turns this output into the Sovereignty Gate.
+Reads the repo policy schema at ``config/zones.schema.yaml`` and exposes a pure
+``classify(action) -> ZoneResult`` query. No enforcement, no prompts, no
+blocking — the Sovereignty Gate turns this output into a posture.
 
-Action identifiers are opaque pure-dot-notation strings. The tool dispatch
-layer (Sprint 06a) is responsible for mapping filesystem paths, command
-lines, and other tool inputs into action identifiers before calling
-``classify()``. The classifier never inspects paths or commands when
-called through ``classify(action)``.
+zones-v2-scope-keying: the schema is ``schema_version: 2`` — tools declare an
+EFFECT CLASS (read_only / contained_write / workspace_write / external_effect /
+governance / operator_only) and the zone is DERIVED at load from the schema's
+declared derivation rules (``effect_classes[<class>].derives``). The v1
+category-keyed machinery (action-type pattern lists, hierarchical
+``tool_zones.<tool>.rules`` / ``classify_command_string``, the terminal.rules
+writer) is RETIRED in P2 — shell/execute_code commands are classified by EFFECT
+via the bashlex-AST classifier (``grove/shell_effects.py``), not this module.
 
-Sprint 22 adds ``classify_command_string(command, action, *, tool_id)``
-— a hierarchical-first classification path that lets a tool opt into
-argument-level rules via the dict form of its ``tool_zones`` entry. The
-existing ``classify(action)`` path is untouched; bare-string
-``tool_zones`` entries behave identically to pre-Sprint-22.
+Classification precedence:
+    1. ``tool_effects`` exact match on the action (the tool name) → the derived
+       zone for that tool's declared effect class.
+    2. Unmatched action → the declared ``default_unmatched`` posture (yellow),
+       with ``source="default"``.
 
-Precedence (per Sprint 03 design, corrected in Sprint 04, extended in
-Sprint 22):
-    1. Hierarchical ``tool_zones`` rules (Sprint 22): if the tool's entry
-       is a dict with ``rules``, evaluate top-to-bottom against the
-       command string and return the first match. If no rule matches,
-       return ``default_zone`` for that tool. Only fired when the caller
-       uses ``classify_command_string``; ``classify(action)`` ignores
-       the rules list entirely (the action identifier is not the
-       command string).
-    2. ``tool_zones`` exact match (bare-string form)
-    3. Zone rules: ``sovereign`` > ``proposes`` > ``auto_approve``
-    4. Red > Yellow > Green (most restrictive wins on conflict)
-    5. Unmatched action -> yellow with source ``"default"``
-
-Pattern matching for the dot-notation path: exact match, or trailing
-``.*`` (recursive — matches the prefix exactly AND every descendant).
-Mid-pattern wildcards raise ``ValueError`` at load time to fail loud.
-
-Pattern matching for the Sprint 22 hierarchical path: full Python
-regex via ``re.fullmatch``. Patterns are validated at load time for
-ReDoS-vulnerable shapes (nested quantifiers, excessive alternation)
-and rejected per-rule with a loud log; the rest of the schema still
-loads (graceful per rule, not per schema).
+Operator overlay (``~/.grove/zones.autonomaton.yaml``): a v2 overlay may carry
+ONLY ``red_denied_by_policy`` (read by grove/red_policy.py) plus
+``schema_version``. Any other (retired, category-keyed) key is REFUSED LOUD at
+load — never silently merged (A3). See :func:`_load_and_validate_overlay`.
 
 ``reload()`` is the one SPEC-commanded graceful degradation: on parse or
-validation failure, the classifier retains the last known good map and
-logs the error loudly. Signal-based reload triggers (SIGHUP/SIGUSR1) are
-not wired in this sprint — a later integration sprint negotiates signal
-ownership with the existing handlers in ``cli.py``, ``hermes_cli/main.py``,
-``tui_gateway/entry.py``, and others.
+validation failure, the classifier retains the last known good map and logs the
+error loudly.
 """
 
 from __future__ import annotations
 
 import logging
-import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -62,168 +41,23 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
-# ── Sprint 22 — Tool-id derivation ────────────────────────────────────────────
-#
-# Hierarchical rules live under the tool's entry in ``tool_zones``. When a
-# caller asks "classify this command" without specifying which tool it
-# came from, we derive the tool id from the dot-notation action prefix.
-# v0.1 ships a single explicit mapping (the only tool that benefits from
-# argument-level rules today is the terminal); future tools that want
-# hierarchical rules should pass ``tool_id`` explicitly into
-# ``classify_command_string`` rather than expand this map. Generalising
-# action→tool derivation is deferred until the second tool actually
-# requests it.
-_ACTION_PREFIX_TO_TOOL: dict[str, str] = {
-    "command.execute": "terminal",
-}
-
-
-def _derive_tool_id_from_action(action: str) -> Optional[str]:
-    """Look up the tool that produced this dot-notation action identifier.
-
-    Returns the registered tool name or ``None`` if the action prefix
-    is not in the v0.1 map (no hierarchical-rule lookup happens then;
-    the caller falls through to the existing dot-notation classify).
-    """
-    if not action:
-        return None
-    parts = action.split(".")
-    for length in range(len(parts), 0, -1):
-        prefix = ".".join(parts[:length])
-        if prefix in _ACTION_PREFIX_TO_TOOL:
-            return _ACTION_PREFIX_TO_TOOL[prefix]
-    return None
-
-
-# ── Sprint 22 — ReDoS / pattern safety ────────────────────────────────────────
-#
-# Python's stdlib ``re`` has no runtime timeout, so the only mitigation
-# we can offer is structural — reject vulnerable shapes at load time.
-# These constants set the conservative envelope; operators editing
-# ``zones.schema.yaml`` who hit these limits will see a loud per-rule
-# rejection in the logs (rest of the schema still loads).
-
-_MAX_PATTERN_LENGTH = 200
-_MAX_ALTERNATION_BRANCHES = 10
-# Nested-quantifier ReDoS shape: a group containing a `+` or `*` inside,
-# immediately followed by a `+` or `*` outside (with optional `?` for
-# lazy quantifiers — `(.+)+?` is just as vulnerable). Catches classic
-# catastrophic-backtracking patterns like ``(a+)+``, ``(.*)*``,
-# ``(.+)+``. Not perfect — a determined attacker can craft a payload
-# this heuristic misses — but covers the well-known cases and the
-# synthesis-bug class.
-_REDOS_NESTED_QUANTIFIER_RE = re.compile(
-    r"\([^)]*[+*][^)]*\)[+*]\??"
-)
-# Bare anything-matches patterns. Operators can write these manually
-# if they really mean it, but synthesis must never emit them and we
-# reject them on load so a typo doesn't accidentally green-list the
-# entire universe.
-_FORBIDDEN_BARE_PATTERNS = frozenset({".*", "^.*", ".*$", "^.*$", ".*/.*", ".+"})
-
-
-def check_pattern_safety(pattern: str) -> tuple[bool, str]:
-    """Return ``(ok, reason)`` — reject ReDoS-prone or universe-matching shapes.
-
-    Called by the loader before ``re.compile`` and by ``save_zone_rule``
-    before write. Both call sites must short-circuit on a False return
-    so a dangerous pattern never reaches the matcher.
-    """
-    if not isinstance(pattern, str) or not pattern:
-        return False, "pattern must be a non-empty string"
-    if len(pattern) > _MAX_PATTERN_LENGTH:
-        return False, (
-            f"pattern length {len(pattern)} exceeds limit {_MAX_PATTERN_LENGTH}"
-        )
-    if pattern.strip() in _FORBIDDEN_BARE_PATTERNS:
-        return False, (
-            f"pattern {pattern!r} matches everything — refuse to load. "
-            f"Use a more specific shape, e.g. anchored prefix + /.* for "
-            f"directory scope."
-        )
-    if _REDOS_NESTED_QUANTIFIER_RE.search(pattern):
-        return False, (
-            f"pattern {pattern!r} contains a nested-quantifier shape "
-            f"vulnerable to catastrophic backtracking; rewrite without "
-            f"`(a+)+` / `(.*)*` style nesting."
-        )
-    # Alternation count: only check inside groups (top-level `|` is
-    # fine, the regex engine handles it well). Heuristic: count `|`
-    # characters between matching parens.
-    depth = 0
-    branches = 0
-    for ch in pattern:
-        if ch == "(":
-            depth += 1
-            branches = 0
-        elif ch == ")":
-            if branches > _MAX_ALTERNATION_BRANCHES:
-                return False, (
-                    f"pattern {pattern!r} has a group with "
-                    f"{branches + 1} alternation branches "
-                    f"(max {_MAX_ALTERNATION_BRANCHES}); split into "
-                    f"multiple rules."
-                )
-            depth = max(0, depth - 1)
-            branches = 0
-        elif ch == "|" and depth > 0:
-            branches += 1
-    # Defense in depth: confirm Python can compile the pattern at all.
-    try:
-        re.compile(pattern)
-    except re.error as exc:
-        return False, f"pattern {pattern!r} is not a valid regex: {exc}"
-    return True, "ok"
-
-
-@dataclass(frozen=True)
-class ZoneRule:
-    """One Sprint-22 argument-level rule for a tool's command string.
-
-    Attributes:
-        match_pattern: the literal regex string from the schema.
-        zone: ``"green" | "yellow" | "red"`` returned on a match.
-        reason: human-readable explanation surfaced to operators.
-        compiled: the pre-compiled ``re.Pattern`` used for matching.
-    """
-
-    match_pattern: str
-    zone: str
-    reason: str
-    compiled: "re.Pattern"
-
-
-@dataclass(frozen=True)
-class ToolZoneEntry:
-    """A tool's evolved ``tool_zones`` entry: default + ordered rules.
-
-    Bare-string entries are normalised to ``ToolZoneEntry(default_zone=<value>,
-    rules=())`` so the rule-evaluation code path is uniform.
-    """
-
-    default_zone: str
-    rules: tuple = field(default_factory=tuple)
-
-
 @dataclass(frozen=True)
 class ZoneResult:
     """Classification result for an action.
 
     Attributes:
         zone: one of ``"green"``, ``"yellow"``, ``"red"``.
-        matched_rule: the literal pattern that matched, or ``"default"``.
-        source: which list/map produced the result —
-            ``"tool_zones" | "sovereign" | "proposes" | "auto_approve" |
-            "default" | "tool_zones.<tool>.rules" |
-            "tool_zones.<tool>.default"``.
-        reason: (Sprint 22) human-readable explanation when the result
-            came from a hierarchical rule; ``None`` for the legacy
-            dot-notation path.
-        pattern_key: (Sprint 22) the matched regex pattern when the
-            result came from a hierarchical rule; ``None`` otherwise.
-            Used by ``approve_session`` / ``approve_permanent`` to key
-            allowlist entries on the specific pattern rather than the
-            rule-level category.
+        matched_rule: the action that matched a ``tool_effects`` entry, or
+            ``"default"`` for the unmatched posture.
+        source: ``"tool_zones"`` (a derived tool-effect classification) or
+            ``"default"`` (the unmatched posture). The name ``tool_zones`` is
+            retained for telemetry parity across the v1→v2 rekey.
+        reason / pattern_key: retained on the dataclass for callers that read
+            them (shell-effect classifications populate ``pattern_key``); the
+            tool-effect path leaves them ``None``.
+        is_promotable: whether an operator "Always" may promote this
+            classification to a standing store. The shell classifier sets it
+            False for a bucket-3 UNRESOLVED_WRITER (and any RED chain).
     """
 
     zone: str
@@ -231,29 +65,25 @@ class ZoneResult:
     source: str
     reason: Optional[str] = None
     pattern_key: Optional[str] = None
-    # execute-code-meta-surface-containment-v1 Phase-2 Change 2 — whether an operator
-    # "Always" may promote this classification to a standing grant / zone rule.
-    # Trailing default True so every existing constructor is unchanged; the shell
-    # classifier sets it False for a bucket-3 UNRESOLVED_WRITER (and any RED chain).
-    # The Always affordance (grove.grant_recognition.resolve_always_store + the
-    # Dispatcher H2 floor) refuses to render when this is False.
     is_promotable: bool = True
 
 
 class ZoneClassifier:
-    """Loads and queries a zones.schema.yaml file."""
+    """Loads and queries a v2 zones.schema.yaml file."""
+
+    # The SIX closed effect classes. The loader rejects a schema that adds,
+    # removes, or renames a class, and rejects a tool declaring a class not here.
+    _EFFECT_CLASSES: frozenset = frozenset({
+        "read_only", "contained_write", "workspace_write",
+        "external_effect", "governance", "operator_only",
+    })
 
     def __init__(self, schema_path: Path):
         self._schema_path = Path(schema_path)
         self._tool_zones: dict[str, str] = {}
-        self._tool_zones_rich: dict[str, ToolZoneEntry] = {}
-        self._sovereign: list[str] = []
-        self._proposes: list[str] = []
-        self._auto_approve: list[str] = []
-        # v2 (zones-v2-scope-keying): the declared effect-class → zone derivation
-        # and the tool → class map. Empty under v1. `_default_unmatched` is the
-        # DECLARED posture returned for an unmatched action (yellow under v1 and
-        # by default; a v2 schema may declare it, and the loader enforces it).
+        # The declared effect-class → zone derivation and the tool → class map.
+        # ``_default_unmatched`` is the DECLARED posture returned for an unmatched
+        # action; the loader enforces it against the schema.
         self._effect_derivations: dict[str, str] = {}
         self._tool_effects: dict[str, str] = {}
         self._default_unmatched: str = "yellow"
@@ -268,110 +98,18 @@ class ZoneClassifier:
                 matched_rule=action,
                 source="tool_zones",
             )
-        for pattern in self._sovereign:
-            if self._pattern_matches(pattern, action):
-                return ZoneResult(zone="red", matched_rule=pattern, source="sovereign")
-        for pattern in self._proposes:
-            if self._pattern_matches(pattern, action):
-                return ZoneResult(zone="yellow", matched_rule=pattern, source="proposes")
-        for pattern in self._auto_approve:
-            if self._pattern_matches(pattern, action):
-                return ZoneResult(zone="green", matched_rule=pattern, source="auto_approve")
-        # Unmatched → the DECLARED default posture (v2 `default_unmatched`; yellow
-        # under v1 and by default). source="default" preserved for telemetry parity.
+        # Unmatched → the DECLARED default posture. source="default" for telemetry.
         return ZoneResult(
             zone=self._default_unmatched, matched_rule="default", source="default",
-        )
-
-    def classify_command_string(
-        self,
-        command: str,
-        action: str,
-        *,
-        tool_id: Optional[str] = None,
-    ) -> ZoneResult:
-        """Sprint 22 — hierarchical-first classification for command strings.
-
-        Args:
-            command: the full command line ("rm -rf /tmp/cache", "sudo apt
-                install", etc.) used for regex matching against the tool's
-                rule list.
-            action: the dot-notation action identifier
-                (``command.execute.rm``) used for the existing
-                ``classify(action)`` fall-through.
-            tool_id: which tool's rules to consult. When ``None``, derive
-                from the action prefix via ``_ACTION_PREFIX_TO_TOOL``;
-                pass explicitly for tools not in the v0.1 map.
-
-        Returns:
-            A ``ZoneResult``. If a hierarchical rule matched, the result
-            carries ``reason`` and ``pattern_key`` populated; if no rule
-            matched and the tool has a hierarchical entry, the default_zone
-            is returned with ``source="tool_zones.<tool>.default"``; if
-            the tool's entry is bare-string or absent, the call falls
-            through to ``classify(action)`` unchanged.
-
-            **First-match-wins** within the rule list — order matters in
-            the schema. Operators write the most specific rules first.
-        """
-        resolved_tool = tool_id if tool_id is not None else _derive_tool_id_from_action(action)
-        if resolved_tool is None:
-            return self.classify(action)
-        entry = self._tool_zones_rich.get(resolved_tool)
-        if entry is None:
-            # Bare-string ``tool_zones`` entry (or no entry at all) for the
-            # resolved tool. Sovereign patterns on the action still apply
-            # so ``command.execute.sudo`` etc. land RED even when the tool
-            # has a bare-string entry. After sovereign, honor the bare-
-            # string tool entry per the schema contract:
-            #
-            #   Every command flowing through this tool is classified
-            #   `yellow`. The classifier never inspects the command's
-            #   arguments.
-            #
-            # Previously this branch fell straight through to
-            # ``classify(action)``, which keyed on ``command.execute.<verb>``
-            # — a string the schema doesn't carry — so the bare-string
-            # entry was silently ignored and every command landed on
-            # default-yellow with ``source="default"``. That violated
-            # the documented contract.
-            for pattern in self._sovereign:
-                if self._pattern_matches(pattern, action):
-                    return ZoneResult(
-                        zone="red", matched_rule=pattern, source="sovereign",
-                    )
-            if resolved_tool in self._tool_zones:
-                return ZoneResult(
-                    zone=self._tool_zones[resolved_tool],
-                    matched_rule=resolved_tool,
-                    source="tool_zones",
-                )
-            return self.classify(action)
-        for rule in entry.rules:
-            if rule.compiled.fullmatch(command):
-                return ZoneResult(
-                    zone=rule.zone,
-                    matched_rule=rule.match_pattern,
-                    source=f"tool_zones.{resolved_tool}.rules",
-                    reason=rule.reason,
-                    pattern_key=rule.match_pattern,
-                )
-        return ZoneResult(
-            zone=entry.default_zone,
-            matched_rule=resolved_tool,
-            source=f"tool_zones.{resolved_tool}.default",
-            reason=None,
-            pattern_key=None,
         )
 
     def reload(self) -> None:
         """Reload schema from disk; on failure, keep last known good map and log loudly."""
         snapshot = (
             dict(self._tool_zones),
-            dict(self._tool_zones_rich),
-            list(self._sovereign),
-            list(self._proposes),
-            list(self._auto_approve),
+            dict(self._effect_derivations),
+            dict(self._tool_effects),
+            self._default_unmatched,
         )
         try:
             self._load_into_self()
@@ -382,22 +120,22 @@ class ZoneClassifier:
             )
             (
                 self._tool_zones,
-                self._tool_zones_rich,
-                self._sovereign,
-                self._proposes,
-                self._auto_approve,
+                self._effect_derivations,
+                self._tool_effects,
+                self._default_unmatched,
             ) = snapshot
 
     # ----- internals ----------------------------------------------------------
 
     def _load_merged(self) -> None:
-        """Load repo policy, merge overlay if present, apply to self.
+        """Load repo policy, validate the overlay if present, apply to self.
 
-        The overlay (``~/.grove/zones.autonomaton.yaml``) is only loaded
-        when ``self._schema_path`` is the canonical repo policy path.
-        Classifiers constructed with an explicit non-repo path (e.g. in
-        tests or a custom deployment) load only that file — the overlay
-        extends the repo policy, not an arbitrary schema.
+        The overlay (``~/.grove/zones.autonomaton.yaml``) is only consulted when
+        ``self._schema_path`` is the canonical repo policy path. A v2 overlay
+        contributes nothing to classification (its sole valid content,
+        ``red_denied_by_policy``, is read independently by grove/red_policy.py) —
+        but it is still loaded and VALIDATED so a malformed or retired-key overlay
+        is refused loud (A2/A3) rather than silently ignored.
         """
         with open(self._schema_path, encoding="utf-8") as fh:
             repo_data = yaml.safe_load(fh)
@@ -406,7 +144,7 @@ class ZoneClassifier:
                 f"zones schema at {self._schema_path} did not parse to a mapping"
             )
 
-        # Only load the overlay when using the canonical repo policy path.
+        # Only consult the overlay when using the canonical repo policy path.
         repo_default = (
             Path(__file__).resolve().parent.parent / "config" / "zones.schema.yaml"
         )
@@ -423,39 +161,26 @@ class ZoneClassifier:
         self._load_merged()
 
     def _load_from_dict(self, raw: dict) -> None:
-        """Validate and atomically apply a merged schema dict to self.
+        """Validate and atomically apply a v2 schema dict to self.
 
-        Accepts schema_version 1 (legacy category-keyed) and 2 (scope-keyed
-        effect classes, zones-v2-scope-keying). Any other value is a hard
-        reject — the prior sprint's single-version guard, widened via reviewed
-        diff (GATE-B G3), not silently loosened.
+        zones-v2-scope-keying P2 (D2): the loader now requires
+        ``schema_version: 2``. The v1 (category-keyed) parse path is retired;
+        any other version is a hard reject.
         """
         version = raw.get("schema_version")
-        if version == 1:
-            self._load_v1(raw)
-        elif version == 2:
-            self._load_v2(raw)
-        else:
+        if version != 2:
             raise ValueError(
                 f"unsupported schema_version {version!r} in {self._schema_path}"
-                f" (expected 1 or 2)"
+                f" (expected 2 — v1 category-keyed schemas are retired,"
+                f" zones-v2-scope-keying P2)"
             )
-
-    # ── v2 (zones-v2-scope-keying): scope-keyed effect-class model ────────────
-    _EFFECT_CLASSES: frozenset = frozenset({
-        "read_only", "contained_write", "workspace_write",
-        "external_effect", "governance", "operator_only",
-    })
+        self._load_v2(raw)
 
     def _load_v2(self, raw: dict) -> None:
         """Parse the v2 schema: effect classes + derivation rules + tool_effects.
 
-        The zone is DERIVED at load from each tool's declared class. classify()
-        is unchanged — it reads the derived ``_tool_zones`` map, so the runtime
-        ZoneResult is byte-identical to v1 for every tool whose derived zone
-        equals its prior baseline (the P1b parity guarantee). The action-type
-        pattern lists and the hierarchical/terminal.rules maps are EMPTY under
-        v2 (retired).
+        The zone is DERIVED at load from each tool's declared class into
+        ``_tool_zones``, so ``classify()`` is a plain map lookup.
         """
         # 1) Derivation rules — the SIX closed classes, each with a `derives`.
         effect_classes_raw = raw.get("effect_classes") or {}
@@ -533,148 +258,9 @@ class ZoneClassifier:
 
         # All-or-nothing swap (mutation only after validation succeeds).
         self._tool_zones = tool_zones
-        self._tool_zones_rich = {}
-        self._sovereign = []
-        self._proposes = []
-        self._auto_approve = []
         self._effect_derivations = derivations
         self._tool_effects = tool_effects
         self._default_unmatched = default_unmatched
-
-    def _load_v1(self, raw: dict) -> None:
-        """Parse the legacy v1 (category-keyed) schema. Unchanged behavior."""
-        self._effect_derivations = {}
-        self._tool_effects = {}
-        self._default_unmatched = "yellow"
-        zones = raw.get("zones", {}) or {}
-        tool_zones_raw = raw.get("tool_zones", {}) or {}
-
-        sovereign = list((zones.get("red") or {}).get("sovereign", []) or [])
-        proposes = list((zones.get("yellow") or {}).get("proposes", []) or [])
-        auto_approve = list((zones.get("green") or {}).get("auto_approve", []) or [])
-
-        for pattern in sovereign + proposes + auto_approve:
-            self._validate_pattern(pattern)
-
-        # Sprint 22 — split tool_zones into bare-string (legacy) and
-        # rich (hierarchical) maps. Bare entries continue to drive the
-        # existing ``classify(action)`` path; rich entries are
-        # consulted by ``classify_command_string`` when the caller
-        # passes a command line.
-        tool_zones_bare: dict[str, str] = {}
-        tool_zones_rich: dict[str, ToolZoneEntry] = {}
-        for tool_id, value in tool_zones_raw.items():
-            if isinstance(value, str):
-                tool_zones_bare[tool_id] = value
-            elif isinstance(value, dict):
-                entry = self._build_tool_entry(tool_id, value)
-                tool_zones_rich[tool_id] = entry
-                # The default_zone also seeds the bare map so any
-                # caller that still uses ``classify(action)`` on the
-                # tool's bare action identifier (e.g.
-                # ``classify("terminal")``) gets the same default the
-                # hierarchical path uses. Tool *commands* (with args)
-                # only flow through ``classify_command_string``.
-                tool_zones_bare[tool_id] = entry.default_zone
-            else:
-                raise ValueError(
-                    f"tool_zones[{tool_id!r}] must be a string or a "
-                    f"mapping with default_zone+rules; got {type(value).__name__}"
-                )
-
-        # All-or-nothing swap (mutation only after validation succeeds).
-        self._tool_zones = tool_zones_bare
-        self._tool_zones_rich = tool_zones_rich
-        self._sovereign = sovereign
-        self._proposes = proposes
-        self._auto_approve = auto_approve
-
-    @staticmethod
-    def _build_tool_entry(tool_id: str, value: dict) -> ToolZoneEntry:
-        """Parse one hierarchical ``tool_zones`` entry; reject malformed.
-
-        Per-rule ReDoS / safety failures drop the offending rule with a
-        loud log but keep the rest of the entry — graceful per rule,
-        per the Sprint 22 spec.
-        """
-        default_zone = value.get("default_zone")
-        if default_zone not in ("green", "yellow", "red"):
-            raise ValueError(
-                f"tool_zones[{tool_id!r}].default_zone must be one of "
-                f"green/yellow/red; got {default_zone!r}"
-            )
-        rules_raw = value.get("rules") or []
-        if not isinstance(rules_raw, list):
-            raise ValueError(
-                f"tool_zones[{tool_id!r}].rules must be a list; got "
-                f"{type(rules_raw).__name__}"
-            )
-        compiled_rules = []
-        for idx, rule_raw in enumerate(rules_raw):
-            # Sprint 32 Phase 3b — schema faults raise at load time.
-            # The agent does NOT start with malformed governance.
-            # Replaces the v1.0 graceful "drop the bad rule + continue
-            # loading" pattern that silently degraded the policy
-            # surface. Error messages name the tool, the rule index,
-            # the failed check, and where in the file to look.
-            from grove.errors import SchemaConfigurationError
-            if not isinstance(rule_raw, dict):
-                raise SchemaConfigurationError(
-                    f"zones.schema.yaml: tool_zones[{tool_id!r}]."
-                    f"rules[{idx}] must be a mapping; got {rule_raw!r}. "
-                    f"Fix the rule entry or remove it from the file."
-                )
-            pattern = rule_raw.get("match_pattern")
-            zone = rule_raw.get("zone")
-            reason = str(rule_raw.get("reason") or "").strip()
-            if zone not in ("green", "yellow", "red"):
-                raise SchemaConfigurationError(
-                    f"zones.schema.yaml: tool_zones[{tool_id!r}]."
-                    f"rules[{idx}].zone must be one of green/yellow/red; "
-                    f"got {zone!r}. Fix the rule entry."
-                )
-            ok, why = check_pattern_safety(pattern)
-            if not ok:
-                raise SchemaConfigurationError(
-                    f"zones.schema.yaml: tool_zones[{tool_id!r}]."
-                    f"rules[{idx}].match_pattern rejected by safety check: "
-                    f"{why}. pattern={pattern!r}. "
-                    f"Tighten the pattern or remove the rule."
-                )
-            compiled_rules.append(
-                ZoneRule(
-                    match_pattern=pattern,
-                    zone=zone,
-                    reason=reason,
-                    compiled=re.compile(pattern),
-                )
-            )
-        return ToolZoneEntry(default_zone=default_zone, rules=tuple(compiled_rules))
-
-    @staticmethod
-    def _validate_pattern(pattern: str) -> None:
-        if "*" not in pattern:
-            return
-        if pattern == "*":
-            return
-        if not pattern.endswith(".*"):
-            raise ValueError(
-                f"only trailing '.*' wildcards are supported; got: {pattern!r}"
-            )
-        prefix = pattern[:-2]
-        if "*" in prefix:
-            raise ValueError(
-                f"mid-pattern wildcards are not supported; got: {pattern!r}"
-            )
-
-    @staticmethod
-    def _pattern_matches(pattern: str, action: str) -> bool:
-        if pattern == "*":
-            return True
-        if "*" not in pattern:
-            return pattern == action
-        prefix = pattern[:-2]  # strip trailing ".*"
-        return action == prefix or action.startswith(prefix + ".")
 
 
 # ----- module-level singleton + helpers ---------------------------------------
@@ -689,9 +275,9 @@ def initialize(schema_path: Optional[Path] = None) -> ZoneClassifier:
         1. Explicit argument, if given.
         2. Repo default at ``<grove-package-parent>/config/zones.schema.yaml``.
 
-    If ``~/.grove/zones.autonomaton.yaml`` exists, it is loaded as an operator
-    overlay and merged on top of the repo policy (overlay rules appended after
-    repo rules, red-non-grantable guard applied).
+    If ``~/.grove/zones.autonomaton.yaml`` exists it is loaded and VALIDATED
+    against the v2 overlay contract (A2/A3) — a malformed or retired-key overlay
+    refuses loud.
 
     Raises FileNotFoundError if the repo policy schema does not exist.
     """
@@ -755,13 +341,13 @@ _OVERLAY_VALID_KEYS: frozenset = frozenset({"schema_version", "red_denied_by_pol
 _OVERLAY_RETIRED_KEYS: dict = {
     # tool_zones carried bare tool-name zone assignments, per-tool default_zone
     # overrides, AND terminal.rules. All three are retired: tool zones are now
-    # DERIVED from repo effect classes, and terminal.rules' sole reader
-    # (classify_command_string) has zero live callers (dispatch.py:143-153).
+    # DERIVED from repo effect classes, and the terminal.rules writer/reader
+    # machinery is deleted (zones-v2-scope-keying P2).
     "tool_zones": (
         "bare tool-name zone assignments, default_zone overrides, and "
         "terminal.rules — all retired (tool zones derive from repo effect "
-        "classes; terminal.rules' reader classify_command_string has no live "
-        "caller). P2 migration prunes it."
+        "classes; the terminal.rules writer/reader machinery is deleted in P2). "
+        "P2 migration prunes it."
     ),
     # The action-type pattern blocks (auto_approve/proposes/sovereign).
     "zones": (
@@ -820,94 +406,15 @@ def merge_zone_schemas(
     repo_data: dict,
     overlay_data: Optional[dict],
 ) -> dict:
-    """Merge repo policy and operator overlay into a single schema dict.
+    """Combine repo policy and the (validated) operator overlay.
 
-    Overlay rules are appended AFTER repo rules per tool (first-match-wins
-    at classify time means repo policy evaluates before operator overrides).
-
-    Red-non-grantable guard (V1 — literal string match): if repo defines a
-    rule with zone=red for a match_pattern string, and overlay defines a rule
-    with zone != red for the SAME literal match_pattern, repo wins and a
-    warning is logged. Regex intersection is out of scope; rule ordering is
-    the runtime safety guard.
-
-    Zone category lists (auto_approve / proposes / sovereign) are repo-only.
-    Overlay cannot modify category membership.
+    zones-v2-scope-keying P2: a v2 overlay carries no classification content
+    (only ``red_denied_by_policy`` + ``schema_version``, both loader-irrelevant),
+    so this is effectively a passthrough that returns the repo policy. The
+    overlay has already been validated by :func:`_load_and_validate_overlay`
+    (retired category-keyed keys refused loud), so there is nothing to merge into
+    the derived tool-effect map.
     """
     import copy
-    if overlay_data is None:
-        return copy.deepcopy(repo_data)
 
-    merged = copy.deepcopy(repo_data)
-
-    overlay_tool_zones = (overlay_data.get("tool_zones") or {})
-    merged_tool_zones = merged.setdefault("tool_zones", {})
-
-    # Build a lookup of repo red patterns per tool for the guard.
-    # Key: (tool_id, match_pattern) -> True if zone is red in repo.
-    repo_red_patterns: dict[tuple, bool] = {}
-    for tool_id, value in (repo_data.get("tool_zones") or {}).items():
-        if isinstance(value, dict):
-            for rule in (value.get("rules") or []):
-                if isinstance(rule, dict) and rule.get("zone") == "red":
-                    repo_red_patterns[(tool_id, rule.get("match_pattern"))] = True
-
-    for tool_id, overlay_entry in overlay_tool_zones.items():
-        overlay_rules = []
-        overlay_default = None
-
-        if isinstance(overlay_entry, str):
-            overlay_default = overlay_entry
-        elif isinstance(overlay_entry, dict):
-            overlay_default = overlay_entry.get("default_zone")
-            overlay_rules = list(overlay_entry.get("rules") or [])
-
-        # Filter overlay rules through the red-non-grantable guard.
-        safe_overlay_rules = []
-        for rule in overlay_rules:
-            if not isinstance(rule, dict):
-                continue
-            pattern = rule.get("match_pattern")
-            if repo_red_patterns.get((tool_id, pattern)):
-                logger.warning(
-                    "[zones] red-non-grantable guard: overlay rule for tool %r "
-                    "pattern %r (zone=%r) conflicts with repo red rule — "
-                    "repo wins; overlay rule dropped.",
-                    tool_id, pattern, rule.get("zone"),
-                )
-                continue
-            safe_overlay_rules.append(rule)
-
-        existing = merged_tool_zones.get(tool_id)
-        if existing is None:
-            # Tool only in overlay — add it. R-4 fail-loud (zones-v2 A3): a new
-            # overlay tool entry with no resolvable default_zone is refused, NOT
-            # silently defaulted to yellow — a masked-missing-default is the
-            # silent-fallback class. (The prior ``overlay_default or "yellow"``
-            # idiom is replaced here.)
-            if not overlay_default:
-                raise ValueError(
-                    f"[zones] merge: overlay introduces tool {tool_id!r} with no "
-                    f"resolvable default_zone — REFUSING to silently default to "
-                    f"yellow (R-4 fail-loud). Declare an explicit default_zone."
-                )
-            merged_tool_zones[tool_id] = {
-                "default_zone": overlay_default,
-                "rules": safe_overlay_rules,
-            }
-        elif isinstance(existing, str):
-            # Repo has bare string — normalise to dict, append overlay rules.
-            effective_default = overlay_default or existing
-            merged_tool_zones[tool_id] = {
-                "default_zone": effective_default,
-                "rules": safe_overlay_rules,
-            }
-        elif isinstance(existing, dict):
-            # Repo has hierarchical entry — use overlay default if specified,
-            # append overlay rules after repo rules.
-            if overlay_default:
-                existing["default_zone"] = overlay_default
-            repo_rules = list(existing.get("rules") or [])
-            existing["rules"] = repo_rules + safe_overlay_rules
-
-    return merged
+    return copy.deepcopy(repo_data)

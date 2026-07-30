@@ -159,7 +159,8 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         "grove/flywheel_cli.py",
         "grove/kaizen/renderable.py",
         "grove/kaizen/synthesizer.py",
-        "grove/kaizen_promotion.py",
+        # zones-v2-scope-keying P2 (D1): grove/kaizen_promotion.py DELETED
+        # (zone_promotion proposer retired) — dropped from the pin.
         "grove/memory/cli.py",
         "grove/memory/detector.py",
         "grove/memory/digest.py",
@@ -272,12 +273,15 @@ _BASENAME_TOUCHER_PINS: dict[str, frozenset[str]] = {
         "grove/wiki/watcher.py",
         "grove/red_pending_store.py",
     }),
-    # writer: save_zone_rule (grove/zone_rules.py:410 — writes the operator
-    # overlay; docstrings there still say "zones.schema.yaml", naming rot).
     # capability-mutation-surface-v1 M1 (reviewed amendment): fs_utils
     # literal moved to config/scope_surfaces.yaml.
+    # zones-v2-scope-keying P2 (D1): grove/zone_rules.py DELETED (the
+    # save_zone_rule overlay writer is retired) — dropped from the pin. The
+    # v1→v2 overlay migration tool grove/config/zones_overlay_migrate.py now
+    # names the basename (migration source that reads/rewrites the operator
+    # overlay), so it is added.
     "zones.autonomaton.yaml": frozenset({
-        "grove/zone_rules.py",
+        "grove/config/zones_overlay_migrate.py",
         "grove/red_policy.py",
         "grove/zones.py",
     }),

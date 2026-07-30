@@ -53,6 +53,17 @@ def _build_halt(
     return AndonHalt(intents=intents, zone_results=zr, triggering_index=0)
 
 
+def _build_gov_halt() -> AndonHalt:
+    """A governance-mutation halt — the only halt shape that still offers
+    an Always store (``standing grant``) after zones-v2-scope-keying P2 (D1).
+    A parseable governance command (verb + target) resolves a standing_grant
+    store, so the four-choice prompt renders the [3] Always line."""
+    return _build_halt(
+        tool_name="terminal",
+        arguments={"command": "promote some_pattern_target"},
+    )
+
+
 # ── Kaizen template (Sprint 32 1a) ───────────────────────────────────
 
 
@@ -336,8 +347,31 @@ class TestTtySovereignPromptV11:
         assert tty_sovereign_prompt(_build_halt()) == "session"
 
     def test_choice_3_returns_always(self, monkeypatch: pytest.MonkeyPatch):
+        # zones-v2-scope-keying P2 (D1): "always" is offered ONLY when a
+        # standing store resolves — i.e. a governance-mutation halt. A
+        # non-governance halt has no [3] line (see
+        # test_non_governance_halt_offers_three_choices). Choice "3" on a
+        # governance halt still returns "always".
         monkeypatch.setattr("builtins.input", lambda prompt="": "3")
-        assert tty_sovereign_prompt(_build_halt()) == "always"
+        assert tty_sovereign_prompt(_build_gov_halt()) == "always"
+
+    def test_non_governance_halt_offers_three_choices(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    ):
+        # zones-v2-scope-keying P2 (D1): the retired zone_rule store means a
+        # non-governance halt no longer offers "Always" — the menu is
+        # once/session/deny. Keystroke "3" is rejected as unavailable, and the
+        # rendered menu omits the [3] Always line. "3" is rejected, then "4"
+        # denies.
+        answers = iter(["3", "4"])
+        monkeypatch.setattr("builtins.input", lambda prompt="": next(answers))
+        assert tty_sovereign_prompt(_build_halt()) == "deny"
+        captured = capsys.readouterr().err
+        assert "[1] Just this once" in captured
+        assert "[2] For the rest of this session" in captured
+        assert "[4] Not this time" in captured
+        assert "[3] Always" not in captured
+        assert "Always is unavailable for this action" in captured
 
     def test_choice_4_returns_deny(self, monkeypatch: pytest.MonkeyPatch):
         monkeypatch.setattr("builtins.input", lambda prompt="": "4")
@@ -374,19 +408,31 @@ class TestTtySovereignPromptV11:
         assert "I'd like to run the cal skill" in captured
         assert "Just this once" in captured
         assert "For the rest of this session" in captured
-        # H2 (grant-mint-unification-v1): the Always option names the store
-        # it writes. "(zone rule)" is a RULED exception to the no-"zone"
-        # register rule below — the store name is the disclosure, not jargon
-        # leakage. No other zone vocabulary may appear.
-        assert "Always (zone rule) — I'll remember it" in captured
+        # zones-v2-scope-keying P2 (D1): a non-governance halt no longer offers
+        # an Always store (the zone_rule writer is retired), so the [3] Always
+        # line is absent — the menu is once/session/deny.
+        assert "Always" not in captured
         assert "Not this time" in captured
         # Forbidden tokens — operator MUST NOT see these.
-        _scrubbed = captured.lower().replace("always (zone rule)", "")
+        _scrubbed = captured.lower()
         assert "zone" not in _scrubbed
         assert "andon halt" not in captured.lower()
         assert "sovereign disposition" not in captured.lower()
         assert "matched_rule" not in captured
         assert "pattern_key" not in captured
+
+    def test_governance_halt_shows_always_with_store_name(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture,
+    ):
+        """H2 (grant-mint-unification-v1): a governance-mutation halt still
+        offers the Always store and names it ("standing grant"). This is the
+        only halt shape that keeps the [3] Always line after D1."""
+        monkeypatch.setattr("builtins.input", lambda prompt="": "4")
+        tty_sovereign_prompt(_build_gov_halt())
+        captured = capsys.readouterr().err
+        assert "Always (standing grant) — I'll remember it" in captured
+        # "standing grant" carries no "zone" jargon.
+        assert "zone" not in captured.lower()
 
 
 # ── v1.1 non-interactive handlers ────────────────────────────────────

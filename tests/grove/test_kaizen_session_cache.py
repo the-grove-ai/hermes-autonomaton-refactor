@@ -71,8 +71,13 @@ class TestCacheMutationByDisposition:
         assert not dispatcher._session_deny_cache
 
     def test_always_populates_allow_cache(self, dispatcher, agent_stub):
+        # zones-v2-scope-keying P2 (D1): "always" only resolves for a halt
+        # whose standing store applies — a governance-mutation command. A
+        # non-governance halt denies "always" cleanly (no store). Use a
+        # parseable governance command so the standing_grant store exists.
         dispatcher._sovereign_prompt_handler = lambda halt: "always"
-        result = dispatcher._handle_andon_halt(agent_stub, _halt())
+        gov_halt = _halt(arguments={"command": "promote some_pattern_target"})
+        result = dispatcher._handle_andon_halt(agent_stub, gov_halt)
         assert result == "always"
         assert len(dispatcher._session_allow_cache) == 1
 

@@ -137,24 +137,9 @@ def _diff_skill_promotion(proposal: RoutingProposal) -> Dict[str, Any]:
     }
 
 
-def _diff_zone_promotion(proposal: RoutingProposal) -> Dict[str, Any]:
-    # Zone promotions don't translate to a routing-config diff —
-    # they write directly to zones.schema.yaml via save_zone_rule.
-    # The "diff" displayed to the operator is the YAML-shaped
-    # rule that would be appended.
-    return {
-        "tool_zones": {
-            proposal.payload.get("tool", "?"): {
-                "rules": [
-                    {
-                        "match_pattern": proposal.payload.get("pattern", ""),
-                        "zone": proposal.payload.get("zone", "?"),
-                        "reason": proposal.payload.get("reason", ""),
-                    },
-                ],
-            },
-        },
-    }
+# zones-v2-scope-keying P2 (D3) — _diff_zone_promotion RETIRED with the
+# zone_promotion proposal type (its diff rendered a terminal.rules entry, whose
+# writer is deleted).
 
 
 def _diff_skill_synthesis(proposal: RoutingProposal) -> Dict[str, Any]:
@@ -204,10 +189,8 @@ def _summary_skill_promotion(proposal: RoutingProposal) -> str:
     return f"promote quarantined skill {name!r} → trusted"
 
 
-def _summary_zone_promotion(proposal: RoutingProposal) -> str:
-    tool = proposal.payload.get("tool", "?")
-    pattern = proposal.payload.get("pattern", "?")
-    return f"greenlight {tool} pattern={pattern!r}"
+# zones-v2-scope-keying P2 (D3) — _summary_zone_promotion RETIRED with the
+# zone_promotion proposal type.
 
 
 def _summary_skill_synthesis(proposal: RoutingProposal) -> str:

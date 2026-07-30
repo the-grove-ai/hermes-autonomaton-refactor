@@ -91,17 +91,20 @@ def test_scan_empty_when_no_ledger_dir(monkeypatch, tmp_path: Path) -> None:
 
 @pytest.fixture
 def patched(monkeypatch, tmp_path: Path):
-    """Mock the promotion side-effects + isolate ledger/home."""
+    """Mock the promotion side-effects + isolate ledger/home.
+
+    zones-v2-scope-keying P2 — skill promotion no longer writes a green zone
+    rule (grove.zone_rules is deleted; promoted-skill GREEN is owned by the
+    shell-effect AST classifier), so there is nothing to mock there.
+    """
     import hermes_constants
     promote_mock = MagicMock()
-    save_rule_mock = MagicMock()
     monkeypatch.setattr("grove.sovereignty.promote", promote_mock)
-    monkeypatch.setattr("grove.zone_rules.save_zone_rule", save_rule_mock)
     monkeypatch.setattr(
         "agent.prompt_builder.clear_skills_system_prompt_cache", MagicMock(),
     )
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
-    return promote_mock, save_rule_mock, tmp_path
+    return promote_mock, tmp_path
 
 
 def _approve_strict(qf: Path, proposal: RoutingProposal):
@@ -111,7 +114,7 @@ def _approve_strict(qf: Path, proposal: RoutingProposal):
 
 
 def test_strict_refuses_without_logged_execution(monkeypatch, patched) -> None:
-    promote_mock, save_rule_mock, home = patched
+    promote_mock, home = patched
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: "y")  # would confirm
     qf = home / "proposals.jsonl"
     proposal = _skill_proposal()
@@ -126,7 +129,7 @@ def test_strict_refuses_without_logged_execution(monkeypatch, patched) -> None:
 
 
 def test_strict_proceeds_with_execution_and_confirm(monkeypatch, patched) -> None:
-    promote_mock, save_rule_mock, home = patched
+    promote_mock, home = patched
     _log_execution(home, "my-skill")
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: "y")
     qf = home / "proposals.jsonl"
@@ -137,12 +140,11 @@ def test_strict_proceeds_with_execution_and_confirm(monkeypatch, patched) -> Non
 
     assert rc == 0
     promote_mock.assert_called_once_with("my-skill")
-    save_rule_mock.assert_called_once()
     assert read_all(path=qf) == []  # removed after approve
 
 
 def test_strict_aborts_on_decline(monkeypatch, patched) -> None:
-    promote_mock, save_rule_mock, home = patched
+    promote_mock, home = patched
     _log_execution(home, "my-skill")
     monkeypatch.setattr(builtins, "input", lambda *_a, **_k: "n")
     qf = home / "proposals.jsonl"
@@ -159,7 +161,7 @@ def test_strict_aborts_on_decline(monkeypatch, patched) -> None:
 def test_non_strict_approve_skips_gate(monkeypatch, patched) -> None:
     """Normal `flywheel approve` (no --strict) promotes without the gate."""
     from grove.flywheel_cli import cli_approve
-    promote_mock, save_rule_mock, home = patched
+    promote_mock, home = patched
     # No logged execution, no confirmation input — must still proceed.
     qf = home / "proposals.jsonl"
     proposal = _skill_proposal()

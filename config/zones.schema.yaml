@@ -43,7 +43,14 @@ schema_version: 2
 # NEVER store-pending and NEVER executed. The catastrophic-rm effect
 # ("rm:catastrophic") is a HARDCODED floor, denied even if this key is empty.
 # This is one of the two keys a v2 operator OVERLAY may carry (the other is
-# schema_version). Editing it is a RED governed change (propose_governance_change).
+# schema_version).
+#
+# D4 (zones-v2-scope-keying) — the deny list is OPERATOR-AUTHORED and
+# AGENT-READ-ONLY by design: a sovereign restriction lever. No system path
+# writes it — there is no proposal or mint flow that adds entries; the operator
+# edits it by hand, itself a RED governed change (propose_governance_change).
+# A malformed deny-config fails CLOSED: grove/red_policy.py denies ALL RED
+# actions until it is repaired (D5(b′) deny-all sentinel).
 red_denied_by_policy: []
 
 # ============================================================================

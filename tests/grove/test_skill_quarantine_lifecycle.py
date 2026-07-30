@@ -53,19 +53,19 @@ def tmp_home(monkeypatch, tmp_path: Path) -> SimpleNamespace:
     monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: home)
     monkeypatch.setattr(pq, "default_queue_path", lambda: home / "proposals.jsonl")
 
-    # Zone-rule writes + cache drops + telemetry are unit-tested elsewhere;
-    # mock them here so the lifecycle focuses on the move / queue / ledger
-    # seams and never touches the operator's real zones or telemetry.
-    save_rule = MagicMock()
+    # Cache drops + telemetry are unit-tested elsewhere; mock them here so the
+    # lifecycle focuses on the move / queue / ledger seams and never touches the
+    # operator's real telemetry. zones-v2-scope-keying P2 — promotion no longer
+    # writes a green zone rule (grove.zone_rules is deleted); promoted-skill
+    # GREEN is owned by the shell-effect AST classifier, exercised via _classify.
     clear_cache = MagicMock()
-    monkeypatch.setattr("grove.zone_rules.save_zone_rule", save_rule)
     monkeypatch.setattr(
         "agent.prompt_builder.clear_skills_system_prompt_cache", clear_cache,
     )
     monkeypatch.setattr("grove.sovereignty.log_sovereignty_decision", MagicMock())
 
     return SimpleNamespace(
-        path=home, save_rule=save_rule, clear_cache=clear_cache,
+        path=home, clear_cache=clear_cache,
     )
 
 
@@ -147,9 +147,8 @@ def test_T16_full_lifecycle(monkeypatch, tmp_home) -> None:
     assert not andon.exists()
     assert (home / "skills" / name / "SKILL.md").exists()
 
-    # Promotion wrote a green zone rule and dropped the skills cache.
-    tmp_home.save_rule.assert_called_once()
-    assert tmp_home.save_rule.call_args.kwargs["zone"] == "green"
+    # Promotion dropped the skills cache. (No zone rule is written — promoted-
+    # skill GREEN is owned by the AST classifier, proven by the re-classify below.)
     tmp_home.clear_cache.assert_called_once_with(clear_snapshot=True)
 
     # Ledger captured the disposition and the promotion.

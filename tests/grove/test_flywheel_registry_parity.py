@@ -19,7 +19,6 @@ from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_PATTERN_PROMOTION,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
     PROPOSAL_TYPE_SKILL_PROMOTION,
-    PROPOSAL_TYPE_ZONE_PROMOTION,
     RoutingProposal,
     compute_proposal_id,
 )
@@ -47,15 +46,10 @@ _ROUTING = _proposal(
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
     {"rule": "downward", "add_intents": ["conversation"]},
 )
-_ZONE = _proposal(
-    PROPOSAL_TYPE_ZONE_PROMOTION,
-    {
-        "tool": "terminal",
-        "pattern": r".*\.grove/skills/cal/.*",
-        "zone": "green",
-        "reason": "allow cal",
-    },
-)
+# zones-v2-scope-keying P2 (D3) — the zone_promotion proposal type is RETIRED
+# end-to-end (no proposer, renderer, or apply handler). Its parity rows here are
+# deleted; the type label survives only in proposal_queue so a migration can
+# dismiss pending proposals.
 _SKILL = _proposal(
     PROPOSAL_TYPE_SKILL_PROMOTION,
     {
@@ -96,19 +90,6 @@ _EXPECTED_DIFF = {
             "downward": {"match": {"intents": ["conversation"]}, "enabled": True},
         },
     },
-    _ZONE.proposal_id: {
-        "tool_zones": {
-            "terminal": {
-                "rules": [
-                    {
-                        "match_pattern": r".*\.grove/skills/cal/.*",
-                        "zone": "green",
-                        "reason": "allow cal",
-                    },
-                ],
-            },
-        },
-    },
     _SKILL.proposal_id: {
         "skill_promotion": {
             "skill_name": "foo",
@@ -142,13 +123,12 @@ _EXPECTED_DIFF = {
 
 _EXPECTED_BODY = {
     _ROUTING.proposal_id: "add conversation to routing.downward",
-    _ZONE.proposal_id: r"greenlight terminal pattern='.*\\.grove/skills/cal/.*'",
     _SKILL.proposal_id: "promote quarantined skill 'foo' → trusted",
     _PAT_PROMO.proposal_id: "retire weather [static] pattern “what's the weather” to T0 cache",
     _PAT_DEMO.proposal_id: "demote weather pattern (drift: corrected after a T0 hit)",
 }
 
-_ALL = [_ROUTING, _ZONE, _SKILL, _PAT_PROMO, _PAT_DEMO]
+_ALL = [_ROUTING, _SKILL, _PAT_PROMO, _PAT_DEMO]
 
 
 @pytest.mark.parametrize("p", _ALL, ids=lambda p: p.type)
@@ -231,7 +211,6 @@ def test_registry_covers_exactly_the_registered_types() -> None:
         PROPOSAL_TYPE_PRODUCER_AUTO_PAUSED,
         PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS,
         PROPOSAL_TYPE_ADMISSION_FRICTION,
-        PROPOSAL_TYPE_ZONE_PROMOTION,
         PROPOSAL_TYPE_SKILL_PROMOTION,
         PROPOSAL_TYPE_PATTERN_PROMOTION,
         PROPOSAL_TYPE_PATTERN_DEMOTION,
@@ -255,7 +234,6 @@ def test_apply_dispatch_wiring_and_label_prefixes() -> None:
     """Each row routes to the expected apply function with the expected prefix."""
     expect = {
         PROPOSAL_TYPE_ROUTING_ADJUSTMENT: (flywheel_cli._approve_routing_adjustment, "Applied to: "),
-        PROPOSAL_TYPE_ZONE_PROMOTION: (flywheel_cli._approve_zone_promotion, "Applied to: "),
         PROPOSAL_TYPE_SKILL_PROMOTION: (flywheel_cli._approve_skill_promotion, "Promoted: "),
         PROPOSAL_TYPE_PATTERN_PROMOTION: (flywheel_cli._approve_pattern_promotion, "Promoted to T0: "),
         PROPOSAL_TYPE_PATTERN_DEMOTION: (flywheel_cli._approve_pattern_demotion, "Demoted from T0: "),

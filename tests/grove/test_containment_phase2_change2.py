@@ -132,7 +132,11 @@ class TestAlwaysGateOnPromotability:
         from grove.grant_recognition import resolve_always_store
         assert resolve_always_store(self._halt(is_promotable=False)) is None
 
-    def test_promotable_yellow_generic_resolves_zone_rule(self):
+    def test_promotable_yellow_generic_resolves_no_store(self):
+        # zones-v2-scope-keying P2 (D1): the zone_rule store is RETIRED. A
+        # promotable yellow-generic halt (a non-governance command) no longer
+        # resolves an Always store — the terminal.rules writer it fed is
+        # deleted. Even with is_promotable=True the resolver returns None;
+        # only governance-mutation halts keep a standing_grant store.
         from grove.grant_recognition import resolve_always_store
-        store = resolve_always_store(self._halt(is_promotable=True))
-        assert store is not None and store[0] == "zone_rule"
+        assert resolve_always_store(self._halt(is_promotable=True)) is None

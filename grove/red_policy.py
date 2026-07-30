@@ -33,9 +33,21 @@ logger = logging.getLogger(__name__)
 _HARDCODED_DENIED: FrozenSet[str] = frozenset({"rm:catastrophic"})
 
 # The operator-editable extension key (a top-level list in the governed zones
-# schema). Unknown to the zones LOADER (which reads only schema_version / zones /
-# tool_zones), so adding it never perturbs classification.
+# schema). D4 (zones-v2-scope-keying) — the deny list is OPERATOR-AUTHORED and
+# AGENT-READ-ONLY by design: a sovereign restriction lever. No system path writes
+# it (there is no proposal/mint flow for it); the zones LOADER ignores it (it
+# reads only schema_version / effect_classes / tool_effects), so it is one of the
+# two keys a v2 operator overlay may carry. The operator adds/removes entries by
+# hand — itself a RED governed change.
 _DENY_CONFIG_KEY = "red_denied_by_policy"
+
+# D5(b′) — DENY-ALL sentinel. A MALFORMED deny-config at RED-halt time fails
+# toward MORE denial, not less: _read_deny_list returns this sentinel, which
+# _matched_entry treats as matching every pattern_key, so is_denied_by_policy
+# denies everything until the operator repairs the file. Never raises (a broken
+# config must not crash RED resolution). Chosen to be unmatchable as a real
+# effect pattern_key.
+_DENY_ALL_SENTINEL = "\x00malformed-deny-config:deny-all\x00"
 
 
 def _repo_schema_path() -> Path:
@@ -48,20 +60,31 @@ def _overlay_path() -> Optional[Path]:
 
 
 def _read_deny_list(path: Optional[Path]) -> List[str]:
-    """The ``red_denied_by_policy`` list from *path*, or [] (a broken/absent
-    config must never crash RED resolution — fail toward MORE denial, never less:
-    the hardcoded floor is applied by the caller regardless)."""
+    """The ``red_denied_by_policy`` list from *path*.
+
+    ABSENT (no path / missing file) → ``[]`` — nothing to add; the hardcoded
+    floor still applies. MALFORMED (unparseable YAML, or a non-mapping document)
+    → the DENY-ALL sentinel (D5(b′)): fail toward MORE denial, loud
+    ``logger.error`` naming the file + reason. Never raises — a broken deny-config
+    must not crash RED resolution."""
     if path is None or not path.exists():
-        return []
+        return []  # absent ≠ malformed
     try:
-        data = yaml.safe_load(path.read_text()) or {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     except Exception as exc:  # noqa: BLE001 — a broken deny-config must not crash resolution
-        logger.warning(
-            "[red_policy] deny-list config at %s unreadable (%s); ignoring "
-            "(hardcoded catastrophic defaults still apply).", path, exc,
+        logger.error(
+            "[red_policy] deny-list config at %s is MALFORMED (%s) — DENYING ALL "
+            "RED actions by policy until repaired (fail-closed; the file is "
+            "operator-authored, agent-read-only).", path, exc,
         )
-        return []
-    val = data.get(_DENY_CONFIG_KEY) if isinstance(data, dict) else None
+        return [_DENY_ALL_SENTINEL]
+    if not isinstance(data, dict):
+        logger.error(
+            "[red_policy] deny-list config at %s did not parse to a mapping — "
+            "DENYING ALL RED actions by policy until repaired (fail-closed).", path,
+        )
+        return [_DENY_ALL_SENTINEL]
+    val = data.get(_DENY_CONFIG_KEY)
     return [str(x) for x in val] if isinstance(val, list) else []
 
 
@@ -76,11 +99,18 @@ def denied_patterns() -> FrozenSet[str]:
 
 
 def _matched_entry(pattern_key: Optional[str]) -> Optional[str]:
-    """The deny-set entry that matches *pattern_key* (exact or family-prefix), else None."""
+    """The deny-set entry that matches *pattern_key* (exact or family-prefix), else None.
+
+    D5(b′): a DENY-ALL sentinel in the active set (a malformed deny-config)
+    matches EVERY action — including a halt with no pattern_key — so RED
+    resolution denies until the file is repaired."""
+    active = denied_patterns()
+    if _DENY_ALL_SENTINEL in active:
+        return _DENY_ALL_SENTINEL
     if not pattern_key:
         return None
     pk = str(pattern_key)
-    for d in denied_patterns():
+    for d in active:
         if pk == d or (d.endswith(":") and pk.startswith(d)):
             return d
     return None
@@ -108,6 +138,13 @@ def denial_message(pattern_key: Optional[str]) -> str:
     """
     pk = str(pattern_key or "this effect")
     m = _matched_entry(pattern_key)
+    if m == _DENY_ALL_SENTINEL:
+        return (
+            f"Denied as a safety measure — the deny-list policy config "
+            f"('{_DENY_CONFIG_KEY}') is malformed, so I am denying all RED actions "
+            f"(including {pk}) until it is repaired. Fix the YAML in the governed "
+            f"zones schema, then retry."
+        )
     if m is not None and m in _HARDCODED_DENIED:
         return (
             f"Hard structural boundary — I will not run this ({pk}) even with your "

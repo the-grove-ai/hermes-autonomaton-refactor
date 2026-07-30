@@ -367,21 +367,22 @@ def test_always_with_no_resolvable_store_fails_loud():
         Dispatcher._add_standing_grant_from_halt(_dispatcher_stub(), halt)
 
 
-def test_resolver_totality():
-    """Totality pin (H2, GATE-B F2): argless yellow generics resolve
-    ("zone_rule", tool_name); every declared native verb with a derivable
-    scope resolves standing_grant — never None."""
+def test_resolver_governance_only():
+    """zones-v2-scope-keying P2 (D1): the zone_rule store is RETIRED — a
+    non-governance ("yellow generic") halt now resolves to None (no "always"
+    affordance). Every declared native GOVERNANCE verb with a derivable scope
+    still resolves standing_grant."""
     from grove.grant_recognition import (
         WRITE_CLASS_DECLARATION,
         resolve_always_store,
     )
 
-    assert resolve_always_store(_halt_for("browser_read", {})) == (
-        "zone_rule", "browser_read",
-    )
+    # Non-governance halts: no store (zone_rule retired).
+    assert resolve_always_store(_halt_for("browser_read", {})) is None
     assert resolve_always_store(
         _halt_for("terminal", {"command": "ls -la /tmp"})
-    ) == ("zone_rule", "ls -la /tmp")
+    ) is None
+    # Native governance verbs still resolve a standing grant.
     for tool, entry in WRITE_CLASS_DECLARATION.items():
         if entry.routing_class != "native":
             continue

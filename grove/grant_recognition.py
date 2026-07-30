@@ -293,8 +293,15 @@ def resolve_always_store(halt: object) -> "Optional[tuple]":
             return None
         return ("standing_grant", parsed.scope, parsed.write_class)
 
-    # Yellow generic → zone rule; always derivable (tool name at minimum).
-    return ("zone_rule", cmd.strip() or tool_name)
+    # zones-v2-scope-keying P2 (D1): the zone_rule store is RETIRED. A
+    # non-governance ("yellow generic") halt no longer offers an "Always"
+    # affordance — the terminal.rules writer it fed (save_zone_rule) is deleted,
+    # so a rendered "always" would be wired to nothing. Returning None drops the
+    # Always choice from every render site that consults this resolver (the
+    # prompt becomes once/session/deny). The legitimate persistent-grant need is
+    # filed as the future scope-keyed grant design (R-3c). Governance halts keep
+    # their standing_grant store above — untouched.
+    return None
 
 
 # Operator-facing store names for the Always affordance. The affordance MUST

@@ -63,15 +63,16 @@ def test_strict_flag_reads_config(monkeypatch) -> None:
     assert d._skill_promotion_is_strict() is False  # default normal
 
 
-# ── normal mode: immediate move + green rule + cache drop ─────────────
+# ── normal mode: immediate move + AST-green + cache drop ──────────────
+# zones-v2-scope-keying P2 — promotion no longer writes a green zone rule
+# (grove.zone_rules is deleted); promoted-skill GREEN is owned by the
+# shell-effect AST classifier. The move + cache-drop seams remain.
 
 
 def test_promote_normal_mode_moves_and_greenlights(monkeypatch, queue_file: Path) -> None:
     promote_mock = MagicMock()
-    save_rule_mock = MagicMock()
     clear_cache_mock = MagicMock()
     monkeypatch.setattr("grove.sovereignty.promote", promote_mock)
-    monkeypatch.setattr("grove.zone_rules.save_zone_rule", save_rule_mock)
     monkeypatch.setattr(
         "agent.prompt_builder.clear_skills_system_prompt_cache", clear_cache_mock,
     )
@@ -81,11 +82,6 @@ def test_promote_normal_mode_moves_and_greenlights(monkeypatch, queue_file: Path
     d._promote_quarantined_skill(_payload(), ledger=MagicMock())
 
     promote_mock.assert_called_once_with("my-skill")
-    save_rule_mock.assert_called_once()
-    assert save_rule_mock.call_args.kwargs["zone"] == "green"
-    # re.escape escapes the hyphen, so match the escaped form.
-    import re as _re
-    assert _re.escape("my-skill") in save_rule_mock.call_args.kwargs["pattern"]
     clear_cache_mock.assert_called_once_with(clear_snapshot=True)
     # Normal mode does NOT queue — promotion is immediate.
     assert read_all(path=queue_file) == []
@@ -95,15 +91,18 @@ def test_promote_normal_mode_missing_skill_is_non_fatal(monkeypatch, queue_file:
     def _raise(_name):
         raise FileNotFoundError("no such proposal")
 
-    save_rule_mock = MagicMock()
+    clear_cache_mock = MagicMock()
     monkeypatch.setattr("grove.sovereignty.promote", _raise)
-    monkeypatch.setattr("grove.zone_rules.save_zone_rule", save_rule_mock)
+    monkeypatch.setattr(
+        "agent.prompt_builder.clear_skills_system_prompt_cache", clear_cache_mock,
+    )
 
     d = _dispatcher(monkeypatch)
     monkeypatch.setattr(d, "_skill_promotion_is_strict", lambda: False)
-    # Must not raise; must not write a zone rule for a skill that never moved.
+    # Must not raise; a skill that never moved does not drop the skills cache
+    # (the promote path returns early before invalidation).
     d._promote_quarantined_skill(_payload(), ledger=MagicMock())
-    save_rule_mock.assert_not_called()
+    clear_cache_mock.assert_not_called()
 
 
 # ── strict mode: queue only, no move ──────────────────────────────────
@@ -150,9 +149,7 @@ def test_cli_approve_skill_promotion(monkeypatch, tmp_path: Path) -> None:
     from grove.flywheel_cli import cli_approve
 
     promote_mock = MagicMock()
-    save_rule_mock = MagicMock()
     monkeypatch.setattr("grove.sovereignty.promote", promote_mock)
-    monkeypatch.setattr("grove.zone_rules.save_zone_rule", save_rule_mock)
     monkeypatch.setattr(
         "agent.prompt_builder.clear_skills_system_prompt_cache", MagicMock(),
     )
@@ -166,8 +163,6 @@ def test_cli_approve_skill_promotion(monkeypatch, tmp_path: Path) -> None:
 
     assert rc == 0
     promote_mock.assert_called_once_with("my-skill")
-    save_rule_mock.assert_called_once()
-    assert save_rule_mock.call_args.kwargs["zone"] == "green"
     # Approved proposal is removed from the queue.
     assert read_all(path=qf) == []
 

@@ -4,11 +4,18 @@ Covers:
 
 * Backward compat: legacy entries without ``type``, and Sprint 47
   ``routing_update`` entries, both round-trip cleanly.
-* Mixed-type queues: routing_adjustment + zone_promotion proposals
-  coexist; list / show / approve all dispatch correctly.
-* Zone promotion approval writes to ``zones.schema.yaml`` via
-  ``save_zone_rule`` (preserved by the existing Sprint 22 path) —
-  not to ``routing.autonomaton.yaml``.
+* routing_adjustment approval writes to ``routing.autonomaton.yaml``.
+* Unknown proposal types are rejected without clearing the queue.
+
+zones-v2-scope-keying P2 (D1): the ``zone_promotion`` proposal type is
+RETIRED end-to-end — no proposer (``build_zone_promotion_proposal``), no
+renderer, no apply handler (``save_zone_rule`` / ``grove.zone_rules`` /
+``grove.kaizen_promotion`` are deleted). The former mixed-type-queue,
+zone-promotion-diff, and zones-schema-write tests are removed with the
+machinery they exercised. The ``PROPOSAL_TYPE_ZONE_PROMOTION`` string
+constant still exists in ``proposal_queue.py`` but has no handler; a
+queued zone_promotion now approves as an unknown type (covered by
+``test_unknown_type_returns_nonzero``).
 """
 
 from __future__ import annotations
@@ -22,13 +29,11 @@ import yaml
 from grove import flywheel_cli
 from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
-    PROPOSAL_TYPE_ZONE_PROMOTION,
     RoutingProposal,
     append,
     compute_proposal_id,
     read_all,
 )
-from grove.kaizen_promotion import build_zone_promotion_proposal
 
 
 def _routing_proposal(rule="downward", intents=("conversation",)):
@@ -48,19 +53,6 @@ def _routing_proposal(rule="downward", intents=("conversation",)):
         # B2 — routing_adjustment must cite a cluster to approve.
         source_patterns=("cluster:sha256:test",),
     )
-
-
-def _zone_proposal(
-    tool="terminal",
-    command="python3 /x/.grove/skills/foo/run.py",
-    turn_id="s_001#1",
-):
-    proposal, _ = build_zone_promotion_proposal(
-        tool_name=tool,
-        command_string=command,
-        evidence_turn_id=turn_id,
-    )
-    return proposal
 
 
 # ── Backward compat (Sprint 32 2a) ───────────────────────────────────
@@ -106,40 +98,6 @@ class TestQueueBackwardCompat:
 
         loaded = read_all(path=queue)
         assert loaded[0].type == "routing_update"
-
-
-# ── Mixed-type queue (Sprint 32 2c) ──────────────────────────────────
-
-
-class TestMixedTypeQueue:
-    def test_list_displays_both_proposal_types(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture,
-    ) -> None:
-        queue = tmp_path / "proposals.jsonl"
-        append(_routing_proposal(), path=queue)
-        append(_zone_proposal(), path=queue)
-        rc = flywheel_cli.cli_list(queue_path=queue)
-        out = capsys.readouterr().out
-        assert rc == 0
-        assert "2 pending proposal(s)" in out
-        assert PROPOSAL_TYPE_ROUTING_ADJUSTMENT in out
-        assert PROPOSAL_TYPE_ZONE_PROMOTION in out
-
-    def test_show_renders_zone_promotion_diff(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture,
-    ) -> None:
-        queue = tmp_path / "proposals.jsonl"
-        prop = _zone_proposal()
-        append(prop, path=queue)
-        rc = flywheel_cli.cli_show(prop.proposal_id, queue_path=queue)
-        out = capsys.readouterr().out
-        assert rc == 0
-        # The diff section MUST surface the tool_zones key and the
-        # green rule that would be written.
-        assert "tool_zones" in out
-        assert "terminal" in out
-        assert "green" in out
-        assert ".grove/skills/foo" in out
 
 
 # ── Approve dispatch (Sprint 32 2c) ──────────────────────────────────
@@ -204,52 +162,6 @@ class TestApproveDispatch:
         )
         assert rc == 0
         assert machine.exists()
-
-    def test_zone_promotion_writes_to_zones_schema(
-        self, tmp_path: Path, monkeypatch,
-    ) -> None:
-        """A zone_promotion proposal MUST route to save_zone_rule —
-        writing the green rule to zones.schema.yaml — and MUST NOT
-        touch routing.autonomaton.yaml."""
-        queue = tmp_path / "proposals.jsonl"
-        machine = tmp_path / "routing.autonomaton.yaml"
-
-        # Capture the save_zone_rule call to verify the dispatch
-        # without writing to the operator's real ~/.grove file.
-        captured = {}
-
-        def _fake_save(tool_id, pattern, zone, reason):
-            captured["tool_id"] = tool_id
-            captured["pattern"] = pattern
-            captured["zone"] = zone
-            captured["reason"] = reason
-
-        monkeypatch.setattr(
-            "grove.zone_rules.save_zone_rule", _fake_save,
-        )
-
-        prop = _zone_proposal(
-            tool="terminal",
-            command="python3 /x/.grove/skills/cal/run.py today",
-            turn_id="t_cal",
-        )
-        append(prop, path=queue)
-        rc = flywheel_cli.cli_approve(
-            prop.proposal_id, queue_path=queue, machine_path=machine,
-        )
-        assert rc == 0
-        # save_zone_rule was called with the proposal's payload values.
-        assert captured == {
-            "tool_id": "terminal",
-            "pattern": r".*\.grove/skills/cal/.*",
-            "zone": "green",
-            "reason": "Operator approved: allow cal to execute via terminal.",
-        }
-        # Machine routing file MUST NOT be touched on a zone_promotion
-        # approval.
-        assert not machine.exists()
-        # Queue cleared after approval.
-        assert read_all(path=queue) == []
 
     def test_unknown_type_returns_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture,

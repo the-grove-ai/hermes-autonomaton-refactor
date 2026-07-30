@@ -13,21 +13,17 @@ from grove.zones import ZoneClassifier
 
 
 _TEST_SCHEMA = """
-    schema_version: 1
-    zones:
-      green:
-        auto_approve:
-          - calendar.read.*
-      yellow:
-        proposes:
-          - command.dangerous.*
-      red:
-        sovereign:
-          - command.execute.sudo
-          - command.execute.su
-          - command.execute.doas
-    tool_zones:
-      calendar.read: green
+    schema_version: 2
+    effect_classes:
+      read_only:       {derives: green}
+      contained_write: {derives: green}
+      workspace_write: {derives: yellow}
+      external_effect: {derives: yellow}
+      governance:      {derives: red}
+      operator_only:   {derives: red}
+    default_unmatched: yellow
+    tool_effects:
+      calendar.read: read_only
 """
 
 

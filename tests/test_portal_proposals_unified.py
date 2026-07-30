@@ -305,17 +305,9 @@ async def test_dock_mutation_card_shows_summary_and_diff(client, grove_home):
     assert "/approve" in body
 
 
-async def test_zone_promotion_card_shows_summary_and_diff(client, grove_home):
-    _write_typed_proposal(
-        "zone_promotion",
-        {"tool": "mcp_grove_browser_read", "pattern": r".*\.md$",
-         "zone": "green", "reason": "docs are safe"},
-        pid="sha256:" + "e" * 64,
-    )
-    body = await (await client.get("/portal/fragments/proposals/pending")).text()
-    assert "greenlight mcp_grove_browser_read" in body
-    assert "tool_zones" in body
-    assert "docs are safe" in body
+# zones-v2-scope-keying P2 (D1): test_zone_promotion_card_shows_summary_and_diff
+# REMOVED — the zone_promotion proposal type and its portal renderer
+# (_summary_zone_promotion / _diff_zone_promotion) are retired end-to-end.
 
 
 async def test_fault_triage_card_judgment_led_with_samples(client, grove_home):

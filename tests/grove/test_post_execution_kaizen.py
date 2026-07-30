@@ -198,7 +198,9 @@ def test_promote_choice_invokes_promotion(monkeypatch, queue_file: Path) -> None
     (Phase 3) — it calls grove.sovereignty.promote, it does not queue."""
     promote_mock = MagicMock()
     monkeypatch.setattr("grove.sovereignty.promote", promote_mock)
-    monkeypatch.setattr("grove.zone_rules.save_zone_rule", MagicMock())
+    # zones-v2-scope-keying P2 (D1): grove.zone_rules.save_zone_rule is DELETED
+    # (zone_rule store retired) — the stale monkeypatch is removed. The Promote
+    # flow routes to grove.sovereignty.promote, never the zone_rule writer.
     monkeypatch.setattr(
         "agent.prompt_builder.clear_skills_system_prompt_cache", MagicMock(),
     )

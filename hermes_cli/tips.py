@@ -204,7 +204,7 @@ TIPS = [
     "The gateway supports inactivity-based timeouts — active agents can run indefinitely.",
 
     # --- Security ---
-    "Dangerous command approval has 4 tiers: once, session, always (permanent allowlist), deny.",
+    "Dangerous (non-governance) command approval has 3 tiers: once, session, deny. 'always' (a standing grant) is offered only for governance actions.",
     "Smart approval mode uses an LLM to auto-approve safe commands and flag dangerous ones.",
     "SSRF protection blocks private networks, loopback, link-local, and cloud metadata addresses.",
     "Tirith pre-exec scanning detects homograph URL spoofing and pipe-to-interpreter patterns.",
@@ -344,7 +344,7 @@ TIPS = [
     '/footer toggles the gateway footer on final replies showing model, tool counts, and turn timing.',
     '/busy queue|steer|interrupt controls what pressing Enter does while Hermes is working.',
     '/topic in Telegram DMs enables user-managed multi-session topic mode — /topic <id> restores past sessions inline.',
-    '/approve session|always runs a pending dangerous command with your chosen trust scope; /deny rejects it.',
+    '/approve once|session runs a pending dangerous command with your trust scope; /deny rejects it. "always" is governance-only now.',
     '/restart gracefully restarts the gateway after draining active runs, then pings the requester when back up.',
     '/kanban boards switch <slug> changes the active multi-project Kanban board from inside chat.',
     '/reload reloads ~/.grove/.env into the running session — pick up new API keys without restarting.',

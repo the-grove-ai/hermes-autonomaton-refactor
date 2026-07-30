@@ -6180,6 +6180,30 @@ class Dispatcher:
         marker_path = self._write_pending_andon(agent, halt)
         try:
             disposition = self._sovereign_prompt_handler(halt)
+            # zones-v2-scope-keying P2 (D1) — "always" renders ONLY when a standing
+            # store applies (governance standing_grant; resolve_always_store gates
+            # the affordance). A submitted "always" on a halt that offers no store —
+            # a stale client or direct API call the render never presented — is
+            # INVALID INPUT (the non-governance zone_rule writer it once fed is
+            # retired). Refuse it explicitly and re-prompt once; a resubmission
+            # (non-interactive) denies cleanly. Never a silent no-op, never a crash.
+            if disposition == "always":
+                from grove.grant_recognition import resolve_always_store
+                if resolve_always_store(halt) is None:
+                    logger.warning(
+                        "[grove.dispatcher] 'always' is not available for this "
+                        "action — no standing store applies (non-governance "
+                        "zone_rule writer retired, zones-v2 P2). Treating as "
+                        "invalid input; re-prompting."
+                    )
+                    disposition = self._sovereign_prompt_handler(halt)
+                    if disposition == "always" and resolve_always_store(halt) is None:
+                        logger.warning(
+                            "[grove.dispatcher] 'always' resubmitted on a halt that "
+                            "offers no standing store; denying cleanly (invalid "
+                            "input)."
+                        )
+                        disposition = "deny"
         finally:
             self._clear_pending_andon(agent, marker_path)
 
@@ -6190,58 +6214,11 @@ class Dispatcher:
             self._session_allow_cache.add(cache_key)
         # "once" — no cache mutation.
 
-        # Sprint 67 (kaizen-governance-parity-v1) — operator-initiated
-        # "always" APPLIES the zone rule immediately rather than queuing
-        # a proposal. Reaching this branch means an operator tapped or
-        # typed "always" on a live Andon prompt (CLI [a] or Telegram
-        # kz:always) — the tap IS the approval, so there is no second
-        # gate. This supersedes the Sprint 32 A4 lock that queued from
-        # non-TTY surfaces: a mobile operator cannot reach `flywheel
-        # approve`, so queuing stranded the decision (the bug this
-        # fixes). System-initiated promotions (Ratchet / observed
-        # patterns) are written to the queue by other code paths and are
-        # untouched here. Failures degrade with a loud warning — the
-        # session_allow cache mutation above already gave this turn's
-        # action its relief.
-        if disposition == "always":
-            # GRV-001: governance-mutation verbs use standing grants (written by
-            # the drive loop after this method returns). _apply_zone_promotion
-            # would create a blanket green zone rule — the bypass bug this model
-            # fixes. Only fire for non-governance halts (Yellow zone generics).
-            if not self._is_governance_mutation_halt(halt):
-                # containment Phase-2 Change 2 — a NON-PROMOTABLE classification
-                # (bucket-3 UNRESOLVED_WRITER / any RED shell chain) has no standing
-                # store: the Always affordance must not have rendered, and if
-                # "always" arrives anyway we refuse CLEANLY (no zone rule written),
-                # not via the H2 defect-raise below. is_promotable defaults True, so
-                # every promotable yellow generic still flows through unchanged.
-                _tzr = None
-                try:
-                    _tzr = halt.zone_results[halt.triggering_index]
-                except (AttributeError, IndexError, TypeError):
-                    _tzr = None
-                if _tzr is not None and getattr(_tzr, "is_promotable", True) is False:
-                    logger.warning(
-                        "[grove.dispatcher] refusing 'always' on a non-promotable "
-                        "classification (%s) — no standing grant written; the effect "
-                        "remains per-instance approvable.",
-                        getattr(_tzr, "matched_rule", "?"),
-                    )
-                else:
-                    # H2 structural floor: the resolver is total for yellow
-                    # generics (zone_rule at minimum, GATE-B F2); anything else
-                    # here is a defect — fail loud, never silently drop the
-                    # operator's 'Always'.
-                    from grove.grant_recognition import resolve_always_store
-                    _store = resolve_always_store(halt)
-                    if _store is None or _store[0] != "zone_rule":
-                        raise ValueError(
-                            f"'Always' on a non-governance halt resolved "
-                            f"{_store!r} instead of a zone_rule store — the "
-                            f"Always affordance must not render when no store "
-                            f"applies (H2 structural floor)"
-                        )
-                    self._apply_zone_promotion(triggering_intent)
+        # GRV-001 standing-grant path: an "always" that survives the D1 refusal
+        # above is a governance-mutation halt (resolve_always_store returned a
+        # standing_grant store). The grant is written by the drive loop after this
+        # method returns — there is no zone-rule apply here (the non-governance
+        # zone_rule promotion machinery is retired in zones-v2-scope-keying P2).
 
         # Sprint 53.2 — if an "allow once" disposition just let a
         # quarantined (.andon) skill run, flag it so the post-execution
@@ -6254,69 +6231,10 @@ class Dispatcher:
 
         return disposition
 
-    def _apply_zone_promotion(self, intent: Any) -> None:
-        """Apply an operator-initiated "always" promotion immediately.
-
-        Sprint 67 (kaizen-governance-parity-v1). Mirrors the apply step
-        that ``autonomaton flywheel approve`` performs
-        (``grove.flywheel_cli._approve_zone_promotion`` →
-        ``grove.zone_rules.save_zone_rule``) so an operator who taps
-        "Always" on a gateway surface — where ``flywheel approve`` is out
-        of reach — gets their decision honored without a second gate.
-        The pattern/reason are derived through
-        ``build_zone_promotion_proposal`` so the rule written here is
-        byte-identical to the one the queue+approve path would have
-        produced.
-
-        Best-effort: a save failure logs a warning and returns. The
-        session_allow cache mutation in the caller already gave this
-        turn's action its relief; persistence failing is observable but
-        must not block the line.
-        """
-        try:
-            from grove.kaizen_promotion import build_zone_promotion_proposal
-            from grove.zone_rules import save_zone_rule
-
-            arguments = intent.arguments or {}
-            # For terminal halts the operator-faced command string
-            # lives under the ``command`` key by convention; fall
-            # back to the stringified arguments dict otherwise so
-            # the regex generator still produces a usable pattern.
-            command_string = (
-                arguments.get("command")
-                if isinstance(arguments, dict) and "command" in arguments
-                else str(arguments)
-            )
-            evidence_turn_id = self._current_turn_id or ""
-            # terminal-rule-generalization-v1 — thread the per-command cwd
-            # (terminal `workdir`) so normalize_pattern can broaden within a
-            # granted workspace. Absent → None → exact-match fallback.
-            _cwd = arguments.get("workdir") if isinstance(arguments, dict) else None
-            _proposal, payload = build_zone_promotion_proposal(
-                tool_name=intent.tool_name,
-                command_string=command_string or "",
-                evidence_turn_id=evidence_turn_id,
-                cwd=_cwd,
-            )
-            save_zone_rule(
-                tool_id=payload["tool"],
-                pattern=payload["pattern"],
-                zone=payload.get("zone", "green"),
-                reason=payload.get("reason", ""),
-            )
-            logger.info(
-                "[grove.dispatcher] operator 'always' applied immediately: "
-                "tool=%s pattern=%r zone=%s",
-                payload["tool"],
-                payload["pattern"],
-                payload.get("zone", "green"),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[grove.dispatcher] operator 'always' promotion apply "
-                "failed (non-fatal; session_allow cache still applies this "
-                "turn): %r", exc,
-            )
+    # zones-v2-scope-keying P2 — _apply_zone_promotion RETIRED. It was the
+    # gateway "always" → grove.zone_rules.save_zone_rule bridge (Sprint 67); the
+    # terminal.rules zone-rule writer it drove is deleted. Non-governance "always"
+    # is retired (D1); governance "always" writes a standing grant downstream.
 
     # ── GRV-001 Grant Token model — governance-mutation halt helpers ─────────
 
@@ -6793,7 +6711,11 @@ class Dispatcher:
             )
             return
 
-        self._write_promoted_skill_zone_rule(payload.skill_name)
+        # zones-v2-scope-keying P2 — the per-promotion green zone-rule write
+        # (_write_promoted_skill_zone_rule) is RETIRED: it was redundant (its own
+        # docstring said so) and wrote terminal.rules, whose writer is deleted.
+        # Promoted-skill GREEN is owned by the shell-effect AST classifier
+        # (_promoted_skill_subzone), not a zone rule.
         self._invalidate_skills_cache()
         logger.info(
             "[grove.dispatcher] Skill %r promoted from quarantine and "
@@ -6809,34 +6731,6 @@ class Dispatcher:
                     "[grove.dispatcher] skill_promoted ledger write failed "
                     "(non-fatal): %r", exc,
                 )
-
-    def _write_promoted_skill_zone_rule(self, skill_name: str) -> None:
-        """Auto-approve a green zone rule for the promoted skill path (3b/3c).
-
-        Pattern ``.*\\.grove/skills/<name>/.* → green``. Redundant with the
-        broad promoted-skills green rule, but makes each promotion an
-        explicit, auditable zone act that survives if the broad rule is
-        ever narrowed. ``save_zone_rule`` reloads zones synchronously so
-        the rule is live within this turn.
-        """
-        try:
-            from grove.zone_rules import save_zone_rule
-            pattern = r".*\.grove/skills/" + re.escape(skill_name) + r"/.*"
-            save_zone_rule(
-                tool_id="terminal",
-                pattern=pattern,
-                zone="green",
-                reason=(
-                    f"Skill '{skill_name}' promoted from quarantine "
-                    f"(Sprint 53.2)."
-                ),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[grove.dispatcher] Promoted-skill zone rule write for %r "
-                "failed (non-fatal; broad skills green rule still applies): "
-                "%r", skill_name, exc,
-            )
 
     def _invalidate_skills_cache(self) -> None:
         """Drop the skills prompt cache so a promoted skill appears active (3e)."""

@@ -21,8 +21,10 @@ def test_scan_propose_runs_admission_friction_signal(monkeypatch, capsys):
         return (2, 1)
 
     monkeypatch.setattr(fc, "run_admission_friction_scan", _af_spy)
-    # neutralize the other propose signals so the test isolates the 5th
-    for name in ("run_tier_ratchet_scan", "run_disposition_promotion_scan",
+    # neutralize the other propose signals so the test isolates the 5th.
+    # zones-v2-scope-keying P2 (D1): run_disposition_promotion_scan is DELETED
+    # (zone_promotion producer retired) — dropped from the neutralize set.
+    for name in ("run_tier_ratchet_scan",
                  "run_fault_triage_scan", "run_binding_scan"):
         monkeypatch.setattr(fc, name, lambda **k: (0, 0))
     # short-circuit the always-on pattern-cache scan after the propose block

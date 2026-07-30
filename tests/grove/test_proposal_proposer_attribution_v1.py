@@ -52,7 +52,11 @@ def test_dedup_parity_proposer_never_forks_identity(tmp_path):
     assert a.to_dict()["proposer"] == "a"
 
 
-# ── (2) PRODUCER STAMPS — each of the 14 stamps its exact value ───────────────
+# ── (2) PRODUCER STAMPS — each of the 12 stamps its exact value ───────────────
+# zones-v2-scope-keying P2 (D1): the zone_promotion producers are retired —
+# grove/eval/disposition_promotion.py (#11) and grove/kaizen_promotion.py (#12)
+# are DELETED, so their stamps are removed. Nine producer-file stamps remain,
+# plus the three dispatcher stamps below.
 _PRODUCER_STAMPS = {
     "grove/fleet/manager.py": "proposer=skill_id",                 # #1 (dynamic)
     "grove/memory/digest.py": 'proposer="memory_digest"',          # #3
@@ -61,8 +65,6 @@ _PRODUCER_STAMPS = {
     "grove/eval/pattern_compiler.py": 'proposer="pattern_compiler"',  # #8
     "grove/eval/tier_ratchet.py": 'proposer="tier_ratchet"',       # #9
     "grove/eval/consolidation_ratchet.py": 'proposer="consolidation_ratchet"',  # #10
-    "grove/eval/disposition_promotion.py": 'proposer="disposition_promotion"',  # #11
-    "grove/kaizen_promotion.py": 'proposer="kaizen_promotion"',    # #12
     "grove/dock/detector.py": 'proposer="dock_detector"',          # #13
     "grove/eval/proposal_queue.py": 'proposer="portal_failure"',   # #14
 }

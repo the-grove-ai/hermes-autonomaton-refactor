@@ -50,7 +50,6 @@ from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS,
     PROPOSAL_TYPE_SKILL_PROMOTION,
     PROPOSAL_TYPE_SKILL_SYNTHESIS,
-    PROPOSAL_TYPE_ZONE_PROMOTION,
     RoutingProposal,
     default_queue_path,
     read,
@@ -82,7 +81,6 @@ from grove.kaizen.rendering import (  # noqa: F401
     _diff_pattern_promotion,
     _diff_skill_promotion,
     _diff_skill_synthesis,
-    _diff_zone_promotion,
     _dock_detach_to_diff,
     _dock_goal_status_to_diff,
     _dock_mutation_to_diff,
@@ -109,7 +107,6 @@ from grove.kaizen.rendering import (  # noqa: F401
     _summary_routing_adjustment,
     _summary_skill_promotion,
     _summary_skill_synthesis,
-    _summary_zone_promotion,
     _validate_routing_rule,
     compose_offering,
     get_renderer,
@@ -132,7 +129,6 @@ __all__ = [
     "cli_approve",
     "cli_reject",
     "run_tier_ratchet_scan",
-    "run_disposition_promotion_scan",
     "run_fault_triage_scan",
     "cli_acknowledge",
     "compose_offering",
@@ -200,7 +196,6 @@ _PUSH_PRIORITY = {
     # test_regression_routing_and_memory_unaffected).
     PROPOSAL_TYPE_GOAL_ATTACHMENT: 1.8,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT: 2,
-    PROPOSAL_TYPE_ZONE_PROMOTION: 3,
     PROPOSAL_TYPE_SKILL_PROMOTION: 3,
     # binding-governance-surfaces-v1 — a binding recommendation is the same
     # mechanical-governance family as zone/skill promotion: it yields to
@@ -349,46 +344,10 @@ def run_tier_ratchet_scan(
     return queued_new, deduped
 
 
-def run_disposition_promotion_scan(
-    *,
-    ledger_dir: Optional[Path] = None,
-    queue_path: Optional[Path] = None,
-    thresholds: Optional[Any] = None,
-    now: Optional[Any] = None,
-) -> Tuple[int, int]:
-    """Run the YELLOW promotion detector over the Kaizen ledger; queue its
-    ``zone_promotion`` proposals. learning-loop-bridge-v1 (Strike 2).
-
-    An INDEPENDENT Flywheel signal that shares the ``flywheel scan --propose``
-    cadence with TierRatchet without coupling enable flags — mirroring how the
-    pattern-cache and TierRatchet scans coexist. Reads ``andon_disposition``
-    events (repeated operator approvals at the Sovereign Prompt), not the
-    intent store. Idempotent: ``proposal_id`` is stable per ``(tool, rule)``,
-    so a re-run over unchanged ledger state DEDUPS via
-    ``proposal_queue.append`` returning False rather than stacking duplicates.
-
-    Returns ``(queued_new, deduped)``.
-    """
-    from grove.eval.proposal_queue import append as _append
-    from grove.eval.disposition_promotion import (
-        DispositionPromotionDetector,
-        load_promotion_thresholds,
-    )
-
-    if thresholds is None:
-        thresholds = load_promotion_thresholds()
-    detector = DispositionPromotionDetector(
-        ledger_dir=ledger_dir, thresholds=thresholds,
-    )
-    proposals = detector.detect(now=now)
-    target = queue_path or default_queue_path()
-    queued_new = deduped = 0
-    for proposal in proposals:
-        if _append(proposal, path=target):
-            queued_new += 1
-        else:
-            deduped += 1
-    return queued_new, deduped
+# zones-v2-scope-keying P2 (D3) — run_disposition_promotion_scan RETIRED. It ran
+# the DispositionPromotionDetector (grove/eval/disposition_promotion.py, deleted)
+# to queue system-initiated zone_promotion proposals — the type retired
+# end-to-end. Its scan slot in run_all_scans is removed.
 
 
 def run_fault_triage_scan(
@@ -598,18 +557,9 @@ def cli_scan(
             print("TierRatchet: no routing adjustments meet the threshold.")
         print()
 
-        dp_new, dp_dup = run_disposition_promotion_scan(queue_path=queue_path)
-        if dp_new or dp_dup:
-            print(
-                f"YELLOW promotions: queued {dp_new} zone_promotion proposal(s)"
-                + (f", {dp_dup} already pending (deduped)" if dp_dup else "")
-                + "."
-            )
-        else:
-            print(
-                "YELLOW promotions: no repeated approvals meet the threshold."
-            )
-        print()
+        # zones-v2-scope-keying P2 (D3) — the YELLOW disposition-promotion scan
+        # is retired with the zone_promotion proposal type (its detector produced
+        # only zone_promotion proposals, whose writer/handler are deleted).
 
         ft_new, ft_dup = run_fault_triage_scan(queue_path=queue_path)
         if ft_new or ft_dup:
@@ -1720,43 +1670,12 @@ def _approve_consolidation(
     return op_path, applied
 
 
-def _approve_zone_promotion(
-    proposal: RoutingProposal,
-    *,
-    machine_path: Optional[Path] = None,  # uniform registry signature; unused
-) -> Tuple[str, Dict[str, Any]]:
-    """Apply a zone_promotion proposal to zones.schema.yaml.
-
-    Sprint 32 Phase 2c — delegates to
-    :func:`grove.zone_rules.save_zone_rule` which already exists from
-    Sprint 22 and writes through ruamel.yaml (preserving comments)
-    with a synchronous ``zones.reload()`` at the tail. Returns the
-    (rendered-rule-summary, applied-rule-dict) pair so the caller can
-    print the result.
-    """
-    from grove.zone_rules import save_zone_rule
-
-    tool = proposal.payload.get("tool")
-    pattern = proposal.payload.get("pattern")
-    zone = proposal.payload.get("zone", "green")
-    reason = proposal.payload.get("reason", "")
-    if not isinstance(tool, str) or not tool.strip():
-        raise ValueError(
-            f"zone_promotion payload missing 'tool': {proposal.payload!r}"
-        )
-    if not isinstance(pattern, str) or not pattern.strip():
-        raise ValueError(
-            f"zone_promotion payload missing 'pattern': {proposal.payload!r}"
-        )
-    save_zone_rule(
-        tool_id=tool, pattern=pattern, zone=zone, reason=reason,
-    )
-    applied = {
-        "match_pattern": pattern,
-        "zone": zone,
-        "reason": reason,
-    }
-    return f"tool_zones.{tool}.rules", applied
+# zones-v2-scope-keying P2 (D3) — _approve_zone_promotion RETIRED. It applied a
+# zone_promotion proposal by writing a terminal.rules entry via
+# grove.zone_rules.save_zone_rule; that writer module is deleted. The
+# zone_promotion proposal TYPE is retired end-to-end (no proposer, no renderer,
+# no apply handler). Pending zone_promotion proposals are dismissed by the P2
+# migration; an unregistered type reaching the flywheel refuses cleanly.
 
 
 def _approve_skill_promotion(
@@ -1767,13 +1686,15 @@ def _approve_skill_promotion(
     """Apply a skill_promotion proposal (Sprint 53.2).
 
     Moves the skill out of quarantine via :func:`grove.sovereignty.promote`
-    (NOT re-implemented) and writes a green zone rule for the promoted
-    path via :func:`grove.zone_rules.save_zone_rule`, then drops the
-    skills prompt cache so the promoted skill appears active. Returns the
-    (target-label, applied-dict) pair for the caller to print.
+    (NOT re-implemented), then drops the skills prompt cache so the promoted
+    skill appears active. Returns the (target-label, applied-dict) pair for the
+    caller to print.
+
+    zones-v2-scope-keying P2 — the redundant per-promotion green zone-rule write
+    (terminal.rules via save_zone_rule) is removed: promoted-skill GREEN is owned
+    by the shell-effect AST classifier (_promoted_skill_subzone), not a zone rule.
     """
     from grove.sovereignty import promote as _promote
-    from grove.zone_rules import save_zone_rule
 
     name = proposal.payload.get("skill_name")
     if not isinstance(name, str) or not name.strip():
@@ -1782,13 +1703,6 @@ def _approve_skill_promotion(
         )
 
     _promote(name)
-    pattern = rf".*\.grove/skills/{name}/.*"
-    save_zone_rule(
-        tool_id="terminal",
-        pattern=pattern,
-        zone="green",
-        reason=f"Skill '{name}' promoted from quarantine (Sprint 53.2).",
-    )
     try:
         from agent.prompt_builder import clear_skills_system_prompt_cache
         clear_skills_system_prompt_cache(clear_snapshot=True)
@@ -1800,9 +1714,8 @@ def _approve_skill_promotion(
     applied = {
         "skill_name": name,
         "promoted_to": f"~/.grove/skills/{name}/",
-        "zone_rule": {"match_pattern": pattern, "zone": "green"},
     }
-    return f"skill '{name}' (move + green rule)", applied
+    return f"skill '{name}' (move + AST-green)", applied
 
 
 def _has_successful_quarantine_execution(skill_name: str) -> bool:
@@ -2235,7 +2148,7 @@ def cli_approve(
     except ValueError:
         print(
             f"Cannot approve proposal type {proposal.type!r}. Supported: "
-            f"routing_adjustment, zone_promotion, skill_promotion, "
+            f"routing_adjustment, skill_promotion, "
             f"pattern_promotion, pattern_demotion, skill_synthesis.",
             file=sys.stderr,
         )
@@ -2782,12 +2695,10 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         # will not re-file that arm. A dismiss of (A, X) never suppresses (A, Y).
         reject_callback=_reject_admission_friction,
     ),
-    PROPOSAL_TYPE_ZONE_PROMOTION: ProposalHandler(
-        summary_renderer=_summary_zone_promotion,
-        diff_renderer=_diff_zone_promotion,
-        apply_callback=_approve_zone_promotion,
-        apply_label_prefix="Applied to: ",
-    ),
+    # zones-v2-scope-keying P2 (D3) — PROPOSAL_TYPE_ZONE_PROMOTION handler
+    # RETIRED (proposer, renderer, and apply_callback all deleted). The type
+    # label is retained (proposal_queue) only so the P2 migration can identify
+    # and dismiss any pending zone_promotion proposals.
     PROPOSAL_TYPE_SKILL_PROMOTION: ProposalHandler(
         summary_renderer=_summary_skill_promotion,
         diff_renderer=_diff_skill_promotion,

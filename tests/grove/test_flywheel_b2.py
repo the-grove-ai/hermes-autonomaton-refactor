@@ -6,8 +6,14 @@ Proofs:
   * C2 — the runner queues proposals and a re-run over unchanged store state
     DEDUPS (same spike → one proposal, not two).
   * C3 — the scoped approve-time gate refuses a routing_adjustment with empty
-    source_patterns, while a zone_promotion with empty source_patterns still
-    approves (legacy producers unaffected).
+    source_patterns, while a non-routing_adjustment type with empty
+    source_patterns still approves (other producers unaffected).
+
+zones-v2-scope-keying P2 (D1): the C3 "other type approves" proof formerly used
+a zone_promotion proposal; that type is retired (no apply handler), so the proof
+now rides a live handler-backed type (producer_failure_recurrence) which likewise
+does NOT set requires_source_patterns. The assertion — the B2 gate is scoped to
+routing_adjustment ONLY — is unchanged.
 """
 
 from __future__ import annotations
@@ -19,8 +25,8 @@ import pytest
 
 from grove import flywheel_cli
 from grove.eval.proposal_queue import (
+    PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE,
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
-    PROPOSAL_TYPE_ZONE_PROMOTION,
     RoutingProposal,
     append,
     compute_proposal_id,
@@ -188,29 +194,34 @@ def test_routing_adjustment_with_cluster_approves(tmp_path: Path) -> None:
     assert read_all(path=queue) == []
 
 
-def test_zone_promotion_empty_cluster_still_approves(tmp_path: Path, monkeypatch) -> None:
+def test_non_routing_type_empty_cluster_still_approves(tmp_path: Path, monkeypatch) -> None:
     """The gate is scoped to routing_adjustment ONLY — other types keep
-    approving with empty source_patterns (no legacy retrofit)."""
+    approving with empty source_patterns (no retrofit).
+
+    zones-v2-scope-keying P2 (D1): the vehicle is now producer_failure_recurrence
+    (a live handler-backed type that does NOT require source_patterns); the retired
+    zone_promotion type formerly stood in for "any other type"."""
     queue = tmp_path / "proposals.jsonl"
-    payload = {
-        "tool": "terminal",
-        "pattern": r".*\.grove/skills/cal/.*",
-        "zone": "green",
-        "reason": "allow cal",
-    }
+    payload = {"producer": "some_producer"}
     p = RoutingProposal(
         proposal_id=compute_proposal_id(
-            type=PROPOSAL_TYPE_ZONE_PROMOTION, payload=payload, evidence=("t1",),
+            type=PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE,
+            payload=payload,
+            evidence=("t1",),
         ),
-        type=PROPOSAL_TYPE_ZONE_PROMOTION,
+        type=PROPOSAL_TYPE_PRODUCER_FAILURE_RECURRENCE,
         payload=payload,
         evidence=("t1",),
         eval_hash="",
         created_at="2026-06-01T00:00:00+00:00",
-        source_patterns=(),  # empty — must NOT block a zone_promotion
+        source_patterns=(),  # empty — must NOT block a non-routing_adjustment type
     )
     append(p, path=queue)
-    monkeypatch.setattr("grove.zone_rules.save_zone_rule", lambda **kw: None)
+    # Stub the pause writer so the apply lands without touching real ~/.grove.
+    monkeypatch.setattr(
+        "grove.eval.producer_pauses.set_producer_pause",
+        lambda *a, **kw: "applied",
+    )
     rc = flywheel_cli.cli_approve(p.proposal_id, queue_path=queue)
     assert rc == 0
     assert read_all(path=queue) == []

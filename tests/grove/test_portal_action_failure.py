@@ -192,7 +192,8 @@ class TestRenderRegistration:
         [
             ("routing_adjustment", {"rule": "downward", "add_intents": ["conversation"]}),
             ("skill_synthesis", {"skill_name": "foo"}),
-            ("zone_promotion", {"tool": "read_file", "pattern": "*.md"}),
+            # zones-v2-scope-keying P2 (D1): zone_promotion is retired (no apply
+            # handler) — dropped from the handler-backed set.
             ("skill_promotion", {"skill_name": "bar"}),
             ("pattern_promotion", {"intent_class": "x", "cacheable_type": "y"}),
         ],
