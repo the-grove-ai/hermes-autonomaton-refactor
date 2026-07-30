@@ -30,10 +30,10 @@ def test_agent_disabled_toolsets_suppresses_across_platforms():
     }
 
     cli_enabled = _get_platform_tools(config, "cli")
-    discord_enabled = _get_platform_tools(config, "discord")
+    telegram_enabled = _get_platform_tools(config, "telegram")
 
     assert "memory" not in cli_enabled
-    assert "memory" not in discord_enabled
+    assert "memory" not in telegram_enabled
 
 
 def test_agent_disabled_toolsets_with_explicit_platform_config():
@@ -81,18 +81,6 @@ def test_get_platform_tools_default_telegram_includes_messaging():
     enabled = _get_platform_tools({}, "telegram")
 
     assert "messaging" in enabled
-
-
-def test_get_platform_tools_default_whatsapp_includes_web():
-    enabled = _get_platform_tools({}, "whatsapp")
-
-    assert "web" in enabled
-
-
-def test_get_platform_tools_homeassistant_platform_keeps_homeassistant_toolset():
-    enabled = _get_platform_tools({}, "homeassistant")
-
-    assert "homeassistant" in enabled
 
 
 def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_token_set(monkeypatch):
@@ -620,19 +608,36 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
 
 
 class TestPlatformToolsetConsistency:
-    """Every platform in tools_config.PLATFORMS must have a matching toolset."""
+    """Two-directional platform↔toolset parity, keyed on the shared retired SET."""
 
     def test_all_platforms_have_toolset_definitions(self):
-        """Each platform's default_toolset must exist in TOOLSETS."""
+        """Two-directional parity keyed on the shared retired SET
+        (``tests/_retired_platforms.py``):
+
+        * non-retired — every ``PLATFORMS`` entry's ``default_toolset`` must
+          exist in TOOLSETS (a live platform with no toolset is a gap);
+        * retired — NO ``hermes-<platform>`` toolset survives for any excised
+          platform (a resurrected toolset is a loud diff here).
+        """
         from hermes_cli.tools_config import PLATFORMS
         from toolsets import TOOLSETS
+        from tests._retired_platforms import RETIRED
 
+        # Forward — non-retired platforms must have their toolset.
         for platform, meta in PLATFORMS.items():
             ts_name = meta["default_toolset"]
             assert ts_name in TOOLSETS, (
                 f"Platform {platform!r} references toolset {ts_name!r} "
                 f"which is not defined in toolsets.py"
             )
+
+        # Reverse — every retired platform's hermes-<platform> toolset is gone.
+        for p in RETIRED:
+            for ts_name in (f"hermes-{p.value}", f"hermes-{p.value.replace('_', '-')}"):
+                assert ts_name not in TOOLSETS, (
+                    f"Retired platform {p.value!r} still has toolset {ts_name!r} "
+                    f"in toolsets.py — an excised adapter must not keep a toolset."
+                )
 
     def test_gateway_toolset_includes_all_messaging_platforms(self):
         """hermes-gateway includes list should cover all messaging platforms."""
@@ -877,15 +882,6 @@ def test_get_platform_tools_second_pass_skips_fully_claimed_toolsets():
     assert "search" not in enabled
 
 
-def test_get_platform_tools_discord_both_off_by_default():
-    """Both `discord` and `discord_admin` are opt-in via `hermes tools`,
-    even on the Discord platform itself.  Users shouldn't auto-inherit 19
-    extra tools just because DISCORD_BOT_TOKEN is set."""
-    enabled = _get_platform_tools({}, "discord")
-    assert "discord" not in enabled
-    assert "discord_admin" not in enabled
-
-
 def test_discord_toolsets_in_configurable_toolsets():
     keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     assert "discord" in keys
@@ -912,14 +908,6 @@ def test_discord_toolsets_not_available_on_other_platforms():
     assert _toolset_allowed_for_platform("discord_admin", "discord")
 
 
-def test_discord_toolsets_user_enabled_are_honored():
-    """When the user opts in via `hermes tools`, the toolset appears."""
-    config = {"platform_toolsets": {"discord": ["web", "terminal", "discord"]}}
-    enabled = _get_platform_tools(config, "discord")
-    assert "discord" in enabled
-    assert "discord_admin" not in enabled
-
-
 def test_save_platform_tools_strips_restricted_toolsets():
     """Hand-edited or all-platforms checklist with `discord` selected for
     Telegram must be stripped at save time."""
@@ -931,19 +919,6 @@ def test_save_platform_tools_strips_restricted_toolsets():
     assert "discord_admin" not in saved
     assert "web" in saved
     assert "terminal" in saved
-
-
-def test_get_platform_tools_feishu_includes_doc_and_drive():
-    enabled = _get_platform_tools({}, "feishu")
-    assert "feishu_doc" in enabled
-    assert "feishu_drive" in enabled
-
-
-def test_get_platform_tools_feishu_tools_not_on_other_platforms():
-    for plat in ["cli", "telegram", "discord"]:
-        enabled = _get_platform_tools({}, plat)
-        assert "feishu_doc" not in enabled, f"feishu_doc leaked onto {plat}"
-        assert "feishu_drive" not in enabled, f"feishu_drive leaked onto {plat}"
 
 
 def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():

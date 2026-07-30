@@ -55,75 +55,11 @@ def _ensure_telegram_mock():
         sys.modules.setdefault(name, telegram_mod)
 
 
-# Ensure discord module is available (mock it if not installed)
-def _ensure_discord_mock():
-    """Install mock discord modules so DiscordAdapter can be imported."""
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return # Real library installed
-
-    discord_mod = MagicMock()
-    discord_mod.Intents.default.return_value = MagicMock()
-    discord_mod.DMChannel = type("DMChannel", (), {})
-    discord_mod.Thread = type("Thread", (), {})
-    discord_mod.ForumChannel = type("ForumChannel", (), {})
-    discord_mod.Forbidden = type("Forbidden", (Exception,), {})
-    discord_mod.MessageType = SimpleNamespace(default=0, reply=19)
-    discord_mod.Object = lambda *, id: SimpleNamespace(id=id)
-    discord_mod.Interaction = object
-    discord_mod.app_commands = SimpleNamespace(
-        describe=lambda **kwargs: (lambda fn: fn),
-        choices=lambda **kwargs: (lambda fn: fn),
-        Choice=lambda **kwargs: SimpleNamespace(**kwargs),
-    )
-    discord_mod.opus.is_loaded.return_value = True
-
-    ext_mod = MagicMock()
-    commands_mod = MagicMock()
-    commands_mod.Bot = MagicMock
-    ext_mod.commands = commands_mod
-
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
-    sys.modules.setdefault("discord.opus", discord_mod.opus)
-
-
-def _ensure_slack_mock():
-    """Install mock slack modules so SlackAdapter can be imported."""
-    if "slack_bolt" in sys.modules and hasattr(sys.modules["slack_bolt"], "__file__"):
-        return  # Real library installed
-
-    slack_bolt = MagicMock()
-    slack_bolt.async_app.AsyncApp = MagicMock
-    slack_bolt.adapter.socket_mode.async_handler.AsyncSocketModeHandler = MagicMock
-
-    slack_sdk = MagicMock()
-    slack_sdk.web.async_client.AsyncWebClient = MagicMock
-
-    for name, mod in [
-        ("slack_bolt", slack_bolt),
-        ("slack_bolt.async_app", slack_bolt.async_app),
-        ("slack_bolt.adapter", slack_bolt.adapter),
-        ("slack_bolt.adapter.socket_mode", slack_bolt.adapter.socket_mode),
-        ("slack_bolt.adapter.socket_mode.async_handler", slack_bolt.adapter.socket_mode.async_handler),
-        ("slack_sdk", slack_sdk),
-        ("slack_sdk.web", slack_sdk.web),
-        ("slack_sdk.web.async_client", slack_sdk.web.async_client),
-    ]:
-        sys.modules.setdefault(name, mod)
-
-
+# hermes-severance-v1 T2: discord/slack adapter mocks removed with their adapters.
 _ensure_telegram_mock()
-_ensure_discord_mock()
-_ensure_slack_mock()
 
-import discord  # noqa: E402 — mocked above
 from gateway.platforms.telegram import TelegramAdapter  # noqa: E402
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
 
-import gateway.platforms.slack as _slack_mod  # noqa: E402
-_slack_mod.SLACK_AVAILABLE = True
-from gateway.platforms.slack import SlackAdapter  # noqa: E402
 
 
 # Platform-generic factories
@@ -242,17 +178,10 @@ def make_adapter(platform: Platform, runner=None):
 
     config = PlatformConfig(enabled=True, token="e2e-test-token")
 
-    if platform == Platform.DISCORD:
-        from gateway.platforms.helpers import ThreadParticipationTracker
-        with patch.object(ThreadParticipationTracker, "_load", return_value=set()):
-            adapter = DiscordAdapter(config)
-        platform_key = Platform.DISCORD
-    elif platform == Platform.SLACK:
-        adapter = SlackAdapter(config)
-        platform_key = Platform.SLACK
-    else:
-        adapter = TelegramAdapter(config)
-        platform_key = Platform.TELEGRAM
+    # hermes-severance-v1 T2: only telegram survives among the built-in e2e
+    # adapters; discord/slack machinery was removed with their adapters.
+    adapter = TelegramAdapter(config)
+    platform_key = Platform.TELEGRAM
 
     adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="e2e-resp-1"))
     adapter.send_typing = AsyncMock()
@@ -273,7 +202,7 @@ async def send_and_capture(adapter, text: str, platform: Platform, **event_kwarg
 
 
 # Parametrized fixtures for platform-generic tests
-@pytest.fixture(params=[Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK], ids=["telegram", "discord", "slack"])
+@pytest.fixture(params=[Platform.TELEGRAM], ids=["telegram"])
 def platform(request):
     return request.param
 
@@ -310,127 +239,3 @@ THREAD_ID = 33333
 MESSAGE_ID_COUNTER = 0
 
 
-def _next_message_id() -> int:
-    global MESSAGE_ID_COUNTER
-    MESSAGE_ID_COUNTER += 1
-    return 70000 + MESSAGE_ID_COUNTER
-
-
-def make_fake_bot_user():
-    return SimpleNamespace(
-        id=BOT_USER_ID, name=BOT_USER_NAME,
-        display_name=BOT_USER_NAME, bot=True,
-    )
-
-
-def make_fake_guild(guild_id: int = GUILD_ID, name: str = "Test Server"):
-    return SimpleNamespace(id=guild_id, name=name)
-
-
-def make_fake_text_channel(channel_id: int = CHANNEL_ID, name: str = "general", guild=None):
-    return SimpleNamespace(
-        id=channel_id, name=name,
-        guild=guild or make_fake_guild(),
-        topic=None, type=0,
-    )
-
-
-def make_fake_dm_channel(channel_id: int = 55555):
-    ch = MagicMock(spec=[])
-    ch.id = channel_id
-    ch.name = "DM"
-    ch.topic = None
-    ch.__class__ = discord.DMChannel
-    return ch
-
-
-def make_fake_thread(thread_id: int = THREAD_ID, name: str = "test-thread", parent=None):
-    th = MagicMock(spec=[])
-    th.id = thread_id
-    th.name = name
-    th.parent = parent or make_fake_text_channel()
-    th.parent_id = th.parent.id
-    th.guild = th.parent.guild
-    th.topic = None
-    th.type = 11
-    th.__class__ = discord.Thread
-    return th
-
-
-def make_discord_message(
-    *, content: str = "hello", author=None, channel=None, mentions=None,
-    attachments=None, message_id: int = None,
-):
-    if message_id is None:
-        message_id = _next_message_id()
-    if author is None:
-        author = SimpleNamespace(
-            id=11111, name="testuser", display_name="testuser", bot=False,
-        )
-    if channel is None:
-        channel = make_fake_text_channel()
-    if mentions is None:
-        mentions = []
-    if attachments is None:
-        attachments = []
-
-    return SimpleNamespace(
-        id=message_id, content=content, author=author, channel=channel,
-        guild=getattr(channel, "guild", None),
-        mentions=mentions, attachments=attachments,
-        type=getattr(discord, "MessageType", SimpleNamespace()).default,
-        reference=None, created_at=datetime.now(timezone.utc),
-        create_thread=AsyncMock(),
-    )
-
-
-def get_response_text(adapter) -> str | None:
-    """Extract the response text from adapter.send() call args, or None if not called."""
-    if not adapter.send.called:
-        return None
-    return adapter.send.call_args[1].get("content") or adapter.send.call_args[0][1]
-
-
-def _make_discord_adapter_wired(runner=None):
-    """Create a DiscordAdapter wired to a GatewayRunner for e2e tests."""
-    if runner is None:
-        runner = make_runner(Platform.DISCORD)
-
-    config = PlatformConfig(enabled=True, token="e2e-test-token")
-    from gateway.platforms.helpers import ThreadParticipationTracker
-    with patch.object(ThreadParticipationTracker, "_load", return_value=set()):
-        adapter = DiscordAdapter(config)
-
-    bot_user = make_fake_bot_user()
-    adapter._client = SimpleNamespace(
-        user=bot_user,
-        get_channel=lambda _id: None,
-        fetch_channel=AsyncMock(),
-    )
-
-    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="e2e-resp-1"))
-    adapter.send_typing = AsyncMock()
-    adapter.set_message_handler(runner._handle_message)
-    runner.adapters[Platform.DISCORD] = adapter
-
-    return adapter, runner
-
-
-@pytest.fixture()
-def discord_setup():
-    return _make_discord_adapter_wired()
-
-
-@pytest.fixture()
-def discord_adapter(discord_setup):
-    return discord_setup[0]
-
-
-@pytest.fixture()
-def discord_runner(discord_setup):
-    return discord_setup[1]
-
-
-@pytest.fixture()
-def bot_user():
-    return make_fake_bot_user()

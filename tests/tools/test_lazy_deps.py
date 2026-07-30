@@ -318,14 +318,14 @@ class TestActiveFeatures:
         assert "platform.slack" not in active
 
     def test_multi_package_feature_active_if_any_present(self, monkeypatch):
-        # platform.slack has 3 packages; only one needs to be present
+        # skill.google_workspace has 3 packages; only one needs to be present
         # for the feature to count as active (user activated it before,
         # one transitive may have been uninstalled separately).
         monkeypatch.setattr(
             ld, "_is_present",
-            lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
+            lambda spec: ld._pkg_name_from_spec(spec) == "google-api-python-client",
         )
-        assert "platform.slack" in ld.active_features()
+        assert "skill.google_workspace" in ld.active_features()
 
 
 class TestRefreshActiveFeatures:

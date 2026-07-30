@@ -408,24 +408,6 @@ class TestGetSectionConfigSummary:
             result = setup_mod._get_section_config_summary({}, "gateway")
         assert result is None
 
-    def test_gateway_lists_platforms(self):
-        def env_side(key):
-            if key == "TELEGRAM_BOT_TOKEN":
-                return "tok123"
-            if key == "DISCORD_BOT_TOKEN":
-                return "disc456"
-            return ""
-
-        # Also patch gateway module's binding since _platform_status()
-        # reads from hermes_cli.gateway.get_env_value after the setup
-        # flows were unified via platform_registry.
-        import hermes_cli.gateway as gateway_mod
-        with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
-             patch.object(gateway_mod, "get_env_value", side_effect=env_side):
-            result = setup_mod._get_section_config_summary({}, "gateway")
-        assert "Telegram" in result
-        assert "Discord" in result
-
     def test_tools_returns_none_without_keys(self):
         with patch.object(setup_mod, "get_env_value", return_value=""):
             result = setup_mod._get_section_config_summary({}, "tools")
@@ -467,30 +449,6 @@ class TestGetSectionConfigSummary:
                 "model",
             )
         assert result == "MiniMax-M1"
-
-    def test_gateway_recognises_whatsapp_enabled(self):
-        """WhatsApp uses WHATSAPP_ENABLED (not WHATSAPP_PHONE_NUMBER_ID)."""
-        def env_side(key):
-            return "true" if key == "WHATSAPP_ENABLED" else ""
-
-        import hermes_cli.gateway as gateway_mod
-        with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
-             patch.object(gateway_mod, "get_env_value", side_effect=env_side):
-            result = setup_mod._get_section_config_summary({}, "gateway")
-        assert result is not None
-        assert "WhatsApp" in result
-
-    def test_gateway_recognises_signal_http_url(self):
-        """Signal uses SIGNAL_HTTP_URL (not SIGNAL_ACCOUNT)."""
-        def env_side(key):
-            return "http://signal.local" if key == "SIGNAL_HTTP_URL" else ""
-
-        import hermes_cli.gateway as gateway_mod
-        with patch.object(setup_mod, "get_env_value", side_effect=env_side), \
-             patch.object(gateway_mod, "get_env_value", side_effect=env_side):
-            result = setup_mod._get_section_config_summary({}, "gateway")
-        assert result is not None
-        assert "Signal" in result
 
     def test_model_ignores_bare_gh_token(self):
         """GH_TOKEN is commonly set for `gh` / git and must NOT count as a

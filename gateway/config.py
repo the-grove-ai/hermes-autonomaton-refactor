@@ -104,6 +104,19 @@ class Platform(Enum):
     members created on-demand by ``_missing_()`` so that
     ``Platform("irc")`` works without modifying this enum.  Dynamic members
     are cached in ``_value2member_map_`` for identity-stable comparisons.
+
+    hermes-severance-v1 T2 — RETIREMENT NOTE.
+    The only members with a live adapter are LOCAL (tty), TELEGRAM, and
+    API_SERVER. Every OTHER member below (DISCORD, WHATSAPP, SLACK, SIGNAL,
+    MATTERMOST, MATRIX, HOMEASSISTANT, EMAIL, SMS, DINGTALK, WEBHOOK,
+    MSGRAPH_WEBHOOK, FEISHU, WECOM, WECOM_CALLBACK, WEIXIN, BLUEBUBBLES,
+    QQBOT, YUANBAO) was RETIRED at the T2 adapter severance: its adapter
+    module is deleted and ``_create_adapter`` returns None for it (an enabled
+    config section falls through to a loud "No adapter available" boot skip).
+    The members are RETAINED as inert vocabulary because ~318 kept-code guards
+    still reference ``Platform.<X>``; removing the members + trimming those
+    guards is tracked separately as the filed dead-guard sweep. The retired
+    SET is pinned in tests/gateway/test_retired_platforms.py.
     """
     LOCAL = "local"
     TELEGRAM = "telegram"

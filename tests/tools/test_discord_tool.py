@@ -642,11 +642,6 @@ class TestRegistration:
 # ---------------------------------------------------------------------------
 
 class TestToolsetInclusion:
-    def test_discord_tools_in_hermes_discord_toolset(self):
-        from toolsets import TOOLSETS
-        assert "discord" in TOOLSETS["hermes-discord"]["tools"]
-        assert "discord_admin" in TOOLSETS["hermes-discord"]["tools"]
-
     def test_discord_tools_not_in_core_tools(self):
         from toolsets import _GROVE_CORE_TOOLS
         assert "discord" not in _GROVE_CORE_TOOLS
@@ -1114,30 +1109,6 @@ class TestModelToolsIntegration:
 
     def teardown_method(self):
         _reset_capability_cache()
-
-    @patch("tools.discord_tool._discord_request")
-    def test_discord_admin_schema_rebuilt_by_get_tool_definitions(
-        self, mock_req, monkeypatch,
-    ):
-        """When model_tools.get_tool_definitions runs with discord_admin
-        available, it should replace the static schema with the dynamic one."""
-        monkeypatch.setenv("DISCORD_BOT_TOKEN", "tok")
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"discord": {"server_actions": "list_guilds,server_info"}},
-        )
-        # Bot without GUILD_MEMBERS intent
-        mock_req.return_value = {"flags": 0}
-
-        from model_tools import get_tool_definitions
-        tools = get_tool_definitions(_REGISTRY, enabled_toolsets=["hermes-discord"], quiet_mode=True)
-        discord_admin_tool = next(
-            (t for t in tools if t.get("function", {}).get("name") == "discord_admin"),
-            None,
-        )
-        assert discord_admin_tool is not None, "discord_admin should be in the schema"
-        actions = discord_admin_tool["function"]["parameters"]["properties"]["action"]["enum"]
-        assert actions == ["list_guilds", "server_info"]
 
     @patch("tools.discord_tool._discord_request")
     def test_discord_tools_dropped_when_allowlist_empties_them(

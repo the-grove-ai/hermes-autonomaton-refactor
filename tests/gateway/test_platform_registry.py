@@ -9,6 +9,50 @@ from gateway.platform_registry import PlatformRegistry, PlatformEntry, platform_
 from gateway.config import Platform, PlatformConfig, GatewayConfig
 
 
+@pytest.fixture
+def _irc_bundled_plugin(tmp_path, monkeypatch):
+    """hermes-severance-v1 T2 retarget.
+
+    The bundled ``irc`` plugin platform was deleted at severance, so
+    ``Platform._scan_bundled_plugin_platforms`` no longer discovers it. Rebuild a
+    minimal *loadable* plugin platform (a dir with ``__init__.py`` + ``plugin.yaml``
+    per hermes_cli/plugins.py's loadability rules) in ``tmp_path`` and point the
+    enum scanner at it via monkeypatch. TEST-ONLY — no production change; the
+    ``Platform("irc")`` dynamic-member mechanism is exercised against a fixture
+    plugin instead of a now-deleted bundled one.
+    """
+    import gateway.config as gc
+
+    root = tmp_path / "platforms"
+    plug = root / "irc"
+    plug.mkdir(parents=True)
+    (plug / "__init__.py").write_text("")
+    (plug / "plugin.yaml").write_text("name: irc\nkind: platform\n")
+
+    def _scan(cls):
+        names = set()
+        if root.is_dir():
+            for child in sorted(root.iterdir()):
+                if (
+                    child.is_dir()
+                    and (child / "__init__.py").exists()
+                    and ((child / "plugin.yaml").exists() or (child / "plugin.yml").exists())
+                ):
+                    names.add(child.name.lower())
+        return names
+
+    monkeypatch.setattr(gc.Platform, "_scan_bundled_plugin_platforms", classmethod(_scan))
+
+    def _reset():
+        gc._Platform__bundled_plugin_names = None
+        gc.Platform._value2member_map_.pop("irc", None)
+        gc.Platform._member_map_.pop("IRC", None)
+
+    _reset()  # force _missing_ to re-scan against the fixture root
+    yield
+    _reset()
+
+
 # ── Platform enum dynamic members ─────────────────────────────────────────
 
 
@@ -19,18 +63,18 @@ class TestPlatformEnumDynamic:
         assert Platform.TELEGRAM.value == "telegram"
         assert Platform("telegram") is Platform.TELEGRAM
 
-    def test_dynamic_member_created(self):
+    def test_dynamic_member_created(self, _irc_bundled_plugin):
         p = Platform("irc")
         assert p.value == "irc"
         assert p.name == "IRC"
 
-    def test_dynamic_member_identity_stable(self):
+    def test_dynamic_member_identity_stable(self, _irc_bundled_plugin):
         """Same value returns same object (cached)."""
         a = Platform("irc")
         b = Platform("irc")
         assert a is b
 
-    def test_dynamic_member_case_normalised(self):
+    def test_dynamic_member_case_normalised(self, _irc_bundled_plugin):
         """Mixed case normalised to lowercase."""
         a = Platform("IRC")
         b = Platform("irc")
@@ -208,7 +252,7 @@ class TestPlatformRegistry:
 class TestGatewayConfigPluginPlatform:
     """Test that GatewayConfig parses and validates plugin platforms."""
 
-    def test_from_dict_accepts_plugin_platform(self):
+    def test_from_dict_accepts_plugin_platform(self, _irc_bundled_plugin):
         data = {
             "platforms": {
                 "telegram": {"enabled": True, "token": "test-token"},
@@ -335,7 +379,7 @@ class TestCronPlatformResolution:
         p = Platform("telegram")
         assert p is Platform.TELEGRAM
 
-    def test_plugin_platform_resolves(self):
+    def test_plugin_platform_resolves(self, _irc_bundled_plugin):
         """Plugin platform names create dynamic enum members."""
         p = Platform("irc")
         assert p.value == "irc"
