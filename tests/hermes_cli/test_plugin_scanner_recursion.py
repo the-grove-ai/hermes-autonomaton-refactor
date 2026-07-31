@@ -150,8 +150,8 @@ class TestCategoryNamespaceRecursion:
         mgr = PluginManager()
         mgr.discover_and_load(registry=_REGISTRY)
 
-        # The bundled plugins/image_gen/openai/ exists in the repo — filter
-        # it out so we're only asserting on the user-dir layout.
+        # Filter out any bundled plugins so we're only asserting on the
+        # user-dir layout.
         user_plugins_in_registry = {
             k for k, p in mgr._plugins.items() if p.manifest.source != "bundled"
         }
@@ -272,92 +272,3 @@ class TestBackendGate:
         loaded = mgr._plugins["some-backend"]
         assert loaded.enabled is False
         assert "exclusive" in (loaded.error or "")
-
-
-# ── Bundled backend auto-load (integration with real bundled plugin) ────────
-
-
-class TestBundledBackendAutoLoad:
-    def test_bundled_image_gen_openai_autoloads(self, tmp_path, monkeypatch):
-        """The bundled ``plugins/image_gen/openai/`` plugin loads without
-        any opt-in — it's ``kind: backend`` and shipped in-repo."""
-        import os
-        hermes_home = Path(os.environ["GROVE_HOME"])  # set by hermetic conftest fixture
-
-        mgr = PluginManager()
-        mgr.discover_and_load(registry=_REGISTRY)
-
-        assert "image_gen/openai" in mgr._plugins
-        loaded = mgr._plugins["image_gen/openai"]
-        assert loaded.manifest.source == "bundled"
-        assert loaded.manifest.kind == "backend"
-        assert loaded.enabled is True, f"error: {loaded.error}"
-
-
-# ── PluginContext.register_image_gen_provider ───────────────────────────────
-
-
-class TestRegisterImageGenProvider:
-    def test_accepts_valid_provider(self, tmp_path, monkeypatch):
-        from agent import image_gen_registry
-        from agent.image_gen_provider import ImageGenProvider
-
-        image_gen_registry._reset_for_tests()
-
-        class FakeProvider(ImageGenProvider):
-            @property
-            def name(self) -> str:
-                return "fake-test"
-
-            def generate(self, prompt, aspect_ratio="landscape", **kw):
-                return {"success": True, "image": "test://fake"}
-
-        import os
-        hermes_home = Path(os.environ["GROVE_HOME"])  # set by hermetic conftest fixture
-        plugin_dir = _write_plugin(
-            hermes_home / "plugins",
-            ["my-img-plugin"],
-            register_body=(
-                "from agent.image_gen_provider import ImageGenProvider\n"
-                "    class P(ImageGenProvider):\n"
-                "        @property\n"
-                "        def name(self): return 'fake-ctx'\n"
-                "        def generate(self, prompt, aspect_ratio='landscape', **kw):\n"
-                "            return {'success': True, 'image': 'x://y'}\n"
-                "    ctx.register_image_gen_provider(P())"
-            ),
-        )
-        _enable(hermes_home, "my-img-plugin")
-
-        mgr = PluginManager()
-        mgr.discover_and_load(registry=_REGISTRY)
-
-        assert mgr._plugins["my-img-plugin"].enabled is True
-        assert image_gen_registry.get_provider("fake-ctx") is not None
-
-        image_gen_registry._reset_for_tests()
-
-    def test_rejects_non_provider(self, tmp_path, monkeypatch, caplog):
-        from agent import image_gen_registry
-
-        image_gen_registry._reset_for_tests()
-
-        import os
-        hermes_home = Path(os.environ["GROVE_HOME"])  # set by hermetic conftest fixture
-        _write_plugin(
-            hermes_home / "plugins",
-            ["bad-img-plugin"],
-            register_body="ctx.register_image_gen_provider('not a provider')",
-        )
-        _enable(hermes_home, "bad-img-plugin")
-
-        with caplog.at_level("WARNING"):
-            mgr = PluginManager()
-            mgr.discover_and_load(registry=_REGISTRY)
-
-        # Plugin loaded (register returned normally) but nothing was
-        # registered in the provider registry.
-        assert mgr._plugins["bad-img-plugin"].enabled is True
-        assert image_gen_registry.get_provider("not a provider") is None
-
-        image_gen_registry._reset_for_tests()

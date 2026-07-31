@@ -962,17 +962,13 @@ DEFAULT_CONFIG = {
     # Text-to-speech configuration
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented
-    # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
-    # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
+    # limit (Edge 5000). Custom engines are declared as command-type providers
+    # under `tts.providers.<name>`.
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        "provider": "edge",  # "edge" (free); custom engines via tts.providers.<name>
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
-        },
-        "elevenlabs": {
-            "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam
-            "model_id": "eleven_multilingual_v2",
         },
         "openai": {
             "model": "gpt-4o-mini-tts",
@@ -988,25 +984,6 @@ DEFAULT_CONFIG = {
         "mistral": {
             "model": "voxtral-mini-tts-2603",
             "voice_id": "c69964a6-ab8b-4f8a-9465-ec0925096ec8",  # Paul - Neutral
-        },
-        "neutts": {
-            "ref_audio": "",  # Path to reference voice audio (empty = bundled default)
-            "ref_text": "",   # Path to reference voice transcript (empty = bundled default)
-            "model": "neuphonic/neutts-air-q4-gguf",  # HuggingFace model repo
-            "device": "cpu",  # cpu, cuda, or mps
-        },
-        "piper": {
-            # Voice name (e.g. "en_US-lessac-medium") downloaded on first
-            # use, OR an absolute path to a pre-downloaded .onnx file.
-            # Full voice list: https://github.com/OHF-Voice/piper1-gpl/blob/main/docs/VOICES.md
-            "voice": "en_US-lessac-medium",
-            # "voices_dir": "",        # Override voice cache dir; default = ~/.grove/cache/piper-voices/
-            # "use_cuda": False,       # Requires onnxruntime-gpu
-            # "length_scale": 1.0,     # 2.0 = twice as slow
-            # "noise_scale": 0.667,
-            # "noise_w_scale": 0.8,
-            # "volume": 1.0,
-            # "normalize_audio": True,
         },
     },
     
@@ -1346,8 +1323,8 @@ DEFAULT_CONFIG = {
         "acked_advisories": [],
         # Allow Hermes to lazy-install opt-in backend packages from PyPI
         # the first time the user enables a backend that needs them
-        # (e.g. installing ``elevenlabs`` when the user picks ElevenLabs as
-        # their TTS provider). Set to false to require explicit
+        # (e.g. installing an optional backend SDK when the user first enables
+        # the feature that needs it). Set to false to require explicit
         # ``pip install`` for everything beyond the base set — appropriate
         # for restricted networks, audited environments, or air-gapped
         # systems where any runtime install is unacceptable.
@@ -1566,7 +1543,7 @@ DEFAULT_CONFIG = {
 # Migration only mentions vars new since the user's previous version.
 ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
     3: ["FIRECRAWL_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "FAL_KEY"],
-    4: ["VOICE_TOOLS_OPENAI_KEY", "ELEVENLABS_API_KEY"],
+    4: ["VOICE_TOOLS_OPENAI_KEY"],
     5: ["WHATSAPP_ENABLED", "WHATSAPP_MODE", "WHATSAPP_ALLOWED_USERS",
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
@@ -2115,26 +2092,11 @@ OPTIONAL_ENV_VARS = {
         "password": False,
         "category": "tool",
     },
-    "FAL_KEY": {
-        "description": "FAL API key for image and video generation",
-        "prompt": "FAL API key",
-        "url": "https://fal.ai/",
-        "tools": ["image_generate", "video_generate"],
-        "password": True,
-        "category": "tool",
-    },
     "VOICE_TOOLS_OPENAI_KEY": {
         "description": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
         "prompt": "OpenAI API Key (for Whisper STT + TTS)",
         "url": "https://platform.openai.com/api-keys",
         "tools": ["voice_transcription", "openai_tts"],
-        "password": True,
-        "category": "tool",
-    },
-    "ELEVENLABS_API_KEY": {
-        "description": "ElevenLabs API key for premium text-to-speech voices",
-        "prompt": "ElevenLabs API key",
-        "url": "https://elevenlabs.io/",
         "password": True,
         "category": "tool",
     },
@@ -3887,8 +3849,8 @@ def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge *override* into *base*, preserving nested defaults.
 
     Keys in *override* take precedence. If both values are dicts the merge
-    recurses, so a user who overrides only ``tts.elevenlabs.voice_id`` will
-    keep the default ``tts.elevenlabs.model_id`` intact.
+    recurses, so a user who overrides only ``tts.edge.voice`` will keep the
+    other default ``tts.edge`` settings intact.
     """
     result = base.copy()
     for key, value in override.items():

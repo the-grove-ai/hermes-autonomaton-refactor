@@ -270,7 +270,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.vercel_runtime": {
         "type": "select",
         "description": "Vercel Sandbox runtime",
-        "options": ["node24", "node22", "python3.13"],  # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
+        "options": ["node24", "node22", "python3.13"],
     },
     "terminal.modal_mode": {
         "type": "select",

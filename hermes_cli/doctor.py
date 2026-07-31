@@ -8,7 +8,6 @@ import os
 import sys
 import subprocess
 import shutil
-import importlib.util
 from pathlib import Path
 
 from hermes_cli.config import get_project_root, get_hermes_home, get_env_path
@@ -25,7 +24,6 @@ load_hermes_dotenv(hermes_home=_env_path.parent, project_env=PROJECT_ROOT / ".en
 
 from hermes_cli.colors import Colors, color
 from hermes_cli.models import _GROVE_USER_AGENT
-from hermes_cli.vercel_auth import describe_vercel_auth
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
@@ -1070,30 +1068,9 @@ def run_doctor(args):
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
     
-    # Docker (optional)
+    # Terminal backend checks
     terminal_env = os.getenv("TERMINAL_ENV", "local")
-    if terminal_env == "docker":
-        if _safe_which("docker"):
-            # Check if docker daemon is running
-            try:
-                result = subprocess.run(["docker", "info"], capture_output=True, timeout=10)
-            except subprocess.TimeoutExpired:
-                result = None
-            if result is not None and result.returncode == 0:
-                check_ok("docker", "(daemon running)")
-            else:
-                check_fail("docker daemon not running")
-                issues.append("Start Docker daemon")
-        else:
-            check_fail("docker not found", "(required for TERMINAL_ENV=docker)")
-            issues.append("Install Docker or change TERMINAL_ENV")
-    elif _safe_which("docker"):
-        check_ok("docker", "(optional)")
-    elif _is_termux():
-        check_info("Docker backend is not available inside Termux (expected on Android)")
-    else:
-        check_warn("docker not found", "(optional)")
-    
+
     # SSH (if using ssh backend)
     if terminal_env == "ssh":
         ssh_host = os.getenv("TERMINAL_SSH_HOST")
@@ -1116,65 +1093,6 @@ def run_doctor(args):
         else:
             check_fail("TERMINAL_SSH_HOST not set", "(required for TERMINAL_ENV=ssh)")
             issues.append("Set TERMINAL_SSH_HOST in .env")
-    
-    # Daytona (if using daytona backend)
-    if terminal_env == "daytona":
-        daytona_key = os.getenv("DAYTONA_API_KEY")
-        if daytona_key:
-            check_ok("Daytona API key", "(configured)")
-        else:
-            check_fail("DAYTONA_API_KEY not set", "(required for TERMINAL_ENV=daytona)")
-            issues.append("Set DAYTONA_API_KEY environment variable")
-        try:
-            from daytona import Daytona  # noqa: F401 — SDK presence check
-            check_ok("daytona SDK", "(installed)")
-        except ImportError:
-            check_fail("daytona SDK not installed", "(pip install daytona)")
-            issues.append("Install daytona SDK: pip install daytona")
-
-    # Vercel Sandbox (if using vercel_sandbox backend)
-    if terminal_env == "vercel_sandbox":
-        runtime = os.getenv("TERMINAL_VERCEL_RUNTIME", "node24").strip() or "node24"
-        from tools.terminal_tool import _SUPPORTED_VERCEL_RUNTIMES
-        if runtime in _SUPPORTED_VERCEL_RUNTIMES:
-            check_ok("Vercel runtime", f"({runtime})")
-        else:
-            supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
-            check_fail("Vercel runtime unsupported", f"({runtime}; use {supported})")
-            issues.append(f"Set TERMINAL_VERCEL_RUNTIME to one of: {supported}")
-
-        disk = os.getenv("TERMINAL_CONTAINER_DISK", "51200").strip()
-        if disk in {"", "0", "51200"}:
-            check_ok("Vercel disk setting", "(uses platform default)")
-        else:
-            check_fail("Vercel custom disk unsupported", "(reset terminal.container_disk to 51200)")
-            issues.append("Vercel Sandbox does not support custom container_disk; use the shared default 51200")
-
-        if importlib.util.find_spec("vercel") is not None:
-            check_ok("vercel SDK", "(installed)")
-        else:
-            check_fail("vercel SDK not installed", "(pip install 'hermes-agent[vercel]')")
-            issues.append("Install the Vercel optional dependency: pip install 'hermes-agent[vercel]'")
-
-        auth_status = describe_vercel_auth()
-        if auth_status.ok:
-            check_ok("Vercel auth", f"({auth_status.label})")
-        elif auth_status.label.startswith("partial"):
-            check_fail("Vercel auth incomplete", f"({auth_status.label})")
-            issues.append("Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together")
-        else:
-            check_fail("Vercel auth not configured", f"({auth_status.label})")
-            issues.append(
-                "Configure Vercel Sandbox auth with VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID"
-            )
-        for line in auth_status.detail_lines:
-            check_info(f"Vercel auth {line}")
-
-        persistent = os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"1", "true", "yes", "on"}
-        if persistent:
-            check_info("Vercel persistence: snapshot filesystem only; live processes do not survive sandbox recreation")
-        else:
-            check_info("Vercel persistence: ephemeral filesystem")
 
     # Node.js + agent-browser (for browser automation tools)
     if _safe_which("node"):

@@ -2,15 +2,10 @@
 """
 Transcription Tools Module
 
-Provides speech-to-text transcription with six providers:
+Provides speech-to-text transcription via the local provider:
 
   - **local** (default, free) — faster-whisper running locally, no API key needed.
     Auto-downloads the model (~150 MB for ``base``) on first use.
-  - **groq** (free tier) — Groq Whisper API, requires ``GROQ_API_KEY``.
-  - **openai** (paid) — OpenAI Whisper API, requires ``VOICE_TOOLS_OPENAI_KEY``.
-  - **mistral** — Mistral Voxtral Transcribe API, requires ``MISTRAL_API_KEY``.
-  - **xai** — xAI Grok STT API, requires ``XAI_API_KEY``. High accuracy,
-    Inverse Text Normalization, diarization, 21 languages.
 
 Used by the messaging gateway to automatically transcribe voice messages
 sent by users on Telegram, Discord, WhatsApp, Slack, and Signal.
@@ -28,17 +23,13 @@ Usage::
 
 import logging
 import os
-import shlex
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Optional, Dict, Any
-from urllib.parse import urljoin
 
 from utils import is_truthy_value
-from tools.managed_tool_gateway import resolve_managed_tool_gateway
-from tools.tool_backend_helpers import managed_nous_tools_enabled, resolve_openai_audio_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +62,6 @@ def _safe_find_spec(module_name: str) -> bool:
 
 
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
-_HAS_OPENAI = _safe_find_spec("openai")
-_HAS_MISTRAL = _safe_find_spec("mistralai")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -81,22 +70,15 @@ _HAS_MISTRAL = _safe_find_spec("mistralai")
 DEFAULT_PROVIDER = "local"
 DEFAULT_LOCAL_MODEL = "base"
 DEFAULT_LOCAL_STT_LANGUAGE = "en"
-DEFAULT_STT_MODEL = os.getenv("STT_OPENAI_MODEL", "whisper-1")
-DEFAULT_GROQ_STT_MODEL = os.getenv("STT_GROQ_MODEL", "whisper-large-v3-turbo")
-DEFAULT_MISTRAL_STT_MODEL = os.getenv("STT_MISTRAL_MODEL", "voxtral-mini-latest")
-LOCAL_STT_COMMAND_ENV = "GROVE_LOCAL_STT_COMMAND"
 LOCAL_STT_LANGUAGE_ENV = "GROVE_LOCAL_STT_LANGUAGE"
 COMMON_LOCAL_BIN_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
-
-GROQ_BASE_URL = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
-OPENAI_BASE_URL = os.getenv("STT_OPENAI_BASE_URL", "https://api.openai.com/v1")
-XAI_STT_BASE_URL = os.getenv("XAI_STT_BASE_URL", "https://api.x.ai/v1")
 
 SUPPORTED_FORMATS = {".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".aac", ".flac"}
 LOCAL_NATIVE_AUDIO_FORMATS = {".wav", ".aiff", ".aif"}
 MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
-# Known model sets for auto-correction
+# Cloud model names retained only so the local-model normalizer can detect
+# and reject them (mapping to the default faster-whisper size).
 OPENAI_MODELS = {"whisper-1", "gpt-4o-mini-transcribe", "gpt-4o-transcribe"}
 GROQ_MODELS = {"whisper-large-v3", "whisper-large-v3-turbo", "distil-whisper-large-v3-en"}
 
@@ -127,15 +109,6 @@ def is_stt_enabled(stt_config: Optional[dict] = None) -> bool:
     return is_truthy_value(enabled, default=True)
 
 
-def _has_openai_audio_backend() -> bool:
-    """Return True when OpenAI audio can use config credentials, env credentials, or the managed gateway."""
-    try:
-        _resolve_openai_audio_client_config()
-        return True
-    except ValueError:
-        return False
-
-
 def _find_binary(binary_name: str) -> Optional[str]:
     """Find a local binary, checking common Homebrew/local prefixes as well as PATH."""
     for directory in COMMON_LOCAL_BIN_DIRS:
@@ -147,29 +120,6 @@ def _find_binary(binary_name: str) -> Optional[str]:
 
 def _find_ffmpeg_binary() -> Optional[str]:
     return _find_binary("ffmpeg")
-
-
-def _find_whisper_binary() -> Optional[str]:
-    return _find_binary("whisper")
-
-
-def _get_local_command_template() -> Optional[str]:
-    configured = os.getenv(LOCAL_STT_COMMAND_ENV, "").strip()
-    if configured:
-        return configured
-
-    whisper_binary = _find_whisper_binary()
-    if whisper_binary:
-        quoted_binary = shlex.quote(whisper_binary)
-        return (
-            f"{quoted_binary} {{input_path}} --model {{model}} --output_format txt "
-            "--output_dir {output_dir} --language {language}"
-        )
-    return None
-
-
-def _has_local_command() -> bool:
-    return _get_local_command_template() is not None
 
 
 def _normalize_local_model(model_name: Optional[str]) -> str:
@@ -193,112 +143,40 @@ def _normalize_local_model(model_name: Optional[str]) -> str:
     return model_name
 
 
-def _normalize_local_command_model(model_name: Optional[str]) -> str:
-    return _normalize_local_model(model_name)
-
-
 def _get_provider(stt_config: dict) -> str:
     """Determine which STT provider to use.
 
-    When ``stt.provider`` is explicitly set in config, that choice is
-    honoured — no silent cloud fallback.  When no provider is configured,
-    auto-detect tries: local > groq (free) > openai (paid).
+    The local faster-whisper backend is the only supported provider. An
+    explicit ``stt.provider`` other than ``local`` is honoured only if it
+    resolves to a working local backend; otherwise transcription reports
+    ``none`` rather than silently falling back to a cloud service.
     """
     if not is_stt_enabled(stt_config):
         return "none"
 
-    explicit = "provider" in stt_config
     provider = stt_config.get("provider", DEFAULT_PROVIDER)
 
-    # --- Explicit provider: respect the user's choice ----------------------
+    if provider == "local" or not stt_config.get("provider"):
+        if _HAS_FASTER_WHISPER:
+            return "local"
+        logger.warning(
+            "STT provider 'local' configured but unavailable "
+            "(install faster-whisper)"
+        )
+        return "none"
 
-    if explicit:
-        if provider == "local":
-            if _HAS_FASTER_WHISPER:
-                return "local"
-            if _has_local_command():
-                return "local_command"
-            logger.warning(
-                "STT provider 'local' configured but unavailable "
-                "(install faster-whisper or set GROVE_LOCAL_STT_COMMAND)"
-            )
-            return "none"
-
-        if provider == "local_command":
-            if _has_local_command():
-                return "local_command"
-            if _HAS_FASTER_WHISPER:
-                logger.info("Local STT command unavailable, using local faster-whisper")
-                return "local"
-            logger.warning(
-                "STT provider 'local_command' configured but unavailable"
-            )
-            return "none"
-
-        if provider == "groq":
-            if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
-                return "groq"
-            logger.warning(
-                "STT provider 'groq' configured but GROQ_API_KEY not set"
-            )
-            return "none"
-
-        if provider == "openai":
-            if _HAS_OPENAI and _has_openai_audio_backend():
-                return "openai"
-            logger.warning(
-                "STT provider 'openai' configured but no API key available"
-            )
-            return "none"
-
-        if provider == "mistral":
-            # `mistralai` PyPI package was quarantined on 2026-05-12 after a
-            # malicious 2.4.6 release. Refuse to use this provider until it's
-            # available again so we surface a clear message instead of an
-            # opaque ImportError mid-call.
-            logger.warning(
-                "STT provider 'mistral' (Voxtral Transcribe) is temporarily "
-                "disabled — `mistralai` PyPI package is quarantined "
-                "(malicious 2.4.6 release on 2026-05-12). Falling back to "
-                "another provider. Set stt.provider in config.yaml to 'local' "
-                "or 'openai' to silence this warning."
-            )
-            return "none"
-
-        if provider == "xai":
-            from tools.xai_http import resolve_xai_http_credentials
-
-            if resolve_xai_http_credentials().get("api_key"):
-                return "xai"
-            logger.warning(
-                "STT provider 'xai' configured but no xAI credentials are available"
-            )
-            return "none"
-
-        return provider  # Unknown — let it fail downstream
-
-    # --- Auto-detect (no explicit provider): local > groq > openai > xai ---
-    # mistral is intentionally skipped while `mistralai` is quarantined on
-    # PyPI (malicious 2.4.6 release on 2026-05-12).
-
+    # Any non-local provider is no longer supported. Fall back to local
+    # when faster-whisper is available, otherwise report none.
     if _HAS_FASTER_WHISPER:
+        logger.info(
+            "STT provider '%s' is not supported; using local faster-whisper",
+            provider,
+        )
         return "local"
-    if _has_local_command():
-        return "local_command"
-    if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
-        logger.info("No local STT available, using Groq Whisper API")
-        return "groq"
-    if _HAS_OPENAI and _has_openai_audio_backend():
-        logger.info("No local STT available, using OpenAI Whisper API")
-        return "openai"
-    try:
-        from tools.xai_http import resolve_xai_http_credentials
-
-        if resolve_xai_http_credentials().get("api_key"):
-            logger.info("No local STT available, using xAI Grok STT API")
-            return "xai"
-    except Exception:
-        pass
+    logger.warning(
+        "STT provider '%s' is not supported and faster-whisper is not "
+        "installed", provider,
+    )
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -480,332 +358,6 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
         return None, f"Failed to convert audio for local STT: {details}"
 
 
-def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Run the configured local STT command template and read back a .txt transcript."""
-    command_template = _get_local_command_template()
-    if not command_template:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": (
-                f"{LOCAL_STT_COMMAND_ENV} not configured and no local whisper binary was found"
-            ),
-        }
-
-    # Language: config.yaml (stt.local.language) > env var > "en" default.
-    language = (
-        _load_stt_config().get("local", {}).get("language")
-        or os.getenv(LOCAL_STT_LANGUAGE_ENV)
-        or DEFAULT_LOCAL_STT_LANGUAGE
-    )
-    normalized_model = _normalize_local_command_model(model_name)
-
-    try:
-        with tempfile.TemporaryDirectory(prefix="hermes-local-stt-") as output_dir:
-            prepared_input, prep_error = _prepare_local_audio(file_path, output_dir)
-            if prep_error:
-                return {"success": False, "transcript": "", "error": prep_error}
-
-            command = command_template.format(
-                input_path=shlex.quote(prepared_input),
-                output_dir=shlex.quote(output_dir),
-                language=shlex.quote(language),
-                model=shlex.quote(normalized_model),
-            )
-            # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
-            use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
-            if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
-            else:
-                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
-            
-
-            txt_files = sorted(Path(output_dir).glob("*.txt"))
-            if not txt_files:
-                return {
-                    "success": False,
-                    "transcript": "",
-                    "error": "Local STT command completed but did not produce a .txt transcript",
-                }
-
-            transcript_text = txt_files[0].read_text(encoding="utf-8").strip()
-            logger.info(
-                "Transcribed %s via local STT command (%s, %d chars)",
-                Path(file_path).name,
-                normalized_model,
-                len(transcript_text),
-            )
-            return {"success": True, "transcript": transcript_text, "provider": "local_command"}
-
-    except KeyError as e:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": f"Invalid {LOCAL_STT_COMMAND_ENV} template, missing placeholder: {e}",
-        }
-    except subprocess.CalledProcessError as e:
-        details = e.stderr.strip() or e.stdout.strip() or str(e)
-        logger.error("Local STT command failed for %s: %s", file_path, details)
-        return {"success": False, "transcript": "", "error": f"Local STT failed: {details}"}
-    except Exception as e:
-        logger.error("Unexpected error during local command transcription: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Local transcription failed: {e}"}
-
-# ---------------------------------------------------------------------------
-# Provider: groq (Whisper API — free tier)
-# ---------------------------------------------------------------------------
-
-
-def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using Groq Whisper API (free tier available)."""
-    api_key = get_env_value("GROQ_API_KEY")
-    if not api_key:
-        return {"success": False, "transcript": "", "error": "GROQ_API_KEY not set"}
-
-    if not _HAS_OPENAI:
-        return {"success": False, "transcript": "", "error": "openai package not installed"}
-
-    # Auto-correct model if caller passed an OpenAI-only model
-    if model_name in OPENAI_MODELS:
-        logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
-        model_name = DEFAULT_GROQ_STT_MODEL
-
-    try:
-        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-        client = OpenAI(api_key=api_key, base_url=GROQ_BASE_URL, timeout=30, max_retries=0)
-        try:
-            with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model=model_name,
-                    file=audio_file,
-                    response_format="text",
-                )
-
-            transcript_text = str(transcription).strip()
-            logger.info("Transcribed %s via Groq API (%s, %d chars)",
-                         Path(file_path).name, model_name, len(transcript_text))
-
-            return {"success": True, "transcript": transcript_text, "provider": "groq"}
-        finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
-
-    except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
-    except APIConnectionError as e:
-        return {"success": False, "transcript": "", "error": f"Connection error: {e}"}
-    except APITimeoutError as e:
-        return {"success": False, "transcript": "", "error": f"Request timeout: {e}"}
-    except APIError as e:
-        return {"success": False, "transcript": "", "error": f"API error: {e}"}
-    except Exception as e:
-        logger.error("Groq transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
-
-# ---------------------------------------------------------------------------
-# Provider: openai (Whisper API)
-# ---------------------------------------------------------------------------
-
-
-def _transcribe_openai(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using OpenAI Whisper API (paid)."""
-    try:
-        api_key, base_url = _resolve_openai_audio_client_config()
-    except ValueError as exc:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": str(exc),
-        }
-
-    if not _HAS_OPENAI:
-        return {"success": False, "transcript": "", "error": "openai package not installed"}
-
-    # Auto-correct model if caller passed a Groq-only model
-    if model_name in GROQ_MODELS:
-        logger.info("Model %s not available on OpenAI, using %s", model_name, DEFAULT_STT_MODEL)
-        model_name = DEFAULT_STT_MODEL
-
-    try:
-        from openai import OpenAI, APIError, APIConnectionError, APITimeoutError
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=30, max_retries=0)
-        try:
-            with open(file_path, "rb") as audio_file:
-                transcription = client.audio.transcriptions.create(
-                    model=model_name,
-                    file=audio_file,
-                    response_format="text" if model_name == "whisper-1" else "json",
-                )
-
-            transcript_text = _extract_transcript_text(transcription)
-            logger.info("Transcribed %s via OpenAI API (%s, %d chars)",
-                         Path(file_path).name, model_name, len(transcript_text))
-
-            return {"success": True, "transcript": transcript_text, "provider": "openai"}
-        finally:
-            close = getattr(client, "close", None)
-            if callable(close):
-                close()
-
-    except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
-    except APIConnectionError as e:
-        return {"success": False, "transcript": "", "error": f"Connection error: {e}"}
-    except APITimeoutError as e:
-        return {"success": False, "transcript": "", "error": f"Request timeout: {e}"}
-    except APIError as e:
-        return {"success": False, "transcript": "", "error": f"API error: {e}"}
-    except Exception as e:
-        logger.error("OpenAI transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Transcription failed: {e}"}
-
-# ---------------------------------------------------------------------------
-# Provider: mistral (Voxtral Transcribe API)
-# ---------------------------------------------------------------------------
-
-
-def _transcribe_mistral(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using Mistral Voxtral Transcribe API.
-
-    Uses the ``mistralai`` Python SDK to call ``/v1/audio/transcriptions``.
-    Requires ``MISTRAL_API_KEY`` environment variable.
-    """
-    api_key = get_env_value("MISTRAL_API_KEY")
-    if not api_key:
-        return {"success": False, "transcript": "", "error": "MISTRAL_API_KEY not set"}
-
-    try:
-        from mistralai.client import Mistral
-
-        with Mistral(api_key=api_key) as client:
-            with open(file_path, "rb") as audio_file:
-                result = client.audio.transcriptions.complete(
-                    model=model_name,
-                    file={"content": audio_file, "file_name": Path(file_path).name},
-                )
-
-            transcript_text = _extract_transcript_text(result)
-            logger.info(
-                "Transcribed %s via Mistral API (%s, %d chars)",
-                Path(file_path).name, model_name, len(transcript_text),
-            )
-            return {"success": True, "transcript": transcript_text, "provider": "mistral"}
-
-    except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
-    except Exception as e:
-        logger.error("Mistral transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Mistral transcription failed: {type(e).__name__}"}
-
-
-# ---------------------------------------------------------------------------
-# Provider: xAI (Grok STT API)
-# ---------------------------------------------------------------------------
-
-
-def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
-    """Transcribe using xAI Grok STT API.
-
-    Uses the ``POST /v1/stt`` REST endpoint with multipart/form-data.
-    Supports Inverse Text Normalization, diarization, and word-level timestamps.
-    Requires ``XAI_API_KEY`` environment variable.
-    """
-    from tools.xai_http import resolve_xai_http_credentials
-
-    creds = resolve_xai_http_credentials()
-    api_key = str(creds.get("api_key") or "").strip()
-    if not api_key:
-        return {
-            "success": False,
-            "transcript": "",
-            "error": "No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY",
-        }
-
-    stt_config = _load_stt_config()
-    xai_config = stt_config.get("xai", {})
-    base_url = str(
-        xai_config.get("base_url")
-        or get_env_value("XAI_STT_BASE_URL")
-        or creds.get("base_url")
-        or XAI_STT_BASE_URL
-    ).strip().rstrip("/")
-    language = str(
-        xai_config.get("language")
-        or os.getenv("GROVE_LOCAL_STT_LANGUAGE")
-        or DEFAULT_LOCAL_STT_LANGUAGE
-    ).strip()
-    # .get("format", True) already defaults to True when the key is absent;
-    # is_truthy_value only normalizes truthy/falsy strings from config.
-    use_format = is_truthy_value(xai_config.get("format", True))
-    use_diarize = is_truthy_value(xai_config.get("diarize", False))
-
-    try:
-        import requests
-        from tools.xai_http import hermes_xai_user_agent
-
-        data: Dict[str, str] = {}
-        if language:
-            data["language"] = language
-        if use_format:
-            data["format"] = "true"
-        if use_diarize:
-            data["diarize"] = "true"
-
-        with open(file_path, "rb") as audio_file:
-            response = requests.post(
-                f"{base_url}/stt",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "User-Agent": hermes_xai_user_agent(),
-                },
-                files={
-                    "file": (Path(file_path).name, audio_file),
-                },
-                data=data,
-                timeout=120,
-            )
-
-        if response.status_code != 200:
-            detail = ""
-            try:
-                err_body = response.json()
-                detail = err_body.get("error", {}).get("message", "") or response.text[:300]
-            except Exception:
-                detail = response.text[:300]
-            return {
-                "success": False,
-                "transcript": "",
-                "error": f"xAI STT API error (HTTP {response.status_code}): {detail}",
-            }
-
-        result = response.json()
-        transcript_text = result.get("text", "").strip()
-
-        if not transcript_text:
-            return {
-                "success": False,
-                "transcript": "",
-                "error": "xAI STT returned empty transcript",
-            }
-
-        logger.info(
-            "Transcribed %s via xAI Grok STT (lang=%s, %.1fs audio, %d chars)",
-            Path(file_path).name,
-            result.get("language", language),
-            result.get("duration", 0),
-            len(transcript_text),
-        )
-
-        return {"success": True, "transcript": transcript_text, "provider": "xai"}
-
-    except PermissionError:
-        return {"success": False, "transcript": "", "error": f"Permission denied: {file_path}"}
-    except Exception as e:
-        logger.error("xAI STT transcription failed: %s", e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"xAI STT transcription failed: {e}"}
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -815,9 +367,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
     """
     Transcribe an audio file using the configured STT provider.
 
-    Provider priority:
-      1. User config (``stt.provider`` in config.yaml)
-      2. Auto-detect: local faster-whisper (free) > Groq (free tier) > OpenAI (paid)
+    The local faster-whisper backend is the only supported provider.
 
     Args:
         file_path: Absolute path to the audio file to transcribe.
@@ -853,84 +403,12 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         )
         return _transcribe_local(file_path, model_name)
 
-    if provider == "local_command":
-        local_cfg = stt_config.get("local", {})
-        model_name = _normalize_local_command_model(
-            model or local_cfg.get("model", DEFAULT_LOCAL_MODEL)
-        )
-        return _transcribe_local_command(file_path, model_name)
-
-    if provider == "groq":
-        model_name = model or DEFAULT_GROQ_STT_MODEL
-        return _transcribe_groq(file_path, model_name)
-
-    if provider == "openai":
-        openai_cfg = stt_config.get("openai", {})
-        model_name = model or openai_cfg.get("model", DEFAULT_STT_MODEL)
-        return _transcribe_openai(file_path, model_name)
-
-    if provider == "mistral":
-        mistral_cfg = stt_config.get("mistral", {})
-        model_name = model or mistral_cfg.get("model", DEFAULT_MISTRAL_STT_MODEL)
-        return _transcribe_mistral(file_path, model_name)
-
-    if provider == "xai":
-        # xAI Grok STT doesn't use a model parameter — pass through for logging
-        model_name = model or "grok-stt"
-        return _transcribe_xai(file_path, model_name)
-
     # No provider available
     return {
         "success": False,
         "transcript": "",
         "error": (
             "No STT provider available. Install faster-whisper for free local "
-            f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
-            "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
-            "or OPENAI_API_KEY for the OpenAI Whisper API."
+            "transcription (pip install faster-whisper)."
         ),
     }
-
-
-def _resolve_openai_audio_client_config() -> tuple[str, str]:
-    """Return direct OpenAI audio config or a managed gateway fallback."""
-    stt_config = _load_stt_config()
-    openai_cfg = stt_config.get("openai", {})
-    cfg_api_key = openai_cfg.get("api_key", "")
-    cfg_base_url = openai_cfg.get("base_url", "")
-    if cfg_api_key:
-        return cfg_api_key, (cfg_base_url or OPENAI_BASE_URL)
-
-    direct_api_key = resolve_openai_audio_api_key()
-    if direct_api_key:
-        return direct_api_key, OPENAI_BASE_URL
-
-    managed_gateway = resolve_managed_tool_gateway("openai-audio")
-    if managed_gateway is None:
-        message = "Neither stt.openai.api_key in config nor VOICE_TOOLS_OPENAI_KEY/OPENAI_API_KEY is set"
-        if managed_nous_tools_enabled():
-            message += ", and the managed OpenAI audio gateway is unavailable"
-        raise ValueError(message)
-
-    return managed_gateway.nous_user_token, urljoin(
-        f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
-    )
-
-
-def _extract_transcript_text(transcription: Any) -> str:
-    """Normalize text and JSON transcription responses to a plain string."""
-    if isinstance(transcription, str):
-        return transcription.strip()
-
-    if hasattr(transcription, "text"):
-        value = getattr(transcription, "text")
-        if isinstance(value, str):
-            return value.strip()
-
-    if isinstance(transcription, dict):
-        value = transcription.get("text")
-        if isinstance(value, str):
-            return value.strip()
-
-    return str(transcription).strip()

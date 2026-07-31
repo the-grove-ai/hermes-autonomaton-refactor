@@ -48,8 +48,8 @@ _GROVE_CORE_TOOLS = [
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
-    "vision_analyze", "image_generate",
+    # Vision (image analysis)
+    "vision_analyze",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -150,23 +150,6 @@ TOOLSETS = {
         "includes": []
     },
     
-    "image_gen": {
-        "description": "Creative generation tools (images)",
-        "tools": ["image_generate"],
-        "includes": []
-    },
-
-    "video_gen": {
-        "description": (
-            "Video generation tools. Single ``video_generate`` tool covers "
-            "text-to-video (prompt only) and image-to-video (prompt + "
-            "image_url) — the active backend auto-routes. Configure via "
-            "``hermes tools`` → Video Generation."
-        ),
-        "tools": ["video_generate"],
-        "includes": []
-    },
-
     "computer_use": {
         "description": (
             "Background macOS desktop control via cua-driver — screenshots, "
@@ -337,16 +320,6 @@ TOOLSETS = {
         "includes": []
     },
 
-    "spotify": {
-        "description": "Native Spotify playback, search, playlist, album, and library tools",
-        "tools": [
-            "spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
-            "spotify_playlists", "spotify_albums", "spotify_library",
-        ],
-        "includes": []
-    },
-
-
     # Scenario-specific toolsets
     
     "debugging": {
@@ -358,7 +331,7 @@ TOOLSETS = {
     "safe": {
         "description": "Safe toolkit without terminal access",
         "tools": [],
-        "includes": ["web", "vision", "image_gen"]
+        "includes": ["web", "vision"]
     },
     
     # ==========================================================================

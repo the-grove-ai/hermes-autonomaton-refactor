@@ -105,15 +105,14 @@ class TestResolveCommandProviderConfig:
         cfg = {"providers": {"piper-cli": {"type": "command", "command": "x"}}}
         assert _resolve_command_provider_config("PIPER-CLI", cfg) is not None
 
-    def test_native_piper_cannot_be_shadowed_by_command_entry(self):
-        """Regression guard for PR that added native Piper as a built-in.
-        A user's ``tts.providers.piper`` must not override the built-in."""
+    def test_native_edge_cannot_be_shadowed_by_command_entry(self):
+        """A user's ``tts.providers.edge`` must not override the built-in."""
         cfg = {
             "providers": {
-                "piper": {"type": "command", "command": "some-script"},
+                "edge": {"type": "command", "command": "some-script"},
             },
         }
-        assert _resolve_command_provider_config("piper", cfg) is None
+        assert _resolve_command_provider_config("edge", cfg) is None
 
 
 class TestGetNamedProviderConfig:
@@ -129,9 +128,9 @@ class TestGetNamedProviderConfig:
         }
 
     def test_builtin_names_do_not_leak_through_legacy_path(self):
-        """``tts.openai`` must never be mistaken for a command provider."""
-        cfg = {"openai": {"command": "oops", "type": "command"}}
-        assert _get_named_provider_config(cfg, "openai") == {}
+        """``tts.edge`` must never be mistaken for a command provider."""
+        cfg = {"edge": {"command": "oops", "type": "command"}}
+        assert _get_named_provider_config(cfg, "edge") == {}
 
 
 class TestIsCommandProviderConfig:
@@ -154,7 +153,7 @@ class TestIterCommandProviders:
     def test_iterates_only_user_command_providers(self):
         cfg = {
             "providers": {
-                "openai": {"type": "command", "command": "shouldnt show up"},
+                "edge": {"type": "command", "command": "shouldnt show up"},
                 "piper-cli": {"type": "command", "command": "piper-cli"},
                 "voxcpm": {"type": "command", "command": "voxcpm"},
                 "broken": {"type": "command", "command": ""},

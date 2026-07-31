@@ -31,7 +31,6 @@ from tools.web_tools import (
     web_search_tool,
     web_extract_tool,
     web_crawl_tool,
-    check_firecrawl_api_key,
     check_web_api_key,
     check_auxiliary_model,
     _get_backend,
@@ -575,8 +574,7 @@ class WebToolsTester:
             "results": self.test_results,
             "environment": {
                 "web_backend": _get_backend() if check_web_api_key() else None,
-                "firecrawl_api_key": check_firecrawl_api_key(),
-                "parallel_api_key": bool(os.getenv("PARALLEL_API_KEY")),
+                "tavily_api_key": bool(os.getenv("TAVILY_API_KEY")),
                 "auxiliary_model": check_auxiliary_model(),
             }
         }

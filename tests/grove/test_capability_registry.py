@@ -322,13 +322,14 @@ def test_real_records_disclosure_modes_match_golden():
         assert caps[rid].trigger.disclosure is TD.PROACTIVE, rid
         assert caps[rid].trigger.always, rid
     # Class B2 / C — proactive but INTENT-GATED (always:false, non-empty intents).
-    # native-presence-declared-v1: discord / spotify_write / discord_admin /
-    # computer_use were swept to always:true with intents RETAINED (live for the payload hook) (now proactive
-    # CORE). notion_write is the SOLE surviving proactive + intent-gated record.
+    # native-presence-declared-v1: discord / discord_admin / computer_use were
+    # swept to always:true with intents RETAINED (live for the payload hook) (now
+    # proactive CORE). notion_write is the SOLE surviving proactive + intent-gated
+    # record. (spotify_write dropped by hermes-severance-v1.)
     assert caps["notion_write"].trigger.disclosure is TD.PROACTIVE
     assert (not caps["notion_write"].trigger.always
             and caps["notion_write"].trigger.intents)
-    for rid in ("discord", "spotify_write", "discord_admin", "computer_use"):
+    for rid in ("discord", "discord_admin", "computer_use"):
         assert caps[rid].trigger.disclosure is TD.PROACTIVE, rid
         assert caps[rid].trigger.always, rid  # intents RETAINED (payload hook, run_agent.py:3798); presence-inert
     # core + intent records stay proactive. invoke_skill joined this cohort

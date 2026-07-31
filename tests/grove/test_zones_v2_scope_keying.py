@@ -242,7 +242,7 @@ _BASELINE_YELLOW = frozenset({
     "drive_delete", "drive_share", "drive_upload", "execute_code",
     "feishu_drive_add_comment", "feishu_drive_reply_comment",
     "file_operations.write", "gmail_modify", "gmail_reply", "gmail_send",
-    "ha_call_service", "image_generate", "invoke_skill", "kanban_block",
+    "ha_call_service", "invoke_skill", "kanban_block",
     "kanban_comment", "kanban_complete", "kanban_create", "kanban_heartbeat",
     "kanban_link", "kanban_unblock", "mcp_notion_notion_create_comment",
     "mcp_notion_notion_create_database", "mcp_notion_notion_create_pages",
@@ -251,9 +251,7 @@ _BASELINE_YELLOW = frozenset({
     "mcp_notion_notion_update_page", "mcp_notion_notion_update_view",
     "mixture_of_agents", "patch", "process", "reject_proposal",
     "send_message", "set_publication_state", "sheets_append", "sheets_create",
-    "sheets_update", "skill_manage", "skill_manage.create", "spotify_albums",
-    "spotify_devices", "spotify_library", "spotify_playback", "spotify_playlists",
-    "spotify_queue", "spotify_search", "text_to_speech", "video_generate",
+    "sheets_update", "skill_manage", "skill_manage.create", "text_to_speech",
     "write_file", "yb_send_dm", "yb_send_sticker",
 })
 _BASELINE_RED = frozenset({
@@ -273,8 +271,11 @@ def _repo_v2_classifier() -> ZoneClassifier:
 def test_baseline_counts_preserved() -> None:
     # standing-grants-v1 (SPEC constraint 3) — revoke_grant reclassified
     # external_effect(YELLOW) → governance(RED): YELLOW 70→69, RED 7→8.
+    # hermes-severance-v1 T3 — media-gen + spotify severed: YELLOW 69→60
+    # (dropped image_generate, video_generate, spotify_albums/devices/library/
+    # playback/playlists/queue/search).
     assert len(_BASELINE_GREEN) == 59
-    assert len(_BASELINE_YELLOW) == 69
+    assert len(_BASELINE_YELLOW) == 60
     assert len(_BASELINE_RED) == 8
 
 

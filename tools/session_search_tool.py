@@ -566,7 +566,7 @@ SESSION_SEARCH_SCHEMA = {
         "- The user asks 'what did we do about X?' or 'how did we fix Y?'\n\n"
         "Don't hesitate to search when it is actually cross-session -- it's fast and cheap. "
         "Better to search and confirm than to guess or ask the user to repeat themselves.\n\n"
-        "Search syntax: keywords joined with OR for broad recall (elevenlabs OR baseten OR funding), "
+        "Search syntax: keywords joined with OR for broad recall (baseten OR funding OR pricing), "
         "phrases for exact match (\"docker networking\"), boolean (python NOT java), prefix (deploy*). "
         "IMPORTANT: Use OR between keywords for best results — FTS5 defaults to AND which misses "
         "sessions that only mention some terms. If a broad OR query returns nothing, try individual "

@@ -40,31 +40,20 @@ class TestGetProvider:
         """Explicit local provider must not silently fall back to cloud."""
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("tools.transcription_tools._has_local_command", return_value=False):
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "local"}) == "none"
 
     def test_local_nothing_available(self, monkeypatch):
         monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
-             patch("tools.transcription_tools._HAS_OPENAI", False), \
-             patch("tools.transcription_tools._has_local_command", return_value=False):
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "local"}) == "none"
 
-    def test_openai_when_key_set(self, monkeypatch):
+    def test_unsupported_provider_no_cloud_dispatch(self, monkeypatch):
+        """An unsupported cloud provider name never dispatches to the cloud."""
         monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
-        with patch("tools.transcription_tools._HAS_OPENAI", True):
-            from tools.transcription_tools import _get_provider
-            assert _get_provider({"provider": "openai"}) == "openai"
-
-    def test_explicit_openai_no_key_returns_none(self, monkeypatch):
-        """Explicit openai without key returns none — no cross-provider fallback."""
-        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
-             patch("tools.transcription_tools._HAS_OPENAI", True):
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False):
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "openai"}) == "none"
 
@@ -161,37 +150,6 @@ class TestTranscribeLocal:
 
 
 # ---------------------------------------------------------------------------
-# OpenAI transcription
-# ---------------------------------------------------------------------------
-
-
-class TestTranscribeOpenAI:
-
-    def test_no_key(self, monkeypatch):
-        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
-        from tools.transcription_tools import _transcribe_openai
-        result = _transcribe_openai("/tmp/test.ogg", "whisper-1")
-        assert result["success"] is False
-        assert "VOICE_TOOLS_OPENAI_KEY" in result["error"]
-
-    def test_successful_transcription(self, monkeypatch, tmp_path):
-        monkeypatch.setenv("VOICE_TOOLS_OPENAI_KEY", "sk-test")
-        audio_file = tmp_path / "test.ogg"
-        audio_file.write_bytes(b"fake audio")
-
-        mock_client = MagicMock()
-        mock_client.audio.transcriptions.create.return_value = "Hello from OpenAI"
-
-        with patch("tools.transcription_tools._HAS_OPENAI", True), \
-             patch("openai.OpenAI", return_value=mock_client):
-            from tools.transcription_tools import _transcribe_openai
-            result = _transcribe_openai(str(audio_file), "whisper-1")
-
-        assert result["success"] is True
-        assert result["transcript"] == "Hello from OpenAI"
-
-
-# ---------------------------------------------------------------------------
 # Main transcribe_audio() dispatch
 # ---------------------------------------------------------------------------
 
@@ -210,19 +168,6 @@ class TestTranscribeAudio:
 
         assert result["success"] is True
         mock_local.assert_called_once()
-
-    def test_dispatches_to_openai(self, tmp_path):
-        audio_file = tmp_path / "test.ogg"
-        audio_file.write_bytes(b"fake audio")
-
-        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "openai"}), \
-             patch("tools.transcription_tools._get_provider", return_value="openai"), \
-             patch("tools.transcription_tools._transcribe_openai", return_value={"success": True, "transcript": "hi"}) as mock_openai:
-            from tools.transcription_tools import transcribe_audio
-            result = transcribe_audio(str(audio_file))
-
-        assert result["success"] is True
-        mock_openai.assert_called_once()
 
     def test_no_provider_returns_error(self, tmp_path):
         audio_file = tmp_path / "test.ogg"

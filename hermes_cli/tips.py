@@ -138,7 +138,6 @@ TIPS = [
     "read_file auto-deduplicates — re-reading an unchanged file returns a lightweight stub.",
     "browser_vision takes a screenshot and analyzes it with AI — works for CAPTCHAs and visual content.",
     "browser_console can evaluate JavaScript expressions in the page context.",
-    "image_generate creates images with FLUX 2 Pro and automatic 2x upscaling.",
     "text_to_speech converts text to audio — plays as voice bubbles on Telegram.",
     "send_message can reach any connected messaging platform from within a session.",
     "The todo tool helps the agent track complex multi-step tasks during a session.",
@@ -186,9 +185,8 @@ TIPS = [
 
     # --- Voice ---
     "Voice mode works with zero API keys if faster-whisper is installed (free local speech-to-text).",
-    "Five TTS providers available: Edge TTS (free), ElevenLabs, OpenAI, NeuTTS (free local), MiniMax.",
+    "Edge TTS (free) is the built-in text-to-speech backend; declare custom engines under tts.providers.<name>.",
     "/voice on enables voice mode in the CLI. Ctrl+B toggles push-to-talk recording.",
-    "Streaming TTS plays sentences as they generate — you don't wait for the full response.",
     "Voice messages on Telegram, Discord, WhatsApp, and Slack are auto-transcribed.",
 
     # --- Gateway & Messaging ---
@@ -391,7 +389,6 @@ TIPS = [
     'Checkpoints skip directories with more than 50,000 files to avoid slow git operations on massive monorepos.',
 
     # --- TTS ---
-    'tts.provider: piper runs 44-language local TTS on CPU — voices auto-download to ~/.grove/cache/piper-voices/.',
     'tts.providers.<name>.type: command wires any CLI TTS engine with {input_path} and {output_path} placeholders.',
 
     # --- API Server & Proxy ---
@@ -451,9 +448,7 @@ TIPS = [
     'GROVE_RESTART_DRAIN_TIMEOUT (default 900s) caps how long /restart waits for in-flight runs before forcing.',
     'GROVE_CHECKPOINT_TIMEOUT (default 30s) caps filesystem checkpoint creation — raise it on huge monorepos.',
 
-    # --- Auxiliary Tasks & Image Generation ---
-    'image_gen.model in config.yaml picks the FAL model: flux-2/klein, gpt-image-2, nano-banana-pro, and more.',
-    'image_gen.provider routes image generation through a plugin (OpenAI Images, Codex, FAL) instead of the default.',
+    # --- Auxiliary Tasks ---
     'AUXILIARY_VISION_BASE_URL + AUXILIARY_VISION_API_KEY point vision analysis at any OpenAI-compatible endpoint.',
     'auxiliary.session_search.max_concurrency bounds how many matched sessions are summarized in parallel (default 3).',
     'auxiliary.session_search.extra_body forwards provider-specific OpenAI-compatible fields on summarization calls.',

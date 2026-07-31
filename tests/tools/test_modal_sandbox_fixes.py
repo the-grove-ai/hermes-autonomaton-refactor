@@ -67,85 +67,15 @@ class TestToolResolution:
 class TestCwdHandling:
     """Verify host paths are sanitized for container backends."""
 
-    def test_home_path_replaced_for_modal(self, monkeypatch):
-        """TERMINAL_CWD=/home/user/... should be replaced with /root for modal."""
-        monkeypatch.setenv("TERMINAL_ENV", "modal")
-        monkeypatch.setenv("TERMINAL_CWD", "/home/dakota/github/hermes-agent")
-        config = _tt_mod._get_env_config()
-        assert config["cwd"] == "/root", (
-            f"Expected /root, got {config['cwd']}. "
-            "/home/ paths should be replaced for modal backend."
-        )
-
-    def test_users_path_replaced_for_docker_by_default(self, monkeypatch):
-        """Docker should keep host paths out of the sandbox unless explicitly enabled."""
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/projects")
-        config = _tt_mod._get_env_config()
-        assert config["cwd"] == "/root", (
-            f"Expected /root, got {config['cwd']}. "
-            "Host paths should be discarded for docker backend by default."
-        )
-        assert config["host_cwd"] is None
-        assert config["docker_mount_cwd_to_workspace"] is False
-
-    def test_users_path_maps_to_workspace_for_docker_when_enabled(self, monkeypatch):
-        """Docker should map the host cwd into /workspace only when explicitly enabled."""
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/projects")
-        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
-        config = _tt_mod._get_env_config()
-        assert config["cwd"] == "/workspace"
-        assert config["host_cwd"] == "/Users/someone/projects"
-        assert config["docker_mount_cwd_to_workspace"] is True
-
-    def test_windows_path_replaced_for_modal(self, monkeypatch):
-        """TERMINAL_CWD=C:\\Users\\... should be replaced for modal."""
-        monkeypatch.setenv("TERMINAL_ENV", "modal")
-        monkeypatch.setenv("TERMINAL_CWD", "C:\\Users\\someone\\projects")
-        config = _tt_mod._get_env_config()
-        assert config["cwd"] == "/root"
-
-    def test_host_path_replaced_for_vercel_sandbox(self, monkeypatch):
-        """Host paths should be discarded for Vercel Sandbox."""
-        monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
-        monkeypatch.setenv("TERMINAL_CWD", "/Users/someone/projects")
-        config = _tt_mod._get_env_config()
-        assert config["cwd"] == "/vercel/sandbox"
-
-    def test_relative_path_replaced_for_vercel_sandbox(self, monkeypatch):
-        """Relative cwd should not map into a remote Vercel sandbox."""
-        monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
-        monkeypatch.setenv("TERMINAL_CWD", "src")
-        config = _tt_mod._get_env_config()
-        assert config["cwd"] == "/vercel/sandbox"
-
-    def test_default_cwd_is_workspace_root_for_vercel_sandbox(self, monkeypatch):
-        monkeypatch.setenv("TERMINAL_ENV", "vercel_sandbox")
-        monkeypatch.delenv("TERMINAL_CWD", raising=False)
-        config = _tt_mod._get_env_config()
-        assert config["cwd"] == "/vercel/sandbox"
-
-    @pytest.mark.parametrize("backend", ["modal", "docker", "singularity", "daytona"])
+    @pytest.mark.parametrize("backend", ["singularity"])
     def test_default_cwd_is_root_for_container_backends(self, backend, monkeypatch):
         """Container backends should default to /root, not ~."""
         monkeypatch.setenv("TERMINAL_ENV", backend)
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
-        monkeypatch.delenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", raising=False)
         config = _tt_mod._get_env_config()
         assert config["cwd"] == "/root", (
             f"Backend {backend}: expected /root default, got {config['cwd']}"
         )
-
-    def test_docker_default_cwd_maps_current_directory_when_enabled(self, monkeypatch):
-        """Docker should use /workspace when cwd mounting is explicitly enabled."""
-        monkeypatch.setattr("tools.terminal_tool.os.getcwd", lambda: "/home/user/project")
-        monkeypatch.setenv("TERMINAL_ENV", "docker")
-        monkeypatch.setenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "true")
-        monkeypatch.delenv("TERMINAL_CWD", raising=False)
-        config = _tt_mod._get_env_config()
-        assert config["cwd"] == "/workspace"
-        assert config["host_cwd"] == "/home/user/project"
 
     def test_local_backend_uses_getcwd(self, monkeypatch):
         """Local backend should use os.getcwd(), not /root."""
@@ -153,31 +83,6 @@ class TestCwdHandling:
         monkeypatch.delenv("TERMINAL_CWD", raising=False)
         config = _tt_mod._get_env_config()
         assert config["cwd"] == os.getcwd()
-
-    def test_create_environment_passes_docker_host_cwd_and_flag(self, monkeypatch):
-        """Docker host cwd and mount flag should reach DockerEnvironment."""
-        captured = {}
-        sentinel = object()
-
-        def _fake_docker_environment(**kwargs):
-            captured.update(kwargs)
-            return sentinel
-
-        monkeypatch.setattr(_tt_mod, "_DockerEnvironment", _fake_docker_environment)
-
-        env = _tt_mod._create_environment(
-            env_type="docker",
-            image="python:3.11",
-            cwd="/workspace",
-            timeout=60,
-            container_config={"docker_mount_cwd_to_workspace": True},
-            host_cwd="/home/user/project",
-        )
-
-        assert env is sentinel
-        assert captured["cwd"] == "/workspace"
-        assert captured["host_cwd"] == "/home/user/project"
-        assert captured["auto_mount_cwd"] is True
 
     def test_ssh_preserves_home_paths(self, monkeypatch):
         """SSH backend should NOT replace /home/ paths (they're valid remotely)."""
@@ -192,110 +97,7 @@ class TestCwdHandling:
 
 
 # =========================================================================
-# Test 5: ephemeral_disk version check
-# =========================================================================
-
-class TestEphemeralDiskCheck:
-    """Verify ephemeral_disk is only passed when modal supports it."""
-
-    def test_ephemeral_disk_skipped_when_unsupported(self, monkeypatch):
-        """If modal.Sandbox.create doesn't have ephemeral_disk param, skip it."""
-        import inspect
-        mock_params = {
-            "args": inspect.Parameter("args", inspect.Parameter.VAR_POSITIONAL),
-            "image": inspect.Parameter("image", inspect.Parameter.KEYWORD_ONLY),
-            "timeout": inspect.Parameter("timeout", inspect.Parameter.KEYWORD_ONLY),
-            "cpu": inspect.Parameter("cpu", inspect.Parameter.KEYWORD_ONLY),
-            "memory": inspect.Parameter("memory", inspect.Parameter.KEYWORD_ONLY),
-        }
-
-        monkeypatch.setenv("TERMINAL_ENV", "modal")
-        config = _tt_mod._get_env_config()
-        # The config has container_disk default of 51200
-        disk = config.get("container_disk", 51200)
-        assert disk > 0, "disk should default to > 0"
-
-        # Simulate the version check logic from terminal_tool.py
-        sandbox_kwargs = {}
-        if disk > 0:
-            try:
-                if "ephemeral_disk" in mock_params:
-                    sandbox_kwargs["ephemeral_disk"] = disk
-            except Exception:
-                pass
-
-        assert "ephemeral_disk" not in sandbox_kwargs, (
-            "ephemeral_disk should not be set when Sandbox.create doesn't support it"
-        )
-
-
-# =========================================================================
-# Test 6: ModalEnvironment defaults
-# =========================================================================
-
-class TestModalEnvironmentDefaults:
-    """Verify ModalEnvironment has correct defaults."""
-
-    def test_default_cwd_is_root(self):
-        """ModalEnvironment default cwd should be /root, not ~."""
-        from tools.environments.modal import ModalEnvironment
-        import inspect
-        sig = inspect.signature(ModalEnvironment.__init__)
-        cwd_default = sig.parameters["cwd"].default
-        assert cwd_default == "/root", (
-            f"ModalEnvironment cwd default should be /root, got {cwd_default!r}. "
-            "Tilde ~ is not expanded by subprocess.run(cwd=...)."
-        )
-
-
-# =========================================================================
-# Test 7: ensurepip fix in ModalEnvironment
-# =========================================================================
-
-class TestEnsurepipFix:
-    """Verify the pip fix is applied in the ModalEnvironment init."""
-
-    def test_modal_environment_creates_image_with_setup_commands(self):
-        """_resolve_modal_image should create a modal.Image with pip fix."""
-        try:
-            from tools.environments.modal import _resolve_modal_image
-        except ImportError:
-            pytest.skip("tools.environments.modal not importable")
-
-        import inspect
-        source = inspect.getsource(_resolve_modal_image)
-        assert "ensurepip" in source, (
-            "_resolve_modal_image should include ensurepip fix "
-            "for Modal's legacy image builder"
-        )
-        assert "setup_dockerfile_commands" in source, (
-            "_resolve_modal_image should use setup_dockerfile_commands "
-            "to fix pip before Modal's bootstrap"
-        )
-
-    def test_modal_environment_uses_native_sdk(self):
-        """ModalEnvironment should use Modal SDK directly, not swe-rex."""
-        try:
-            from tools.environments.modal import ModalEnvironment
-        except ImportError:
-            pytest.skip("tools.environments.modal not importable")
-
-        import inspect
-        source = inspect.getsource(ModalEnvironment)
-        assert "swerex" not in source.lower(), (
-            "ModalEnvironment should not depend on swe-rex; "
-            "use Modal SDK directly via Sandbox.create() + exec()"
-        )
-        assert "Sandbox.create.aio" in source, (
-            "ModalEnvironment should use async Modal Sandbox.create.aio()"
-        )
-        assert "exec.aio" in source, (
-            "ModalEnvironment should use Sandbox.exec.aio() for command execution"
-        )
-
-
-# =========================================================================
-# Test 8: Host prefix list completeness
+# Test 5: Host prefix list completeness
 # =========================================================================
 
 class TestHostPrefixList:

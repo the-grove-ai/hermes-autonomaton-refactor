@@ -1,5 +1,5 @@
 """Tests for CLI voice mode integration -- command parsing, markdown stripping,
-state management, streaming TTS activation, voice message prefix, _vprint."""
+state management, voice message prefix, _vprint."""
 
 import ast
 import os
@@ -171,133 +171,6 @@ class TestVoiceStateLock:
 
         assert state["count"] == 4000
 
-
-# ============================================================================
-# Streaming TTS lazy import activation (Bug A fix)
-# ============================================================================
-
-class TestStreamingTTSActivation:
-    """Verify streaming TTS uses lazy imports to check availability."""
-
-    def test_activates_when_elevenlabs_and_sounddevice_available(self):
-        """use_streaming_tts should be True when provider is elevenlabs
-        and both lazy imports succeed."""
-        use_streaming_tts = False
-        try:
-            from tools.tts_tool import (
-                _load_tts_config as _load_tts_cfg,
-                _get_provider as _get_prov,
-                _import_elevenlabs,
-                _import_sounddevice,
-            )
-            assert callable(_import_elevenlabs)
-            assert callable(_import_sounddevice)
-        except ImportError:
-            pytest.skip("tools.tts_tool not available")
-
-        with patch("tools.tts_tool._load_tts_config") as mock_cfg, \
-             patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
-             patch("tools.tts_tool._import_elevenlabs") as mock_el, \
-             patch("tools.tts_tool._import_sounddevice") as mock_sd:
-            mock_cfg.return_value = {"provider": "elevenlabs"}
-            mock_el.return_value = MagicMock()
-            mock_sd.return_value = MagicMock()
-
-            from tools.tts_tool import (
-                _load_tts_config as load_cfg,
-                _get_provider as get_prov,
-                _import_elevenlabs as import_el,
-                _import_sounddevice as import_sd,
-            )
-            cfg = load_cfg()
-            if get_prov(cfg) == "elevenlabs":
-                import_el()
-                import_sd()
-                use_streaming_tts = True
-
-        assert use_streaming_tts is True
-
-    def test_does_not_activate_when_elevenlabs_missing(self):
-        """use_streaming_tts stays False when elevenlabs import fails."""
-        use_streaming_tts = False
-        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "elevenlabs"}), \
-             patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
-             patch("tools.tts_tool._import_elevenlabs", side_effect=ImportError("no elevenlabs")):
-            try:
-                from tools.tts_tool import (
-                    _load_tts_config as load_cfg,
-                    _get_provider as get_prov,
-                    _import_elevenlabs as import_el,
-                    _import_sounddevice as import_sd,
-                )
-                cfg = load_cfg()
-                if get_prov(cfg) == "elevenlabs":
-                    import_el()
-                    import_sd()
-                    use_streaming_tts = True
-            except (ImportError, OSError):
-                pass
-
-        assert use_streaming_tts is False
-
-    def test_does_not_activate_when_sounddevice_missing(self):
-        """use_streaming_tts stays False when sounddevice import fails."""
-        use_streaming_tts = False
-        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "elevenlabs"}), \
-             patch("tools.tts_tool._get_provider", return_value="elevenlabs"), \
-             patch("tools.tts_tool._import_elevenlabs", return_value=MagicMock()), \
-             patch("tools.tts_tool._import_sounddevice", side_effect=OSError("no PortAudio")):
-            try:
-                from tools.tts_tool import (
-                    _load_tts_config as load_cfg,
-                    _get_provider as get_prov,
-                    _import_elevenlabs as import_el,
-                    _import_sounddevice as import_sd,
-                )
-                cfg = load_cfg()
-                if get_prov(cfg) == "elevenlabs":
-                    import_el()
-                    import_sd()
-                    use_streaming_tts = True
-            except (ImportError, OSError):
-                pass
-
-        assert use_streaming_tts is False
-
-    def test_does_not_activate_for_non_elevenlabs_provider(self):
-        """use_streaming_tts stays False when provider is not elevenlabs."""
-        use_streaming_tts = False
-        with patch("tools.tts_tool._load_tts_config", return_value={"provider": "edge"}), \
-             patch("tools.tts_tool._get_provider", return_value="edge"):
-            try:
-                from tools.tts_tool import (
-                    _load_tts_config as load_cfg,
-                    _get_provider as get_prov,
-                    _import_elevenlabs as import_el,
-                    _import_sounddevice as import_sd,
-                )
-                cfg = load_cfg()
-                if get_prov(cfg) == "elevenlabs":
-                    import_el()
-                    import_sd()
-                    use_streaming_tts = True
-            except (ImportError, OSError):
-                pass
-
-        assert use_streaming_tts is False
-
-    def test_stale_boolean_imports_no_longer_exist(self):
-        """Confirm _HAS_ELEVENLABS and _HAS_AUDIO are not in tts_tool module."""
-        import tools.tts_tool as tts_mod
-        assert not hasattr(tts_mod, "_HAS_ELEVENLABS"), \
-            "_HAS_ELEVENLABS should not exist -- lazy imports replaced it"
-        assert not hasattr(tts_mod, "_HAS_AUDIO"), \
-            "_HAS_AUDIO should not exist -- lazy imports replaced it"
-
-
-# ============================================================================
-# Voice mode user message prefix (Bug B fix)
-# ============================================================================
 
 class TestVoiceMessagePrefix:
     """Voice mode should inject instruction via user message prefix,
@@ -530,33 +403,6 @@ class TestEdgeTTSLazyImport:
             pytest.fail("_generate_edge_tts not found in tts_tool.py")
 
 
-class TestStreamingTTSOutputStreamCleanup:
-    """Bug #7: output_stream must be closed in finally block."""
-
-    def test_output_stream_closed_in_finally(self):
-        """AST check: stream_tts_to_speaker's finally block must close
-        output_stream even on exception."""
-        import ast as _ast
-
-        with open("tools/tts_tool.py") as f:
-            tree = _ast.parse(f.read())
-
-        for node in _ast.walk(tree):
-            if isinstance(node, _ast.FunctionDef) and node.name == "stream_tts_to_speaker":
-                # Find the outermost try that has a finally with tts_done_event.set()
-                for child in _ast.walk(node):
-                    if isinstance(child, _ast.Try) and child.finalbody:
-                        finally_text = "\n".join(
-                            _ast.dump(n) for n in child.finalbody
-                        )
-                        if "tts_done_event" in finally_text:
-                            assert "output_stream" in finally_text, (
-                                "finally block must close output_stream"
-                            )
-                            return
-                pytest.fail("No finally block with tts_done_event found")
-
-
 class TestCtrlCResetsContinuousMode:
     """Bug #4: Ctrl+C cancel must reset _voice_continuous."""
 
@@ -644,39 +490,6 @@ class TestVoiceStatusUsesConfigKey:
         assert "load_config" in method_body or "record_key" in method_body, (
             "_show_voice_status should read record_key from config"
         )
-
-
-class TestChatTTSCleanupOnException:
-    """Bug #2: chat() must clean up streaming TTS resources on exception."""
-
-    def test_chat_has_finally_for_tts_cleanup(self):
-        """AST check: chat() method must have a finally block that cleans up
-        text_queue, stop_event, and tts_thread."""
-        import ast as _ast
-
-        with open("cli.py") as f:
-            tree = _ast.parse(f.read())
-
-        for node in _ast.walk(tree):
-            if isinstance(node, _ast.FunctionDef) and node.name == "chat":
-                # Find Try nodes with finally blocks
-                for child in _ast.walk(node):
-                    if isinstance(child, _ast.Try) and child.finalbody:
-                        finally_text = "\n".join(
-                            _ast.dump(n) for n in child.finalbody
-                        )
-                        if "text_queue" in finally_text:
-                            assert "stop_event" in finally_text, (
-                                "finally must also handle stop_event"
-                            )
-                            assert "tts_thread" in finally_text, (
-                                "finally must also handle tts_thread"
-                            )
-                            return
-                pytest.fail(
-                    "chat() must have a finally block cleaning up "
-                    "text_queue/stop_event/tts_thread"
-                )
 
 
 class TestBrowserToolSignalHandlerRemoved:

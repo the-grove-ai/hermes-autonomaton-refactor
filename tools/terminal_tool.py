@@ -33,7 +33,6 @@ Usage:
     result = terminal_tool("python server.py", background=True)
 """
 
-import importlib.util
 import json
 import logging
 import os
@@ -69,12 +68,6 @@ from tools.interrupt import is_interrupted, _interrupt_event  # noqa: F401 — r
 
 # Singularity helpers (scratch dir, SIF cache) now live in tools/environments/singularity.py
 from tools.environments.singularity import _get_scratch_dir
-from tools.tool_backend_helpers import (
-    coerce_modal_mode,
-    has_direct_modal_credentials,
-    managed_nous_tools_enabled,
-    resolve_modal_backend_state,
-)
 
 
 def _safe_parse_import_env(
@@ -119,70 +112,6 @@ DISK_USAGE_WARNING_THRESHOLD_GB = _safe_parse_import_env(
     float,
     "number",
 )
-_VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
-_SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
-
-
-def _is_supported_vercel_runtime(runtime: str) -> bool:
-    return not runtime or runtime in _SUPPORTED_VERCEL_RUNTIMES
-
-
-def _check_vercel_sandbox_requirements(config: dict[str, Any]) -> bool:
-    """Validate Vercel Sandbox terminal backend requirements."""
-    runtime = (config.get("vercel_runtime") or "").strip()
-    if not _is_supported_vercel_runtime(runtime):
-        supported = ", ".join(_SUPPORTED_VERCEL_RUNTIMES)
-        logger.error(
-            "Vercel Sandbox runtime %r is not supported. "
-            "Set TERMINAL_VERCEL_RUNTIME to one of: %s.",
-            runtime,
-            supported,
-        )
-        return False
-
-    disk = config.get("container_disk", 51200)
-    if disk not in {0, 51200}:
-        logger.error(
-            "Vercel Sandbox does not support custom TERMINAL_CONTAINER_DISK=%s. "
-            "Use the default shared setting (51200 MB).",
-            disk,
-        )
-        return False
-
-    if importlib.util.find_spec("vercel") is None:
-        logger.error(
-            "vercel is required for the Vercel Sandbox terminal backend: pip install vercel"
-        )
-        return False
-
-    has_oidc = bool(os.getenv("VERCEL_OIDC_TOKEN"))
-    has_token = bool(os.getenv("VERCEL_TOKEN"))
-    has_project = bool(os.getenv("VERCEL_PROJECT_ID"))
-    has_team = bool(os.getenv("VERCEL_TEAM_ID"))
-
-    if has_oidc:
-        return True
-
-    if has_token or has_project or has_team:
-        if has_token and has_project and has_team:
-            return True
-        logger.error(
-            "Vercel Sandbox backend selected with token auth, but "
-            "VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID must all "
-            "be set together. VERCEL_OIDC_TOKEN is supported for one-off "
-            "local development only."
-        )
-        return False
-
-    logger.error(
-        "Vercel Sandbox backend selected but no supported auth configuration "
-        "was found. Set VERCEL_TOKEN, VERCEL_PROJECT_ID, and VERCEL_TEAM_ID "
-        "for normal use. VERCEL_OIDC_TOKEN is supported for one-off local "
-        "development only."
-    )
-    return False
-
-
 def _check_disk_usage_warning():
     """Check if total disk usage exceeds warning threshold."""
     try:
@@ -894,9 +823,6 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
 from tools.environments.local import LocalEnvironment as _LocalEnvironment
 from tools.environments.singularity import SingularityEnvironment as _SingularityEnvironment
 from tools.environments.ssh import SSHEnvironment as _SSHEnvironment
-from tools.environments.docker import DockerEnvironment as _DockerEnvironment
-from tools.environments.modal import ModalEnvironment as _ModalEnvironment
-from tools.environments.managed_modal import ManagedModalEnvironment as _ManagedModalEnvironment
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 import sys
 
@@ -1071,8 +997,6 @@ def _get_env_config() -> Dict[str, Any]:
         default_cwd = os.getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
-    elif env_type == "vercel_sandbox":
-        default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
     else:
         default_cwd = "/root"
 
@@ -1085,16 +1009,7 @@ def _get_env_config() -> Dict[str, Any]:
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
-    if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
-        candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
-        if (
-            any(candidate.startswith(p) for p in host_prefixes)
-            or (os.path.isabs(candidate) and os.path.isdir(candidate) and not candidate.startswith(("/workspace", "/root")))
-        ):
-            host_cwd = candidate
-            cwd = "/workspace"
-    elif env_type in {"modal", "docker", "singularity", "daytona", "vercel_sandbox"} and cwd:
+    if env_type == "singularity" and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -1106,7 +1021,6 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
-        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON"),
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
@@ -1144,15 +1058,6 @@ def _get_env_config() -> Dict[str, Any]:
     }
 
 
-def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
-    """Resolve direct vs managed Modal backend selection."""
-    return resolve_modal_backend_state(
-        modal_mode,
-        has_direct=has_direct_modal_credentials(),
-        managed_ready=is_managed_tool_gateway_ready("modal"),
-    )
-
-
 def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
@@ -1162,9 +1067,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     Create an execution environment for sandboxed command execution.
     
     Args:
-        env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
-        image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
+        env_type: One of "local", "singularity", "ssh"
+        image: Singularity image name (ignored for local/ssh)
         cwd: Working directory
         timeout: Default command timeout
         ssh_config: SSH connection config (for env_type="ssh")
@@ -1180,109 +1084,15 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     memory = cc.get("container_memory", 5120)
     disk = cc.get("container_disk", 51200)
     persistent = cc.get("container_persistent", True)
-    volumes = cc.get("docker_volumes", [])
-    docker_forward_env = cc.get("docker_forward_env", [])
-    docker_env = cc.get("docker_env", {})
-    docker_extra_args = cc.get("docker_extra_args", [])
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
-    
-    elif env_type == "docker":
-        return _DockerEnvironment(
-            image=image, cwd=cwd, timeout=timeout,
-            cpu=cpu, memory=memory, disk=disk,
-            persistent_filesystem=persistent, task_id=task_id,
-            volumes=volumes,
-            host_cwd=host_cwd,
-            auto_mount_cwd=cc.get("docker_mount_cwd_to_workspace", False),
-            forward_env=docker_forward_env,
-            env=docker_env,
-            run_as_host_user=cc.get("docker_run_as_host_user", False),
-            extra_args=docker_extra_args,
-        )
-    
+
     elif env_type == "singularity":
         return _SingularityEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
-        )
-    
-    elif env_type == "modal":
-        sandbox_kwargs = {}
-        if cpu > 0:
-            sandbox_kwargs["cpu"] = cpu
-        if memory > 0:
-            sandbox_kwargs["memory"] = memory
-        if disk > 0:
-            try:
-                import inspect, modal
-                if "ephemeral_disk" in inspect.signature(modal.Sandbox.create).parameters:
-                    sandbox_kwargs["ephemeral_disk"] = disk
-            except Exception:
-                pass
-
-        modal_state = _get_modal_backend_state(cc.get("modal_mode"))
-
-        if modal_state["selected_backend"] == "managed":
-            return _ManagedModalEnvironment(
-                image=image, cwd=cwd, timeout=timeout,
-                modal_sandbox_kwargs=sandbox_kwargs,
-                persistent_filesystem=persistent, task_id=task_id,
-            )
-
-        if modal_state["selected_backend"] != "direct":
-            if modal_state["managed_mode_blocked"]:
-                raise ValueError(
-                    "Modal backend is configured for managed mode, but "
-                    "a paid Nous subscription is required for the Tool Gateway and no direct "
-                    "Modal credentials/config were found. Log in with `hermes model` or "
-                    "choose TERMINAL_MODAL_MODE=direct/auto."
-                )
-            if modal_state["mode"] == "managed":
-                raise ValueError(
-                    "Modal backend is configured for managed mode, but the managed tool gateway is unavailable."
-                )
-            if modal_state["mode"] == "direct":
-                raise ValueError(
-                    "Modal backend is configured for direct mode, but no direct Modal credentials/config were found."
-                )
-            message = "Modal backend selected but no direct Modal credentials/config was found."
-            if managed_nous_tools_enabled():
-                message = (
-                    "Modal backend selected but no direct Modal credentials/config or managed tool gateway was found."
-                )
-            raise ValueError(message)
-
-        return _ModalEnvironment(
-            image=image, cwd=cwd, timeout=timeout,
-            modal_sandbox_kwargs=sandbox_kwargs,
-            persistent_filesystem=persistent, task_id=task_id,
-        )
-    
-    elif env_type == "daytona":
-        # Lazy import so daytona SDK is only required when backend is selected.
-        from tools.environments.daytona import DaytonaEnvironment as _DaytonaEnvironment
-        return _DaytonaEnvironment(
-            image=image, cwd=cwd, timeout=timeout,
-            cpu=int(cpu), memory=memory, disk=disk,
-            persistent_filesystem=persistent, task_id=task_id,
-        )
-
-    elif env_type == "vercel_sandbox":
-        from tools.environments.vercel_sandbox import (
-            VercelSandboxEnvironment as _VercelSandboxEnvironment,
-        )
-        return _VercelSandboxEnvironment(
-            runtime=cc.get("vercel_runtime") or None,
-            cwd=cwd,
-            timeout=timeout,
-            cpu=cpu,
-            memory=memory,
-            disk=disk,
-            persistent_filesystem=persistent,
-            task_id=task_id,
         )
 
     elif env_type == "ssh":
@@ -1299,8 +1109,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
 
     else:
         raise ValueError(
-            f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"Unknown environment type: {env_type}. Use 'local', "
+            f"'singularity', or 'ssh'"
         )
 
 
@@ -1776,14 +1586,8 @@ def terminal_tool(
         overrides = _task_env_overrides.get(effective_task_id, {})
         
         # Select image based on env type, with per-task override support
-        if env_type == "docker":
-            image = overrides.get("docker_image") or config["docker_image"]
-        elif env_type == "singularity":
+        if env_type == "singularity":
             image = overrides.get("singularity_image") or config["singularity_image"]
-        elif env_type == "modal":
-            image = overrides.get("modal_image") or config["modal_image"]
-        elif env_type == "daytona":
-            image = overrides.get("daytona_image") or config["daytona_image"]
         else:
             image = ""
 
@@ -1860,20 +1664,12 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+                        if env_type == "singularity":
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
                                 "container_disk": config.get("container_disk", 51200),
                                 "container_persistent": config.get("container_persistent", True),
-                                "modal_mode": config.get("modal_mode", "auto"),
-                                "vercel_runtime": config.get("vercel_runtime", ""),
-                                "docker_volumes": config.get("docker_volumes", []),
-                                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                                "docker_forward_env": config.get("docker_forward_env", []),
-                                "docker_env": config.get("docker_env", {}),
-                                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                                "docker_extra_args": config.get("docker_extra_args", []),
                             }
 
                         local_config = None
@@ -2220,15 +2016,6 @@ def check_terminal_requirements() -> bool:
         if env_type == "local":
             return True
 
-        elif env_type == "docker":
-            from tools.environments.docker import find_docker
-            docker = find_docker()
-            if not docker:
-                logger.error("Docker executable not found in PATH or common install locations")
-                return False
-            result = subprocess.run([docker, "version"], capture_output=True, timeout=5)
-            return result.returncode == 0
-
         elif env_type == "singularity":
             executable = shutil.which("apptainer") or shutil.which("singularity")
             if executable:
@@ -2245,72 +2032,9 @@ def check_terminal_requirements() -> bool:
                 return False
             return True
 
-        elif env_type == "modal":
-            modal_state = _get_modal_backend_state(config.get("modal_mode"))
-            if modal_state["selected_backend"] == "managed":
-                return True
-
-            if modal_state["selected_backend"] != "direct":
-                if modal_state["managed_mode_blocked"]:
-                    logger.error(
-                        "Modal backend selected with TERMINAL_MODAL_MODE=managed, but "
-                        "a paid Nous subscription is required for the Tool Gateway and no direct "
-                        "Modal credentials/config were found. Log in with `hermes model` "
-                        "or choose TERMINAL_MODAL_MODE=direct/auto."
-                    )
-                    return False
-                if modal_state["mode"] == "managed":
-                    logger.error(
-                        "Modal backend selected with TERMINAL_MODAL_MODE=managed, but the managed "
-                        "tool gateway is unavailable. Configure the managed gateway or choose "
-                        "TERMINAL_MODAL_MODE=direct/auto."
-                    )
-                    return False
-                elif modal_state["mode"] == "direct":
-                    if managed_nous_tools_enabled():
-                        logger.error(
-                            "Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct "
-                            "Modal credentials/config were found. Configure Modal or choose "
-                            "TERMINAL_MODAL_MODE=managed/auto."
-                        )
-                    else:
-                        logger.error(
-                            "Modal backend selected with TERMINAL_MODAL_MODE=direct, but no direct "
-                            "Modal credentials/config were found. Configure Modal or choose "
-                            "TERMINAL_MODAL_MODE=auto."
-                        )
-                    return False
-                else:
-                    if managed_nous_tools_enabled():
-                        logger.error(
-                            "Modal backend selected but no direct Modal credentials/config or managed "
-                            "tool gateway was found. Configure Modal, set up the managed gateway, "
-                            "or choose a different TERMINAL_ENV."
-                        )
-                    else:
-                        logger.error(
-                            "Modal backend selected but no direct Modal credentials/config was found. "
-                            "Configure Modal or choose a different TERMINAL_ENV."
-                        )
-                    return False
-
-            if importlib.util.find_spec("modal") is None:
-                logger.error("modal is required for direct modal terminal backend: pip install modal")
-                return False
-
-            return True
-
-        elif env_type == "vercel_sandbox":
-            return _check_vercel_sandbox_requirements(config)
-
-        elif env_type == "daytona":
-            from daytona import Daytona  # noqa: F401 — SDK presence check
-            return os.getenv("DAYTONA_API_KEY") is not None
-
         else:
             logger.error(
-                "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "Unknown TERMINAL_ENV '%s'. Use one of: local, singularity, ssh.",
                 env_type,
             )
             return False

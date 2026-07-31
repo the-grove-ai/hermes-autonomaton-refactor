@@ -321,7 +321,7 @@ def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_
     monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
     config = {
         "model": {"provider": "nous", "default": "claude-opus-4-6"},
-        "tts": {"provider": "elevenlabs"},
+        "tts": {"provider": "openai"},
         "browser": {"cloud_provider": "browser-use"},
     }
 
@@ -348,7 +348,7 @@ def test_model_flow_nous_prints_subscription_guidance_without_mutating_explicit_
 
     out = capsys.readouterr().out
     assert "Default model set to:" in out
-    assert config["tts"]["provider"] == "elevenlabs"
+    assert config["tts"]["provider"] == "openai"
     assert config["browser"]["cloud_provider"] == "browser-use"
 
 

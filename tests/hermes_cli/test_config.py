@@ -363,10 +363,10 @@ class TestSanitizeEnvLines:
 
     def test_three_concatenated_keys(self):
         """Three known keys on one line all get separated."""
-        lines = ["FAL_KEY=111FIRECRAWL_API_KEY=222GITHUB_TOKEN=333\n"]
+        lines = ["OPENROUTER_API_KEY=111FIRECRAWL_API_KEY=222GITHUB_TOKEN=333\n"]
         result = _sanitize_env_lines(lines)
         assert result == [
-            "FAL_KEY=111\n",
+            "OPENROUTER_API_KEY=111\n",
             "FIRECRAWL_API_KEY=222\n",
             "GITHUB_TOKEN=333\n",
         ]

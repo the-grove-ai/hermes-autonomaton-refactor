@@ -47,55 +47,16 @@ import re
 import asyncio
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_tools.httpx
-# After the web-provider plugin migration (PR #25182), the Firecrawl SDK
-# proxy, client construction, and response-shape normalizers all live in
-# plugins.web.firecrawl.provider. We re-export the names that external
-# code, integration tests, and unit-test patches reach for so the public
-# surface stays stable.
-if TYPE_CHECKING:
-    from firecrawl import Firecrawl  # noqa: F401 — type hints only
-from plugins.web.firecrawl.provider import (
-    Firecrawl,
-    _FirecrawlProxy,
-    _FIRECRAWL_CLS_CACHE,
-    _extract_scrape_payload,
-    _extract_web_search_results,
-    _firecrawl_backend_help_suffix,
-    _get_direct_firecrawl_config,
-    _get_firecrawl_client,
-    _get_firecrawl_gateway_url,
-    _has_direct_firecrawl_config,
-    _is_tool_gateway_ready,
-    _load_firecrawl_cls,
-    _normalize_result_list,
-    _raise_web_backend_configuration_error,
-    _to_plain_object,
-    check_firecrawl_api_key,
-)
-# Tavily helpers re-exported for backward-compat with existing unit tests
-# (tests/tools/test_web_tools_tavily.py imports these names directly).
+# After the hermes-severance, Tavily is the sole bundled web provider. Its
+# request helper + response-shape normalizers live in
+# plugins.web.tavily.provider and are re-exported here for backward-compat
+# with existing unit tests (tests/tools/test_web_tools_tavily.py imports
+# these names directly).
 from plugins.web.tavily.provider import (  # noqa: F401 — backward-compat names
     _normalize_tavily_documents,
     _normalize_tavily_search_results,
     _tavily_request,
 )
-# Parallel + Exa clients re-exported for backward-compat with existing
-# unit tests (tests/tools/test_web_tools_config.py imports _get_parallel_client
-# / _get_async_parallel_client / _get_exa_client directly).
-from plugins.web.parallel.provider import (  # noqa: F401 — backward-compat names
-    _get_async_parallel_client,
-    _get_parallel_client,
-)
-from plugins.web.exa.provider import _get_exa_client  # noqa: F401
-
-# Module-level cache slots for the per-vendor clients. The plugins read/write
-# these via tools.web_tools so unit tests that reset
-# ``tools.web_tools._<vendor>_client = None`` between cases keep working.
-_firecrawl_client: Optional[Any] = None
-_firecrawl_client_config: Optional[Any] = None
-_parallel_client: Optional[Any] = None
-_async_parallel_client: Optional[Any] = None
-_exa_client: Optional[Any] = None
 
 from agent.auxiliary_client import (
     async_call_llm,
@@ -140,28 +101,15 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in {"parallel", "firecrawl", "tavily", "exa", "searxng", "brave-free", "ddgs"}:
+    if configured == "tavily":
         return configured
 
-    # Fallback for manual / legacy config — pick the highest-priority
-    # available backend. Firecrawl also counts as available when the managed
-    # tool gateway is configured for Nous subscribers.
-    # Free-tier backends (searxng / brave-free / ddgs) trail the paid ones so
-    # existing paid setups are unaffected.
-    backend_candidates = (
-        ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
-        ("parallel", _has_env("PARALLEL_API_KEY")),
-        ("tavily", _has_env("TAVILY_API_KEY")),
-        ("exa", _has_env("EXA_API_KEY")),
-        ("searxng", _has_env("SEARXNG_URL")),
-        ("brave-free", _has_env("BRAVE_SEARCH_API_KEY")),
-        ("ddgs", _ddgs_package_importable()),
-    )
-    for backend, available in backend_candidates:
-        if available:
-            return backend
+    # Fallback for manual / legacy config — Tavily is the sole bundled
+    # backend, so it's selected whenever its API key is present.
+    if _has_env("TAVILY_API_KEY"):
+        return "tavily"
 
-    return "firecrawl"  # default (backward compat)
+    return "tavily"  # default (sole bundled backend)
 
 
 def _get_search_backend() -> str:
@@ -204,45 +152,15 @@ def _get_capability_backend(capability: str) -> str:
 
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
-    if backend == "exa":
-        return _has_env("EXA_API_KEY")
-    if backend == "parallel":
-        return _has_env("PARALLEL_API_KEY")
-    if backend == "firecrawl":
-        return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
-    if backend == "searxng":
-        return _has_env("SEARXNG_URL")
-    if backend == "brave-free":
-        return _has_env("BRAVE_SEARCH_API_KEY")
-    if backend == "ddgs":
-        return _ddgs_package_importable()
     return False
 
-
-def _ddgs_package_importable() -> bool:
-    """Return True when the ``ddgs`` Python package can be imported.
-
-    ddgs is the only backend whose availability is driven by a package
-    presence rather than an env var / config entry.  Wrapped in a helper
-    so auto-detect and ``_is_backend_available`` share the same check
-    (and tests can monkeypatch a single symbol).
-    """
-    try:
-        import ddgs  # noqa: F401
-        return True
-    except ImportError:
-        return False
-
-# ─── Firecrawl Client ────────────────────────────────────────────────────────
-
-# ─── Firecrawl Client ────────────────────────────────────────────────────────
-# After PR #25182, the firecrawl client, lazy SDK proxy, dual-auth config
-# resolution, response normalizers, and check_firecrawl_api_key() all live
-# in plugins.web.firecrawl.provider and are re-exported at the top of this
-# module so external callers (integration tests, tool-registry gating) and
-# unit tests that patch tools.web_tools.<name> continue to work.
+# ─── Web backend client ──────────────────────────────────────────────────────
+# After the hermes-severance, Tavily is the sole bundled web provider. Its
+# request helper + response normalizers live in plugins.web.tavily.provider
+# and are re-exported at the top of this module so unit tests that patch
+# tools.web_tools.<name> continue to work.
 
 
 def _web_requires_env() -> list[str]:
@@ -258,29 +176,17 @@ def _web_requires_env() -> list[str]:
     simply don't have the vars set, so the extra entries are harmless.
     """
     return [
-        "EXA_API_KEY",
-        "PARALLEL_API_KEY",
         "TAVILY_API_KEY",
-        "FIRECRAWL_API_KEY",
-        "FIRECRAWL_API_URL",
-        "FIRECRAWL_GATEWAY_URL",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
     ]
 
 
-# ─── Parallel / Tavily / Firecrawl helpers — moved into plugins ──────────────
-# After PR #25182, the per-vendor client construction, request helpers, and
-# response normalizers all live in plugins.web.<vendor>.provider:
-#   - parallel: plugins/web/parallel/provider.py
-#   - tavily:   plugins/web/tavily/provider.py
-#   - firecrawl: plugins/web/firecrawl/provider.py
-# The names from the firecrawl plugin (Firecrawl proxy, _get_firecrawl_client,
-# _to_plain_object, _normalize_result_list, _extract_web_search_results,
-# _extract_scrape_payload, _is_tool_gateway_ready, etc.) are re-exported at
-# the top of this module for backward-compat with integration tests and
-# unit-test patches.
+# ─── Tavily helpers — live in the plugin ─────────────────────────────────────
+# The Tavily client request helper + response normalizers live in
+# plugins.web.tavily.provider and are re-exported at the top of this module
+# for backward-compat with unit-test patches.
 
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
@@ -1218,9 +1124,9 @@ async def web_crawl_tool(
                 {
                     "success": False,
                     "error": (
-                        "web_crawl requires Firecrawl. Set FIRECRAWL_API_KEY, "
-                        f"FIRECRAWL_API_URL{_firecrawl_backend_help_suffix()}, "
-                        "or use web_search + web_extract instead."
+                        "web_crawl requires an available crawl backend. "
+                        "Set TAVILY_API_KEY, or use web_search + web_extract "
+                        "instead."
                     ),
                 },
                 ensure_ascii=False,
@@ -1326,17 +1232,15 @@ async def web_crawl_tool(
             return cleaned_result
 
         # No registered provider supports crawl AND no crawl-capable plugin
-        # is available. Surface a typed error pointing the user at the two
-        # crawl-capable providers (Firecrawl + Tavily).
+        # is available. Surface a typed error pointing the user at the sole
+        # crawl-capable backend (Tavily).
         return json.dumps(
             {
                 "success": False,
                 "error": (
                     "web_crawl has no available backend. "
-                    "Set FIRECRAWL_API_KEY (or FIRECRAWL_API_URL for "
-                    f"self-hosted){_firecrawl_backend_help_suffix()}, "
-                    "or set TAVILY_API_KEY for Tavily. "
-                    "Alternatively use web_search + web_extract instead."
+                    "Set TAVILY_API_KEY for Tavily, or use web_search + "
+                    "web_extract instead."
                 ),
             },
             ensure_ascii=False,
@@ -1357,12 +1261,9 @@ async def web_crawl_tool(
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in {"exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs"}:
+    if configured == "tavily":
         return _is_backend_available(configured)
-    return any(
-        _is_backend_available(backend)
-        for backend in ("exa", "parallel", "firecrawl", "tavily", "searxng", "brave-free", "ddgs")
-    )
+    return _is_backend_available("tavily")
 
 
 def check_auxiliary_model() -> bool:
@@ -1382,41 +1283,19 @@ if __name__ == "__main__":
     
     # Check if API keys are available
     web_available = check_web_api_key()
-    tool_gateway_available = _is_tool_gateway_ready()
-    firecrawl_key_available = bool(os.getenv("FIRECRAWL_API_KEY", "").strip())
-    firecrawl_url_available = bool(os.getenv("FIRECRAWL_API_URL", "").strip())
     nous_available = check_auxiliary_model()
     default_summarizer_model = _get_default_summarizer_model()
 
     if web_available:
         backend = _get_backend()
         print(f"✅ Web backend: {backend}")
-        if backend == "exa":
-            print("   Using Exa API (https://exa.ai)")
-        elif backend == "parallel":
-            print("   Using Parallel API (https://parallel.ai)")
-        elif backend == "tavily":
+        if backend == "tavily":
             print("   Using Tavily API (https://tavily.com)")
-        elif backend == "searxng":
-            print(f"   Using SearXNG (search only): {os.getenv('SEARXNG_URL', '').strip()}")
-        elif backend == "brave-free":
-            print("   Using Brave Search free tier (search only)")
-        elif backend == "ddgs":
-            print("   Using DuckDuckGo via ddgs package (search only)")
-        elif firecrawl_url_available:
-            print(f"   Using self-hosted Firecrawl: {os.getenv('FIRECRAWL_API_URL').strip().rstrip('/')}")
-        elif firecrawl_key_available:
-            print("   Using direct Firecrawl cloud API")
-        elif tool_gateway_available:
-            print(f"   Using Firecrawl tool-gateway: {_get_firecrawl_gateway_url()}")
         else:
-            print("   Firecrawl backend selected but not configured")
+            print("   Web backend selected but not configured")
     else:
         print("❌ No web search backend configured")
-        print(
-            "Set EXA_API_KEY, PARALLEL_API_KEY, TAVILY_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL"
-            f"{_firecrawl_backend_help_suffix()}"
-        )
+        print("Set TAVILY_API_KEY")
 
     if not nous_available:
         print("❌ No auxiliary model available for LLM content processing")

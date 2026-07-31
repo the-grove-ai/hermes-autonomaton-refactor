@@ -11,12 +11,8 @@ from hermes_cli.config import get_env_value, load_config
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
 from tools.tool_backend_helpers import (
-    fal_key_is_configured,
-    has_direct_modal_credentials,
     managed_nous_tools_enabled,
     normalize_browser_cloud_provider,
-    normalize_modal_mode,
-    resolve_modal_backend_state,
     resolve_openai_audio_api_key,
 )
 
@@ -76,10 +72,6 @@ class NousSubscriptionFeatures:
         return self.features["web"]
 
     @property
-    def image_gen(self) -> NousFeatureState:
-        return self.features["image_gen"]
-
-    @property
     def tts(self) -> NousFeatureState:
         return self.features["tts"]
 
@@ -87,12 +79,8 @@ class NousSubscriptionFeatures:
     def browser(self) -> NousFeatureState:
         return self.features["browser"]
 
-    @property
-    def modal(self) -> NousFeatureState:
-        return self.features["modal"]
-
     def items(self) -> Iterable[NousFeatureState]:
-        ordered = ("web", "image_gen", "tts", "browser", "modal")
+        ordered = ("web", "tts", "browser")
         for key in ordered:
             yield self.features[key]
 
@@ -167,7 +155,6 @@ def _browser_label(current_provider: str) -> str:
 def _tts_label(current_provider: str) -> str:
     mapping = {
         "openai": "OpenAI TTS",
-        "elevenlabs": "ElevenLabs",
         "edge": "Edge TTS",
         "xai": "xAI TTS",
         "mistral": "Mistral Voxtral TTS",
@@ -261,15 +248,12 @@ def get_nous_subscription_features(
     subscribed = provider_is_nous or nous_auth_present
 
     web_tool_enabled = _toolset_enabled(config, "web")
-    image_tool_enabled = _toolset_enabled(config, "image_gen")
     tts_tool_enabled = _toolset_enabled(config, "tts")
     browser_tool_enabled = _toolset_enabled(config, "browser")
-    modal_tool_enabled = _toolset_enabled(config, "terminal")
 
     web_cfg = config.get("web") if isinstance(config.get("web"), dict) else {}
     tts_cfg = config.get("tts") if isinstance(config.get("tts"), dict) else {}
     browser_cfg = config.get("browser") if isinstance(config.get("browser"), dict) else {}
-    terminal_cfg = config.get("terminal") if isinstance(config.get("terminal"), dict) else {}
 
     web_backend = str(web_cfg.get("backend") or "").strip().lower()
     # Per-capability overrides: if set, they determine which backend is active for
@@ -281,12 +265,6 @@ def get_nous_subscription_features(
     browser_provider = normalize_browser_cloud_provider(
         browser_cfg.get("cloud_provider") if browser_provider_explicit else None
     )
-    terminal_backend = (
-        str(terminal_cfg.get("backend") or "local").strip().lower()
-    )
-    modal_mode = normalize_modal_mode(
-        terminal_cfg.get("modal_mode")
-    )
 
     # use_gateway flags — when True, the user explicitly opted into the
     # Tool Gateway via `hermes model`, so direct credentials should NOT
@@ -294,21 +272,16 @@ def get_nous_subscription_features(
     web_use_gateway = _uses_gateway(web_cfg)
     tts_use_gateway = _uses_gateway(tts_cfg)
     browser_use_gateway = _uses_gateway(browser_cfg)
-    image_gen_cfg = config.get("image_gen") if isinstance(config.get("image_gen"), dict) else {}
-    image_use_gateway = _uses_gateway(image_gen_cfg)
 
     direct_exa = bool(get_env_value("EXA_API_KEY"))
     direct_firecrawl = bool(get_env_value("FIRECRAWL_API_KEY") or get_env_value("FIRECRAWL_API_URL"))
     direct_parallel = bool(get_env_value("PARALLEL_API_KEY"))
     direct_tavily = bool(get_env_value("TAVILY_API_KEY"))
     direct_searxng = bool(get_env_value("SEARXNG_URL"))
-    direct_fal = fal_key_is_configured()
     direct_openai_tts = bool(resolve_openai_audio_api_key())
-    direct_elevenlabs = bool(get_env_value("ELEVENLABS_API_KEY"))
     direct_camofox = bool(get_env_value("CAMOFOX_URL"))
     direct_browserbase = bool(get_env_value("BROWSERBASE_API_KEY") and get_env_value("BROWSERBASE_PROJECT_ID"))
     direct_browser_use = bool(get_env_value("BROWSER_USE_API_KEY"))
-    direct_modal = has_direct_modal_credentials()
 
     # When use_gateway is set, suppress direct credentials for managed detection
     if web_use_gateway:
@@ -316,25 +289,15 @@ def get_nous_subscription_features(
         direct_exa = False
         direct_parallel = False
         direct_tavily = False
-    if image_use_gateway:
-        direct_fal = False
     if tts_use_gateway:
         direct_openai_tts = False
-        direct_elevenlabs = False
     if browser_use_gateway:
         direct_browser_use = False
         direct_browserbase = False
 
     managed_web_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("firecrawl")
-    managed_image_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("fal-queue")
     managed_tts_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("openai-audio")
     managed_browser_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("browser-use")
-    managed_modal_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("modal")
-    modal_state = resolve_modal_backend_state(
-        modal_mode,
-        has_direct=direct_modal,
-        managed_ready=managed_modal_available,
-    )
 
     web_managed = web_backend == "firecrawl" and managed_web_available and not direct_firecrawl
     web_active = bool(
@@ -359,10 +322,6 @@ def get_nous_subscription_features(
         managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily or direct_searxng
     )
 
-    image_managed = image_tool_enabled and managed_image_available and not direct_fal
-    image_active = bool(image_tool_enabled and (image_managed or direct_fal))
-    image_available = bool(managed_image_available or direct_fal)
-
     tts_current_provider = tts_provider or "edge"
     tts_managed = (
         tts_tool_enabled
@@ -373,7 +332,6 @@ def get_nous_subscription_features(
     tts_available = bool(
         tts_current_provider in {"edge", "neutts"}
         or (tts_current_provider == "openai" and (managed_tts_available or direct_openai_tts))
-        or (tts_current_provider == "elevenlabs" and direct_elevenlabs)
         or (tts_current_provider == "mistral" and bool(get_env_value("MISTRAL_API_KEY")))
     )
     tts_active = bool(tts_tool_enabled and tts_available)
@@ -396,37 +354,6 @@ def get_nous_subscription_features(
         managed_browser_available=managed_browser_available,
     )
 
-    if terminal_backend != "modal":
-        modal_managed = False
-        modal_available = True
-        modal_active = bool(modal_tool_enabled)
-        modal_direct_override = False
-    elif modal_state["selected_backend"] == "managed":
-        modal_managed = bool(modal_tool_enabled)
-        modal_available = True
-        modal_active = bool(modal_tool_enabled)
-        modal_direct_override = False
-    elif modal_state["selected_backend"] == "direct":
-        modal_managed = False
-        modal_available = True
-        modal_active = bool(modal_tool_enabled)
-        modal_direct_override = bool(modal_tool_enabled)
-    elif modal_mode == "managed":
-        modal_managed = False
-        modal_available = bool(managed_modal_available)
-        modal_active = False
-        modal_direct_override = False
-    elif modal_mode == "direct":
-        modal_managed = False
-        modal_available = bool(direct_modal)
-        modal_active = False
-        modal_direct_override = False
-    else:
-        modal_managed = False
-        modal_available = bool(managed_modal_available or direct_modal)
-        modal_active = False
-        modal_direct_override = False
-
     tts_explicit_configured = False
     raw_tts_cfg = config.get("tts")
     if isinstance(raw_tts_cfg, dict) and "provider" in raw_tts_cfg:
@@ -444,18 +371,6 @@ def get_nous_subscription_features(
             toolset_enabled=web_tool_enabled,
             current_provider=web_backend or web_search_backend or "",
             explicit_configured=bool(web_backend or web_search_backend),
-        ),
-        "image_gen": NousFeatureState(
-            key="image_gen",
-            label="Image generation",
-            included_by_default=True,
-            available=image_available,
-            active=image_active,
-            managed_by_nous=image_managed,
-            direct_override=image_active and not image_managed,
-            toolset_enabled=image_tool_enabled,
-            current_provider="FAL" if direct_fal else ("Nous Subscription" if image_managed else ""),
-            explicit_configured=direct_fal,
         ),
         "tts": NousFeatureState(
             key="tts",
@@ -480,18 +395,6 @@ def get_nous_subscription_features(
             toolset_enabled=browser_tool_enabled,
             current_provider=_browser_label(browser_current_provider),
             explicit_configured=browser_provider_explicit,
-        ),
-        "modal": NousFeatureState(
-            key="modal",
-            label="Modal execution",
-            included_by_default=False,
-            available=modal_available,
-            active=modal_active,
-            managed_by_nous=modal_managed,
-            direct_override=terminal_backend == "modal" and modal_direct_override,
-            toolset_enabled=modal_tool_enabled,
-            current_provider="Modal" if terminal_backend == "modal" else terminal_backend or "local",
-            explicit_configured=terminal_backend == "modal",
         ),
     }
 
@@ -547,7 +450,6 @@ def apply_nous_managed_defaults(
 
     if "tts" in selected_toolsets and not features.tts.explicit_configured and not (
         resolve_openai_audio_api_key()
-        or get_env_value("ELEVENLABS_API_KEY")
     ):
         tts_cfg["provider"] = "openai"
         changed.add("tts")
@@ -559,9 +461,6 @@ def apply_nous_managed_defaults(
         browser_cfg["cloud_provider"] = "browser-use"
         changed.add("browser")
 
-    if "image_gen" in selected_toolsets and not fal_key_is_configured():
-        changed.add("image_gen")
-
     return changed
 
 
@@ -571,7 +470,6 @@ def apply_nous_managed_defaults(
 
 _GATEWAY_TOOL_LABELS = {
     "web": "Web search & extract (Firecrawl)",
-    "image_gen": "Image generation (FAL)",
     "tts": "Text-to-speech (OpenAI TTS)",
     "browser": "Browser automation (Browser Use)",
 }
@@ -587,10 +485,8 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
             or get_env_value("TAVILY_API_KEY")
             or get_env_value("EXA_API_KEY")
         ),
-        "image_gen": fal_key_is_configured(),
         "tts": bool(
             resolve_openai_audio_api_key()
-            or get_env_value("ELEVENLABS_API_KEY")
         ),
         "browser": bool(
             get_env_value("BROWSER_USE_API_KEY")
@@ -601,12 +497,11 @@ def _get_gateway_direct_credentials() -> Dict[str, bool]:
 
 _GATEWAY_DIRECT_LABELS = {
     "web": "Firecrawl/Exa/Parallel/Tavily key",
-    "image_gen": "FAL key",
-    "tts": "OpenAI/ElevenLabs key",
+    "tts": "OpenAI key",
     "browser": "Browser Use/Browserbase key",
 }
 
-_ALL_GATEWAY_KEYS = ("web", "image_gen", "tts", "browser")
+_ALL_GATEWAY_KEYS = ("web", "tts", "browser")
 
 
 def get_gateway_eligible_tools(
@@ -640,7 +535,6 @@ def get_gateway_eligible_tools(
     # use_gateway was explicitly set.
     opted_in = {
         "web": _uses_gateway(config.get("web")),
-        "image_gen": _uses_gateway(config.get("image_gen")),
         "tts": _uses_gateway(config.get("tts")),
         "browser": _uses_gateway(config.get("browser")),
     }
@@ -700,14 +594,6 @@ def apply_gateway_defaults(
         browser_cfg["cloud_provider"] = "browser-use"
         browser_cfg["use_gateway"] = True
         changed.add("browser")
-
-    if "image_gen" in tool_keys:
-        image_cfg = config.get("image_gen")
-        if not isinstance(image_cfg, dict):
-            image_cfg = {}
-            config["image_gen"] = image_cfg
-        image_cfg["use_gateway"] = True
-        changed.add("image_gen")
 
     return changed
 

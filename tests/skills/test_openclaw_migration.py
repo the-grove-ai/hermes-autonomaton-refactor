@@ -645,10 +645,10 @@ def test_tts_config_migrated(tmp_path: Path):
         json.dumps({
             "messages": {
                 "tts": {
-                    "provider": "elevenlabs",
-                    "elevenlabs": {
-                        "voiceId": "custom-voice-id",
-                        "modelId": "eleven_turbo_v2",
+                    "provider": "openai",
+                    "openai": {
+                        "voice": "custom-voice-id",
+                        "model": "gpt-4o-mini-tts",
                     },
                 }
             }
@@ -664,7 +664,7 @@ def test_tts_config_migrated(tmp_path: Path):
     )
     report = migrator.migrate()
     config_text = (target / "config.yaml").read_text(encoding="utf-8")
-    assert "elevenlabs" in config_text
+    assert "openai" in config_text
     assert "custom-voice-id" in config_text
 
 

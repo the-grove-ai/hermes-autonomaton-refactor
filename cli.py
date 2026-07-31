@@ -11751,65 +11751,11 @@ class HermesCLI:
             # reset at the start of each user turn.
             self._reasoning_shown_this_turn = False
 
-            # --- Streaming TTS setup ---
-            # When ElevenLabs is the TTS provider and sounddevice is available,
-            # we stream audio sentence-by-sentence as the agent generates tokens
-            # instead of waiting for the full response.
-            use_streaming_tts = False
-            _streaming_box_opened = False
-            text_queue = None
-            tts_thread = None
+            # Streaming TTS (continuous-voice streaming pipeline) removed —
+            # hermes-severance-v1 T3. The batch edge/command TTS path below
+            # (self._voice_tts + _voice_speak_response_async) speaks the full
+            # response after the turn completes.
             stream_callback = None
-            stop_event = None
-
-            if self._voice_tts:
-                try:
-                    from tools.tts_tool import (
-                        _load_tts_config as _load_tts_cfg,
-                        _get_provider as _get_prov,
-                        _import_elevenlabs,
-                        _import_sounddevice,
-                        stream_tts_to_speaker,
-                    )
-                    _tts_cfg = _load_tts_cfg()
-                    if _get_prov(_tts_cfg) == "elevenlabs":
-                        # Verify both ElevenLabs SDK and audio output are available
-                        _import_elevenlabs()
-                        _import_sounddevice()
-                        use_streaming_tts = True
-                except (ImportError, OSError):
-                    pass
-                except Exception:
-                    pass
-
-            if use_streaming_tts:
-                text_queue = queue.Queue()
-                stop_event = threading.Event()
-
-                def display_callback(sentence: str):
-                    """Called by TTS consumer when a sentence is ready to display + speak."""
-                    nonlocal _streaming_box_opened
-                    if not _streaming_box_opened:
-                        _streaming_box_opened = True
-                        w = self._scrollback_box_width(getattr(self.console, "width", 80))
-                        label = f" ⚕ Autonomaton{self._tier_label_suffix()} "
-                        if self.show_timestamps:
-                            label = f"{label}{datetime.now().strftime('%H:%M')} "
-                        fill = w - 2 - HermesCLI._status_bar_display_width(label)
-                        _cprint(f"\n{_ACCENT}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
-                    _cprint(f"{_STREAM_PAD}{sentence.rstrip()}")
-
-                tts_thread = threading.Thread(
-                    target=stream_tts_to_speaker,
-                    args=(text_queue, stop_event, self._voice_tts_done),
-                    kwargs={"display_callback": display_callback},
-                    daemon=True,
-                )
-                tts_thread.start()
-
-                def stream_callback(delta: str):
-                    if text_queue is not None:
-                        text_queue.put(delta)
 
             # When voice mode is active, prepend a brief instruction so the
             # model responds concisely. The prefix is API-call-local only —
@@ -11934,9 +11880,6 @@ class HermesCLI:
                             if self._clarify_state or self._clarify_freetext:
                                 continue
                             print("\n⚡ New message detected, interrupting...")
-                            # Signal TTS to stop on interrupt
-                            if stop_event is not None:
-                                stop_event.set()
                             self.agent.interrupt(interrupt_msg)
                             # Debug: log to file (stdout may be devnull from redirect_stdout)
                             try:
@@ -12007,12 +11950,6 @@ class HermesCLI:
 
             # Flush any remaining streamed text and close the box
             self._flush_stream()
-
-            # Signal end-of-text to TTS consumer and wait for it to finish
-            if use_streaming_tts and text_queue is not None:
-                text_queue.put(None)  # sentinel
-                if tts_thread is not None:
-                    tts_thread.join(timeout=120)
 
             # Drain any remaining agent output still in the StdoutProxy
             # buffer so tool/status lines render ABOVE our response box.
@@ -12136,11 +12073,7 @@ class HermesCLI:
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
-                if use_streaming_tts and _streaming_box_opened and not is_error_response:
-                    # Text was already printed sentence-by-sentence; just close the box
-                    w = self._scrollback_box_width()
-                    _cprint(f"\n{_ACCENT}╰{'─' * (w - 2)}╯{_RST}")
-                elif already_streamed:
+                if already_streamed:
                     # Response was already streamed token-by-token with box framing;
                     # _flush_stream() already closed the box. Skip Rich Panel.
                     pass
@@ -12184,8 +12117,7 @@ class HermesCLI:
                     )
 
             # Speak response aloud if voice TTS is enabled
-            # Skip batch TTS when streaming TTS already handled it
-            if self._voice_tts and response and not use_streaming_tts:
+            if self._voice_tts and response:
                 self._voice_speak_response_async(response)
 
 
@@ -12225,21 +12157,7 @@ class HermesCLI:
         except Exception as e:
             print(f"Error: {e}")
             return None
-        finally:
-            # Ensure streaming TTS resources are cleaned up even on error.
-            # Normal path sends the sentinel at line ~3568; this is a safety
-            # net for exception paths that skip it.  Duplicate sentinels are
-            # harmless — stream_tts_to_speaker exits on the first None.
-            if text_queue is not None:
-                try:
-                    text_queue.put_nowait(None)
-                except Exception:
-                    pass
-            if stop_event is not None:
-                stop_event.set()
-            if tts_thread is not None and tts_thread.is_alive():
-                tts_thread.join(timeout=5)
-    
+
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
         print()

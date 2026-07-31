@@ -7079,7 +7079,6 @@ class GatewayRunner:
                     "No STT provider",
                     "STT is disabled",
                     "can't listen",
-                    "VOICE_TOOLS_OPENAI_KEY",
                 )
                 if any(marker in message_text for marker in _stt_fail_markers):
                     _stt_adapter = self.adapters.get(source.platform)
@@ -13604,10 +13603,7 @@ class GatewayRunner:
                     )
                 else:
                     error = result.get("error", "unknown error")
-                    if (
-                        "No STT provider" in error
-                        or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
-                    ):
+                    if "No STT provider" in error:
                         _no_stt_note = (
                             "[The user sent a voice message but I can't listen "
                             "to it right now — no STT provider is configured. "

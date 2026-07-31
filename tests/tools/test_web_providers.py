@@ -149,21 +149,11 @@ class TestPerCapabilityBackendSelection:
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
-            "backend": "firecrawl",
+            "backend": "",
             "search_backend": "tavily",
         })
         monkeypatch.setenv("TAVILY_API_KEY", "test-key")
         assert web_tools._get_search_backend() == "tavily"
-
-    def test_extract_backend_overrides_generic(self, monkeypatch):
-        from tools import web_tools
-
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
-            "backend": "tavily",
-            "extract_backend": "exa",
-        })
-        monkeypatch.setenv("EXA_API_KEY", "test-key")
-        assert web_tools._get_extract_backend() == "exa"
 
     def test_falls_back_to_generic_backend_when_search_backend_empty(self, monkeypatch):
         from tools import web_tools
@@ -179,23 +169,24 @@ class TestPerCapabilityBackendSelection:
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
-            "backend": "parallel",
+            "backend": "tavily",
             "extract_backend": "",
         })
-        monkeypatch.setenv("PARALLEL_API_KEY", "test-key")
-        assert web_tools._get_extract_backend() == "parallel"
+        monkeypatch.setenv("TAVILY_API_KEY", "test-key")
+        assert web_tools._get_extract_backend() == "tavily"
 
     def test_search_backend_ignored_when_not_available(self, monkeypatch):
         from tools import web_tools
 
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {
-            "backend": "firecrawl",
-            "search_backend": "exa",  # set but no EXA_API_KEY
+            "backend": "tavily",
+            "search_backend": "exa",  # set but no longer a bundled backend
         })
         monkeypatch.delenv("EXA_API_KEY", raising=False)
-        monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-key")
-        # Should fall back to firecrawl since exa isn't configured
-        assert web_tools._get_search_backend() == "firecrawl"
+        monkeypatch.setenv("TAVILY_API_KEY", "tvly-key")
+        # Should fall back to the generic backend since the override isn't
+        # an available backend.
+        assert web_tools._get_search_backend() == "tavily"
 
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
         from tools import web_tools
@@ -251,11 +242,9 @@ class TestWebSearchUsesSearchBackend:
             return result
 
         monkeypatch.setattr(web_tools, "_get_search_backend", tracking_get_search)
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "firecrawl"})
-        monkeypatch.setenv("FIRECRAWL_API_KEY", "fake")
+        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {"backend": "tavily"})
 
-        # The function will fail at Firecrawl client level but we just
-        # need to verify _get_search_backend was called
+        # We just need to verify _get_search_backend was called
         try:
             web_tools.web_search_tool("test", 1)
         except Exception:
@@ -278,15 +267,8 @@ class TestUnconfiguredErrorEnvelopeParity:
 
     def _clear_web_creds(self, monkeypatch):
         for k in (
-            "BRAVE_SEARCH_API_KEY",
-            "SEARXNG_URL",
             "TAVILY_API_KEY",
-            "EXA_API_KEY",
-            "PARALLEL_API_KEY",
-            "FIRECRAWL_API_KEY",
-            "FIRECRAWL_API_URL",
-            "FIRECRAWL_GATEWAY_URL",
-            "TOOL_GATEWAY_DOMAIN",
+            "TAVILY_BASE_URL",
         ):
             monkeypatch.delenv(k, raising=False)
 
@@ -298,13 +280,7 @@ class TestUnconfiguredErrorEnvelopeParity:
         from tools import web_tools
 
         self._clear_web_creds(monkeypatch)
-        # Reset firecrawl client cache so the unconfigured state is re-evaluated
-        monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
-        monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
-        # ddgs is a keyless default backend; disable it so the unconfigured
-        # path is exercised deterministically regardless of worker state.
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False, raising=False)
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
         assert "error" in result, f"expected top-level 'error' key, got {result}"
@@ -327,12 +303,7 @@ class TestUnconfiguredErrorEnvelopeParity:
         from tools import web_tools
 
         self._clear_web_creds(monkeypatch)
-        monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
-        monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
-        # ddgs is a keyless default backend; disable it so the unconfigured
-        # path is exercised deterministically regardless of worker state.
-        monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False, raising=False)
 
         result = json.loads(asyncio.run(web_tools.web_crawl_tool("https://example.com", use_llm_processing=False)))
         assert result.get("success") is False

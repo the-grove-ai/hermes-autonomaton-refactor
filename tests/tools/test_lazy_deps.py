@@ -27,7 +27,6 @@ import tools.lazy_deps as ld
 class TestSpecSafety:
     @pytest.mark.parametrize("spec", [
         "mistralai>=2.3.0,<3",
-        "elevenlabs>=1.0,<2",
         "honcho-ai>=2.0.1,<3",
         "boto3>=1.35.0,<2",
         "mautrix[encryption]>=0.20,<1",

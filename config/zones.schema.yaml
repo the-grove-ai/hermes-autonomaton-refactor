@@ -266,7 +266,6 @@ tool_effects:
   gmail_reply:                           external_effect
   gmail_send:                            external_effect
   ha_call_service:                       external_effect
-  image_generate:                        external_effect
   invoke_skill:                          external_effect
   kanban_block:                          external_effect
   kanban_comment:                        external_effect
@@ -293,15 +292,7 @@ tool_effects:
   sheets_update:                         external_effect
   skill_manage:                          external_effect
   skill_manage.create:                   external_effect
-  spotify_albums:                        external_effect
-  spotify_devices:                       external_effect
-  spotify_library:                       external_effect
-  spotify_playback:                      external_effect
-  spotify_playlists:                     external_effect
-  spotify_queue:                         external_effect
-  spotify_search:                        external_effect
   text_to_speech:                        external_effect
-  video_generate:                        external_effect
   yb_send_dm:                            external_effect
   yb_send_sticker:                       external_effect
 

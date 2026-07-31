@@ -71,7 +71,6 @@ class TestCatchAllPatterns:
 
     @pytest.mark.parametrize("key", [
         "DAYTONA_API_KEY",
-        "ELEVENLABS_API_KEY",
         "SOME_FUTURE_SERVICE_API_KEY",
         "MY_CUSTOM_TOKEN",
         "WHATSAPP_BOT_TOKEN",

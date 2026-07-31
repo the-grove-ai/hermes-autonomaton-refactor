@@ -114,11 +114,11 @@ def test_get_platform_tools_homeassistant_toolset_off_for_cron_when_hass_token_m
 
 
 def test_get_platform_tools_expands_composite_when_mixed_with_configurable():
-    """``[hermes-cli, spotify]`` (composite + configurable) must keep the full
-    ``hermes-cli`` toolset alongside the explicit Spotify opt-in. The
+    """``[hermes-cli, video]`` (composite + configurable) must keep the full
+    ``hermes-cli`` toolset alongside the explicit default-off opt-in. The
     has_explicit_config branch used to drop ``hermes-cli`` on the floor,
-    leaving sessions with only ``{spotify, kanban}``."""
-    config = {"platform_toolsets": {"cli": ["hermes-cli", "spotify"]}}
+    leaving sessions with only the configurable opt-ins."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "video"]}}
 
     enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
 
@@ -126,8 +126,9 @@ def test_get_platform_tools_expands_composite_when_mixed_with_configurable():
     for ts in ("terminal", "file", "web", "browser", "memory", "delegation",
                "code_execution", "todo", "session_search", "skills"):
         assert ts in enabled, f"{ts} should be enabled when hermes-cli is listed"
-    # User explicitly opted into Spotify — must survive _DEFAULT_OFF_TOOLSETS subtraction.
-    assert "spotify" in enabled
+    # User explicitly opted into a default-off toolset — must survive
+    # _DEFAULT_OFF_TOOLSETS subtraction.
+    assert "video" in enabled
 
 
 def test_get_platform_tools_composite_only_unchanged():
@@ -388,7 +389,7 @@ def test_save_platform_tools_does_not_preserve_platform_default_toolsets():
     terminal, etc.) and treated platform defaults as unknown custom entries
     (like MCP server names), causing them to be kept unconditionally.
 
-    Regression test: user unchecks image_gen and homeassistant via
+    Regression test: user unchecks video and homeassistant via
     ``hermes tools``, but hermes-cli stays in the config and re-enables
     everything on the next read.
     """
@@ -403,7 +404,7 @@ def test_save_platform_tools_does_not_preserve_platform_default_toolsets():
         }
     }
 
-    # User unchecks image_gen, homeassistant, moa — keeps the rest
+    # User unchecks video, homeassistant, moa — keeps the rest
     new_selection = {
         "browser", "clarify", "code_execution", "cronjob",
         "delegation", "file", "memory", "session_search",
@@ -424,7 +425,7 @@ def test_save_platform_tools_does_not_preserve_platform_default_toolsets():
     assert "browser" in saved
 
     # Tools the user unchecked must NOT be present
-    assert "image_gen" not in saved
+    assert "video" not in saved
     assert "homeassistant" not in saved
     assert "moa" not in saved
 
@@ -561,7 +562,6 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
     for env_var in (
         "VOICE_TOOLS_OPENAI_KEY",
         "OPENAI_API_KEY",
-        "ELEVENLABS_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
         "TAVILY_API_KEY",
@@ -575,7 +575,7 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
 
     monkeypatch.setattr(
         "hermes_cli.tools_config._prompt_toolset_checklist",
-        lambda *args, **kwargs: {"web", "image_gen", "tts", "browser"},
+        lambda *args, **kwargs: {"web", "tts", "browser"},
     )
     monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
     # Prevent leaked platform tokens (e.g. DISCORD_BOT_TOKEN from gateway.run
@@ -697,93 +697,6 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
     # sorted() must not raise TypeError
     sorted(enabled)
-
-
-# ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
-
-class TestImagegenBackendRegistry:
-    """IMAGEGEN_BACKENDS tags drive the model picker flow in tools_config."""
-
-    def test_fal_backend_registered(self):
-        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
-        assert "fal" in IMAGEGEN_BACKENDS
-
-    def test_fal_catalog_loads_lazily(self):
-        """catalog_fn should defer import to avoid import cycles."""
-        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
-        catalog, default = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
-        assert default == "fal-ai/flux-2/klein/9b"
-        assert "fal-ai/flux-2/klein/9b" in catalog
-        assert "fal-ai/flux-2-pro" in catalog
-
-    def test_image_gen_providers_tagged_with_fal_backend(self):
-        """Both Nous Subscription and FAL.ai providers must carry the
-        imagegen_backend tag so _configure_provider fires the picker."""
-        from hermes_cli.tools_config import TOOL_CATEGORIES
-        providers = TOOL_CATEGORIES["image_gen"]["providers"]
-        for p in providers:
-            assert p.get("imagegen_backend") == "fal", (
-                f"{p['name']} missing imagegen_backend tag"
-            )
-
-
-class TestImagegenModelPicker:
-    """_configure_imagegen_model writes selection to config and respects
-    curses fallback semantics (returns default when stdin isn't a TTY)."""
-
-    def test_picker_writes_chosen_model_to_config(self):
-        from hermes_cli.tools_config import _configure_imagegen_model
-        config = {}
-        # Force _prompt_choice to pick index 1 (second-in-ordered-list).
-        with patch("hermes_cli.tools_config._prompt_choice", return_value=1):
-            _configure_imagegen_model("fal", config)
-        # ordered[0] == current (default klein), ordered[1] == first non-default
-        assert config["image_gen"]["model"] != "fal-ai/flux-2/klein/9b"
-        assert config["image_gen"]["model"].startswith("fal-ai/")
-
-    def test_picker_with_gpt_image_does_not_prompt_quality(self):
-        """GPT-Image quality is pinned to medium in the tool's defaults —
-        no follow-up prompt, no config write for quality_setting."""
-        from hermes_cli.tools_config import (
-            _configure_imagegen_model,
-            IMAGEGEN_BACKENDS,
-        )
-        catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
-        model_ids = list(catalog.keys())
-        ordered = [default_model] + [m for m in model_ids if m != default_model]
-        gpt_idx = ordered.index("fal-ai/gpt-image-1.5")
-
-        # Only ONE picker call is expected (for model) — not two (model + quality).
-        call_count = {"n": 0}
-        def fake_prompt(*a, **kw):
-            call_count["n"] += 1
-            return gpt_idx
-
-        config = {}
-        with patch("hermes_cli.tools_config._prompt_choice", side_effect=fake_prompt):
-            _configure_imagegen_model("fal", config)
-
-        assert call_count["n"] == 1, (
-            f"Expected 1 picker call (model only), got {call_count['n']}"
-        )
-        assert config["image_gen"]["model"] == "fal-ai/gpt-image-1.5"
-        assert "quality_setting" not in config["image_gen"]
-
-    def test_picker_no_op_for_unknown_backend(self):
-        from hermes_cli.tools_config import _configure_imagegen_model
-        config = {}
-        _configure_imagegen_model("nonexistent-backend", config)
-        assert config == {}  # untouched
-
-    def test_picker_repairs_corrupt_config_section(self):
-        """When image_gen is a non-dict (user-edit YAML), the picker should
-        replace it with a fresh dict rather than crash."""
-        from hermes_cli.tools_config import _configure_imagegen_model
-        config = {"image_gen": "some-garbage-string"}
-        with patch("hermes_cli.tools_config._prompt_choice", return_value=0):
-            _configure_imagegen_model("fal", config)
-        assert isinstance(config["image_gen"], dict)
-        assert config["image_gen"]["model"] == "fal-ai/flux-2/klein/9b"
 
 
 def test_save_platform_tools_normalizes_numeric_entries():
@@ -922,10 +835,10 @@ def test_save_platform_tools_strips_restricted_toolsets():
 
 
 def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
-    """Bundled plugins (plugins/spotify) share their toolset key with the
-    built-in CONFIGURABLE_TOOLSETS entry. The effective list must not list
-    them twice — otherwise `hermes tools` → "reconfigure existing" shows
-    the same toolset two rows in a row.
+    """A bundled plugin that shares its toolset key with a built-in
+    CONFIGURABLE_TOOLSETS entry must not list twice — otherwise
+    `hermes tools` → "reconfigure existing" shows the same toolset
+    on two rows in a row.
     """
     from hermes_cli.tools_config import _get_effective_configurable_toolsets
 
@@ -935,20 +848,15 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
         f"duplicate toolset keys in effective list: "
         f"{[k for k in keys if keys.count(k) > 1]}"
     )
-    # Spotify specifically — the bug that motivated the dedupe.
-    spotify_rows = [t for t in all_ts if t[0] == "spotify"]
-    assert len(spotify_rows) == 1, spotify_rows
-    # Built-in label wins over the plugin label.
-    assert spotify_rows[0][1] == "🎵 Spotify"
 
 
 @pytest.mark.parametrize("provider,config_key,expected", [
     # managed provider → use_gateway True
-    ({"name": "T", "tts_provider": "elevenlabs", "managed_nous_feature": "tts", "env_vars": []}, "tts", True),
+    ({"name": "T", "tts_provider": "openai", "managed_nous_feature": "tts", "env_vars": []}, "tts", True),
     ({"name": "B", "browser_provider": "browserbase", "managed_nous_feature": "browser", "env_vars": []}, "browser", True),
     ({"name": "W", "web_backend": "tavily", "managed_nous_feature": "web", "env_vars": []}, "web", True),
     # self-hosted provider → use_gateway False
-    ({"name": "T", "tts_provider": "elevenlabs", "env_vars": []}, "tts", False),
+    ({"name": "T", "tts_provider": "openai", "env_vars": []}, "tts", False),
     ({"name": "B", "browser_provider": "browserbase", "env_vars": []}, "browser", False),
     ({"name": "W", "web_backend": "tavily", "env_vars": []}, "web", False),
 ])

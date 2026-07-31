@@ -59,8 +59,6 @@ CONFIGURABLE_TOOLSETS = [
     ("code_execution",  "⚡ Code Execution",            "execute_code"),
     ("vision",          "👁️  Vision / Image Analysis",  "vision_analyze"),
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
-    ("image_gen",       "🎨 Image Generation",          "image_generate"),
-    ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
     ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
@@ -76,7 +74,6 @@ CONFIGURABLE_TOOLSETS = [
     ("cronjob",         "⏰ Cron Jobs",                 "create/list/update/pause/resume/run, with optional attached skills"),
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
-    ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     # yuanbao (Tencent Yuanbao platform) removed from the operator toolset toggle
@@ -101,15 +98,11 @@ CONFIGURABLE_TOOLSETS = [
 # They're still in _GROVE_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
 #
-# Video gen is off by default — it's a niche, paid, slow feature. Users
-# who want it opt in via `hermes tools` → Video Generation, which walks
-# them through provider + model selection.
-#
 # X search is off by default — gated on xAI credentials (SuperGrok OAuth
 # or XAI_API_KEY). Users opt in via `hermes tools` → X (Twitter) Search,
 # which walks them through credential setup. The tool's check_fn means
 # the schema won't appear to the model even if enabled without credentials.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "discord", "discord_admin", "video", "x_search"}
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -138,9 +131,9 @@ def _get_effective_configurable_toolsets():
 
     Plugin toolsets are appended at the end so they appear after the
     built-in toolsets in the TUI checklist. A plugin whose toolset key
-    already appears in ``CONFIGURABLE_TOOLSETS`` is skipped — bundled
-    plugins (e.g. ``plugins/spotify``) share their toolset key with the
-    built-in entry, and we want the built-in label/description to win.
+    already appears in ``CONFIGURABLE_TOOLSETS`` is skipped — a bundled
+    plugin that shares its toolset key with a built-in entry lets the
+    built-in label/description win.
     Without the dedupe, ``hermes tools`` → "reconfigure existing" would
     list the same toolset twice.
     """
@@ -207,75 +200,14 @@ TOOL_CATEGORIES = {
         "icon": "🔊",
         "providers": [
             {
-                "name": "Nous Subscription",
-                "badge": "subscription",
-                "tag": "Managed OpenAI TTS billed to your subscription",
-                "env_vars": [],
-                "tts_provider": "openai",
-                "requires_nous_auth": True,
-                "managed_nous_feature": "tts",
-                "override_env_vars": ["VOICE_TOOLS_OPENAI_KEY", "OPENAI_API_KEY"],
-            },
-            {
                 "name": "Microsoft Edge TTS",
                 "badge": "★ recommended · free",
                 "tag": "Good quality, no API key needed",
                 "env_vars": [],
                 "tts_provider": "edge",
             },
-            {
-                "name": "OpenAI TTS",
-                "badge": "paid",
-                "tag": "High quality voices",
-                "env_vars": [
-                    {"key": "VOICE_TOOLS_OPENAI_KEY", "prompt": "OpenAI API key", "url": "https://platform.openai.com/api-keys"},
-                ],
-                "tts_provider": "openai",
-            },
-            {
-                "name": "xAI TTS",
-                "tag": "Grok voices — uses xAI Grok OAuth or XAI_API_KEY",
-                "env_vars": [],
-                "tts_provider": "xai",
-                "post_setup": "xai_grok",
-            },
-            {
-                "name": "ElevenLabs",
-                "badge": "paid",
-                "tag": "Most natural voices",
-                "env_vars": [
-                    {"key": "ELEVENLABS_API_KEY", "prompt": "ElevenLabs API key", "url": "https://elevenlabs.io/app/settings/api-keys"},
-                ],
-                "tts_provider": "elevenlabs",
-            },
-            # Mistral (Voxtral TTS) temporarily hidden — `mistralai` PyPI
-            # package is currently quarantined (malicious 2.4.6 release on
-            # 2026-05-12). Restore this entry once PyPI un-quarantines.
-            {
-                "name": "Google Gemini TTS",
-                "badge": "preview",
-                "tag": "30 prebuilt voices, controllable via prompts",
-                "env_vars": [
-                    {"key": "GEMINI_API_KEY", "prompt": "Gemini API key", "url": "https://aistudio.google.com/app/apikey"},
-                ],
-                "tts_provider": "gemini",
-            },
-            {
-                "name": "KittenTTS",
-                "badge": "local · free",
-                "tag": "Lightweight local ONNX TTS (~25MB), no API key",
-                "env_vars": [],
-                "tts_provider": "kittentts",
-                "post_setup": "kittentts",
-            },
-            {
-                "name": "Piper",
-                "badge": "local · free",
-                "tag": "Local neural TTS, 44 languages (voices ~20-90MB)",
-                "env_vars": [],
-                "tts_provider": "piper",
-                "post_setup": "piper",
-            },
+            # Custom command providers (type: command under tts.providers.<name>)
+            # remain available via config.yaml; they are not offered here.
         ],
     },
     "web": {
@@ -313,40 +245,6 @@ TOOL_CATEGORIES = {
                 ],
             },
         ],
-    },
-    "image_gen": {
-        "name": "Image Generation",
-        "icon": "🎨",
-        "providers": [
-            {
-                "name": "Nous Subscription",
-                "badge": "subscription",
-                "tag": "Managed FAL image generation billed to your subscription",
-                "env_vars": [],
-                "requires_nous_auth": True,
-                "managed_nous_feature": "image_gen",
-                "override_env_vars": ["FAL_KEY"],
-                "imagegen_backend": "fal",
-            },
-            {
-                "name": "FAL.ai",
-                "badge": "paid",
-                "tag": "Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana, etc.",
-                "env_vars": [
-                    {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
-                ],
-                "imagegen_backend": "fal",
-            },
-        ],
-    },
-    "video_gen": {
-        "name": "Video Generation",
-        "icon": "🎬",
-        # Providers list is intentionally empty — every video gen backend
-        # is a plugin, surfaced by ``_plugin_video_gen_providers()`` and
-        # injected by ``_visible_providers``. Mirrors the design we'll
-        # converge image_gen toward.
-        "providers": [],
     },
     "x_search": {
         "name": "X (Twitter) Search",
@@ -459,18 +357,6 @@ TOOL_CATEGORIES = {
                     {"key": "HASS_TOKEN", "prompt": "Home Assistant Long-Lived Access Token"},
                     {"key": "HASS_URL", "prompt": "Home Assistant URL", "default": "http://homeassistant.local:8123"},
                 ],
-            },
-        ],
-    },
-    "spotify": {
-        "name": "Spotify",
-        "icon": "🎵",
-        "providers": [
-            {
-                "name": "Spotify Web API",
-                "tag": "PKCE OAuth — opens the setup wizard",
-                "env_vars": [],
-                "post_setup": "spotify",
             },
         ],
     },
@@ -938,35 +824,6 @@ def _run_post_setup(post_setup_key: str):
         _print_info("    No API key required. DuckDuckGo enforces server-side rate limits.")
         _print_info("    Pair with an extract provider if you also need web_extract.")
 
-    elif post_setup_key == "spotify":
-        # Run the full `hermes auth spotify` flow — if the user has no
-        # client_id yet, this drops them into the interactive wizard
-        # (opens the Spotify dashboard, prompts for client_id, persists
-        # to ~/.grove/.env), then continues straight into PKCE. If they
-        # already have an app, it skips the wizard and just does OAuth.
-        from types import SimpleNamespace
-        try:
-            from hermes_cli.auth import login_spotify_command
-        except Exception as exc:
-            _print_warning(f"    Could not load Spotify auth: {exc}")
-            _print_info("    Run manually: hermes auth spotify")
-            return
-        _print_info("    Starting Spotify login...")
-        try:
-            login_spotify_command(SimpleNamespace(
-                client_id=None, redirect_uri=None, scope=None,
-                no_browser=False, timeout=None,
-            ))
-            _print_success("    Spotify authenticated")
-        except SystemExit as exc:
-            # User aborted the wizard, or OAuth failed — don't fail the
-            # toolset enable; they can retry with `hermes auth spotify`.
-            _print_warning(f"    Spotify login did not complete: {exc}")
-            _print_info("    Run later: hermes auth spotify")
-        except Exception as exc:
-            _print_warning(f"    Spotify login failed: {exc}")
-            _print_info("    Run manually: hermes auth spotify")
-
     elif post_setup_key == "langfuse":
         # Install the langfuse SDK.
         try:
@@ -1150,12 +1007,12 @@ def _get_platform_tools(
             if ts in configurable_keys and _toolset_allowed_for_platform(ts, platform)
         }
         # Mixed config: composite toolset alongside configurables (e.g.
-        # ``[hermes-cli, spotify]`` after enabling Spotify via ``hermes
-        # tools``). Without expansion the composite name is silently dropped,
-        # leaving sessions with only the configurable opt-ins and no native
-        # tools. Mirror the else-branch's subset inference, but apply
+        # ``[hermes-cli, discord]`` after enabling a configurable via
+        # ``hermes tools``). Without expansion the composite name is silently
+        # dropped, leaving sessions with only the configurable opt-ins and no
+        # native tools. Mirror the else-branch's subset inference, but apply
         # _DEFAULT_OFF_TOOLSETS only to the implicit expansion — anything the
-        # user explicitly listed (e.g. ``spotify``) must survive.
+        # user explicitly listed must survive.
         composite_tools = set()
         for ts_name in toolset_names:
             if ts_name in configurable_keys or ts_name in plugin_ts_keys:
@@ -1248,9 +1105,9 @@ def _get_platform_tools(
             claimed.update(ts_tools)
 
     # Plugin toolsets: enabled by default unless explicitly disabled, or
-    # unless the toolset is in _DEFAULT_OFF_TOOLSETS (e.g. spotify —
-    # shipped as a bundled plugin but user must opt in via `hermes tools`
-    # so we don't ship 7 Spotify tool schemas to users who don't use it).
+    # unless the toolset is in _DEFAULT_OFF_TOOLSETS (a bundled plugin the
+    # user must opt into via `hermes tools` so its tool schemas aren't
+    # shipped to users who don't use it).
     # A plugin toolset is "known" for a platform once `hermes tools`
     # has been saved for that platform (tracked via known_plugin_toolsets).
     # Unknown plugins default to enabled; known-but-absent = disabled.
@@ -1388,7 +1245,7 @@ def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
         except Exception:
             return False
 
-    if ts_key in {"web", "image_gen", "tts", "browser"}:
+    if ts_key in {"web", "tts", "browser"}:
         features = get_nous_subscription_features(config)
         feature = features.features.get(ts_key)
         if feature and (feature.available or feature.managed_by_nous):
@@ -1535,97 +1392,11 @@ def _configure_toolset(ts_key: str, config: dict):
         _configure_simple_requirements(ts_key)
 
 
-def _plugin_image_gen_providers() -> list[dict]:
-    """Build picker-row dicts from plugin-registered image gen providers.
-
-    Each returned dict looks like a regular ``TOOL_CATEGORIES`` provider
-    row but carries an ``image_gen_plugin_name`` marker so downstream
-    code (config writing, model picker) knows to route through the
-    plugin registry instead of the in-tree FAL backend.
-
-    FAL is skipped — it's already exposed by the hardcoded
-    ``TOOL_CATEGORIES["image_gen"]`` entries. When FAL gets ported to
-    a plugin in a follow-up PR, the hardcoded entries go away and this
-    function surfaces it alongside OpenAI automatically.
-    """
-    try:
-        from agent.image_gen_registry import list_providers
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        providers = list_providers()
-    except Exception:
-        return []
-
-    rows: list[dict] = []
-    for provider in providers:
-        if getattr(provider, "name", None) == "fal":
-            # FAL has its own hardcoded rows today.
-            continue
-        try:
-            schema = provider.get_setup_schema()
-        except Exception:
-            continue
-        if not isinstance(schema, dict):
-            continue
-        row = {
-            "name": schema.get("name", provider.display_name),
-            "badge": schema.get("badge", ""),
-            "tag": schema.get("tag", ""),
-            "env_vars": schema.get("env_vars", []),
-            "image_gen_plugin_name": provider.name,
-        }
-        if schema.get("post_setup"):
-            row["post_setup"] = schema["post_setup"]
-        rows.append(row)
-    return rows
-
-
-def _plugin_video_gen_providers() -> list[dict]:
-    """Build picker-row dicts from plugin-registered video gen providers.
-
-    Mirrors ``_plugin_image_gen_providers`` exactly — every video backend
-    is a plugin, so this function is the *only* source of provider rows
-    for the Video Generation category. The hardcoded ``TOOL_CATEGORIES``
-    entry for ``video_gen`` keeps an empty providers list.
-    """
-    try:
-        from agent.video_gen_registry import list_providers
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        providers = list_providers()
-    except Exception:
-        return []
-
-    rows: list[dict] = []
-    for provider in providers:
-        try:
-            schema = provider.get_setup_schema()
-        except Exception:
-            continue
-        if not isinstance(schema, dict):
-            continue
-        row = {
-            "name": schema.get("name", provider.display_name),
-            "badge": schema.get("badge", ""),
-            "tag": schema.get("tag", ""),
-            "env_vars": schema.get("env_vars", []),
-            "video_gen_plugin_name": provider.name,
-        }
-        if schema.get("post_setup"):
-            row["post_setup"] = schema["post_setup"]
-        rows.append(row)
-    return rows
-
-
-# Mirror of _plugin_image_gen_providers for web search backends. Surfaces
+# Mirror of the plugin-provider helper for web search backends. Surfaces
 # every plugin-registered web provider so it appears in the
-# "Web Search & Extract" picker. All seven providers (brave-free, ddgs,
-# searxng, exa, parallel, tavily, firecrawl) live as plugins after
-# PR #25182 — this helper is the sole source of truth for the category's
-# provider rows. The hardcoded entries that used to drive the category
-# were deleted in the same PR; only the two non-provider UX rows
+# "Web Search & Extract" picker. After the web-backend severance the
+# surviving search provider is tavily; this helper is the sole source of
+# truth for the category's provider rows. The two non-provider UX rows
 # ("Nous Subscription" managed-gateway entry, "Firecrawl Self-Hosted")
 # remain in TOOL_CATEGORIES because they describe alternative *setup
 # flows* for the firecrawl backend rather than distinct providers.
@@ -1638,9 +1409,9 @@ def _plugin_web_search_providers() -> list[dict]:
     marker) so the picker behaves identically whether a provider is
     hardcoded or plugin-registered.
 
-    After PR #25182, all seven web providers (brave-free, ddgs, searxng,
-    exa, parallel, tavily, firecrawl) are plugins; this helper is the sole
-    source of provider rows for the Web Search & Extract category.
+    After the web-backend severance the surviving search provider is
+    tavily (registered as a plugin); this helper is the sole source of
+    provider rows for the Web Search & Extract category.
     """
     try:
         from agent.web_search_registry import list_providers as _list_web_providers
@@ -1687,16 +1458,6 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
         if provider.get("requires_nous_auth") and not features.nous_auth_present:
             continue
         visible.append(provider)
-
-    # Inject plugin-registered image_gen backends (OpenAI today, more
-    # later) so the picker lists them alongside FAL / Nous Subscription.
-    if cat.get("name") == "Image Generation":
-        visible.extend(_plugin_image_gen_providers())
-
-    # Inject plugin-registered video_gen backends. Unlike image_gen,
-    # video_gen has NO hardcoded providers — every backend is a plugin.
-    if cat.get("name") == "Video Generation":
-        visible.extend(_plugin_video_gen_providers())
 
     # Inject plugin-registered web search backends. After PR #25182, this
     # is the SOLE source of provider rows for the Web Search & Extract
@@ -1764,42 +1525,6 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
     if ts_key == "browser":
         browser_cfg = config.get("browser", {})
         return not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg
-    if ts_key == "image_gen":
-        # Satisfied when the in-tree FAL backend is configured OR any
-        # plugin-registered image gen provider is available.
-        if fal_key_is_configured():
-            return False
-        try:
-            from agent.image_gen_registry import list_providers
-            from hermes_cli.plugins import _ensure_plugins_discovered
-
-            _ensure_plugins_discovered()
-            for provider in list_providers():
-                try:
-                    if provider.is_available():
-                        return False
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        return True
-    if ts_key == "video_gen":
-        # Satisfied when any plugin-registered video gen provider reports
-        # available — no in-tree fallback (every backend is a plugin).
-        try:
-            from agent.video_gen_registry import list_providers
-            from hermes_cli.plugins import _ensure_plugins_discovered
-
-            _ensure_plugins_discovered()
-            for provider in list_providers():
-                try:
-                    if provider.is_available():
-                        return False
-                except Exception:
-                    continue
-        except Exception:
-            pass
-        return True
 
     return not _toolset_has_keys(ts_key, config)
 
@@ -1874,31 +1599,12 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
 
 def _is_provider_active(provider: dict, config: dict) -> bool:
     """Check if a provider entry matches the currently active config."""
-    plugin_name = provider.get("image_gen_plugin_name")
-    if plugin_name:
-        image_cfg = config.get("image_gen", {})
-        return isinstance(image_cfg, dict) and image_cfg.get("provider") == plugin_name
-
-    video_plugin_name = provider.get("video_gen_plugin_name")
-    if video_plugin_name:
-        video_cfg = config.get("video_gen", {})
-        return isinstance(video_cfg, dict) and video_cfg.get("provider") == video_plugin_name
-
     managed_feature = provider.get("managed_nous_feature")
     if managed_feature:
         features = get_nous_subscription_features(config)
         feature = features.features.get(managed_feature)
         if feature is None:
             return False
-        if managed_feature == "image_gen":
-            image_cfg = config.get("image_gen", {})
-            if isinstance(image_cfg, dict):
-                configured_provider = image_cfg.get("provider")
-                if configured_provider not in {None, "", "fal"}:
-                    return False
-                if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
-                    return False
-            return feature.managed_by_nous
         if provider.get("tts_provider"):
             return (
                 feature.managed_by_nous
@@ -1920,16 +1626,6 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
     if provider.get("web_backend"):
         current = cfg_get(config, "web", "backend")
         return current == provider["web_backend"]
-    if provider.get("imagegen_backend"):
-        image_cfg = config.get("image_gen", {})
-        if not isinstance(image_cfg, dict):
-            return False
-        configured_provider = image_cfg.get("provider")
-        return (
-            provider["imagegen_backend"] == "fal"
-            and configured_provider in {None, "", "fal"}
-            and not is_truthy_value(image_cfg.get("use_gateway"), default=False)
-        )
     return False
 
 
@@ -1943,300 +1639,6 @@ def _detect_active_provider_index(providers: list, config: dict) -> int:
         if env_vars and all(get_env_value(v["key"]) for v in env_vars):
             return i
     return 0
-
-
-# ─── Image Generation Model Pickers ───────────────────────────────────────────
-#
-# IMAGEGEN_BACKENDS is a per-backend catalog. Each entry exposes:
-#   - config_key:        top-level config.yaml key for this backend's settings
-#   - model_catalog_fn:  returns an OrderedDict-like {model_id: metadata}
-#   - default_model:     fallback when nothing is configured
-#
-# This prepares for future imagegen backends (Replicate, Stability, etc.):
-# each new backend registers its own entry; the FAL provider entry in
-# TOOL_CATEGORIES tags itself with `imagegen_backend: "fal"` to select the
-# right catalog at picker time.
-
-
-def _fal_model_catalog():
-    """Lazy-load the FAL model catalog from the tool module."""
-    from tools.image_generation_tool import FAL_MODELS, DEFAULT_MODEL
-    return FAL_MODELS, DEFAULT_MODEL
-
-
-IMAGEGEN_BACKENDS = {
-    "fal": {
-        "display": "FAL.ai",
-        "config_key": "image_gen",
-        "catalog_fn": _fal_model_catalog,
-    },
-}
-
-
-def _format_imagegen_model_row(model_id: str, meta: dict, widths: dict) -> str:
-    """Format a single picker row with column-aligned speed / strengths / price."""
-    return (
-        f"{model_id:<{widths['model']}}  "
-        f"{meta.get('speed', ''):<{widths['speed']}}  "
-        f"{meta.get('strengths', ''):<{widths['strengths']}}  "
-        f"{meta.get('price', '')}"
-    )
-
-
-def _configure_imagegen_model(backend_name: str, config: dict) -> None:
-    """Prompt the user to pick a model for the given imagegen backend.
-
-    Writes selection to ``config[backend_config_key]["model"]``. Safe to
-    call even when stdin is not a TTY — curses_radiolist falls back to
-    keeping the current selection.
-    """
-    backend = IMAGEGEN_BACKENDS.get(backend_name)
-    if not backend:
-        return
-
-    catalog, default_model = backend["catalog_fn"]()
-    if not catalog:
-        return
-
-    cfg_key = backend["config_key"]
-    cur_cfg = config.setdefault(cfg_key, {})
-    if not isinstance(cur_cfg, dict):
-        cur_cfg = {}
-        config[cfg_key] = cur_cfg
-    current_model = cur_cfg.get("model") or default_model
-    if current_model not in catalog:
-        current_model = default_model
-
-    model_ids = list(catalog.keys())
-    # Put current model at the top so the cursor lands on it by default.
-    ordered = [current_model] + [m for m in model_ids if m != current_model]
-
-    # Column widths
-    widths = {
-        "model": max(len(m) for m in model_ids),
-        "speed": max((len(catalog[m].get("speed", "")) for m in model_ids), default=6),
-        "strengths": max((len(catalog[m].get("strengths", "")) for m in model_ids), default=0),
-    }
-
-    print()
-    header = (
-        f"  {'Model':<{widths['model']}}  "
-        f"{'Speed':<{widths['speed']}}  "
-        f"{'Strengths':<{widths['strengths']}}  "
-        f"Price"
-    )
-    print(color(header, Colors.CYAN))
-
-    rows = []
-    for mid in ordered:
-        row = _format_imagegen_model_row(mid, catalog[mid], widths)
-        if mid == current_model:
-            row += "  ← currently in use"
-        rows.append(row)
-
-    idx = _prompt_choice(
-        f"  Choose {backend['display']} model:",
-        rows,
-        default=0,
-    )
-
-    chosen = ordered[idx]
-    cur_cfg["model"] = chosen
-    _print_success(f"  Model set to: {chosen}")
-
-
-def _plugin_image_gen_catalog(plugin_name: str):
-    """Return ``(catalog_dict, default_model_id)`` for a plugin provider.
-
-    ``catalog_dict`` is shaped like the legacy ``FAL_MODELS`` table —
-    ``{model_id: {"display", "speed", "strengths", "price", ...}}`` —
-    so the existing picker code paths work without change. Returns
-    ``({}, None)`` if the provider isn't registered or has no models.
-    """
-    try:
-        from agent.image_gen_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        provider = get_provider(plugin_name)
-    except Exception:
-        return {}, None
-    if provider is None:
-        return {}, None
-    try:
-        models = provider.list_models() or []
-        default = provider.default_model()
-    except Exception:
-        return {}, None
-    catalog = {m["id"]: m for m in models if isinstance(m, dict) and "id" in m}
-    return catalog, default
-
-
-def _configure_imagegen_model_for_plugin(plugin_name: str, config: dict) -> None:
-    """Prompt the user to pick a model for a plugin-registered backend.
-
-    Writes selection to ``image_gen.model``. Mirrors
-    :func:`_configure_imagegen_model` but sources its catalog from the
-    plugin registry instead of :data:`IMAGEGEN_BACKENDS`.
-    """
-    catalog, default_model = _plugin_image_gen_catalog(plugin_name)
-    if not catalog:
-        return
-
-    cur_cfg = config.setdefault("image_gen", {})
-    if not isinstance(cur_cfg, dict):
-        cur_cfg = {}
-        config["image_gen"] = cur_cfg
-    current_model = cur_cfg.get("model") or default_model
-    if current_model not in catalog:
-        current_model = default_model
-
-    model_ids = list(catalog.keys())
-    ordered = [current_model] + [m for m in model_ids if m != current_model]
-
-    widths = {
-        "model": max(len(m) for m in model_ids),
-        "speed": max((len(catalog[m].get("speed", "")) for m in model_ids), default=6),
-        "strengths": max((len(catalog[m].get("strengths", "")) for m in model_ids), default=0),
-    }
-
-    print()
-    header = (
-        f"  {'Model':<{widths['model']}}  "
-        f"{'Speed':<{widths['speed']}}  "
-        f"{'Strengths':<{widths['strengths']}}  "
-        f"Price"
-    )
-    print(color(header, Colors.CYAN))
-
-    rows = []
-    for mid in ordered:
-        row = _format_imagegen_model_row(mid, catalog[mid], widths)
-        if mid == current_model:
-            row += "  ← currently in use"
-        rows.append(row)
-
-    idx = _prompt_choice(
-        f"  Choose {plugin_name} model:",
-        rows,
-        default=0,
-    )
-
-    chosen = ordered[idx]
-    cur_cfg["model"] = chosen
-    _print_success(f"  Model set to: {chosen}")
-
-
-def _select_plugin_image_gen_provider(plugin_name: str, config: dict) -> None:
-    """Persist a plugin-backed image generation provider selection."""
-    img_cfg = config.setdefault("image_gen", {})
-    if not isinstance(img_cfg, dict):
-        img_cfg = {}
-        config["image_gen"] = img_cfg
-    img_cfg["provider"] = plugin_name
-    img_cfg["use_gateway"] = False
-    _print_success(f"  image_gen.provider set to: {plugin_name}")
-    _configure_imagegen_model_for_plugin(plugin_name, config)
-
-
-# ─── Video Generation Model Pickers ───────────────────────────────────────────
-
-
-def _plugin_video_gen_catalog(plugin_name: str):
-    """Return ``(catalog_dict, default_model_id)`` for a video gen plugin.
-
-    Mirrors :func:`_plugin_image_gen_catalog`. Returns ``({}, None)`` when
-    the plugin isn't registered or has no models.
-    """
-    try:
-        from agent.video_gen_registry import get_provider
-        from hermes_cli.plugins import _ensure_plugins_discovered
-
-        _ensure_plugins_discovered()
-        provider = get_provider(plugin_name)
-    except Exception:
-        return {}, None
-    if provider is None:
-        return {}, None
-    try:
-        models = provider.list_models() or []
-        default = provider.default_model()
-    except Exception:
-        return {}, None
-    catalog = {m["id"]: m for m in models if isinstance(m, dict) and "id" in m}
-    return catalog, default
-
-
-def _configure_videogen_model_for_plugin(plugin_name: str, config: dict) -> None:
-    """Prompt for a video gen model from a plugin's catalog.
-
-    Mirrors :func:`_configure_imagegen_model_for_plugin`. Writes the
-    selection to ``video_gen.model``.
-    """
-    catalog, default_model = _plugin_video_gen_catalog(plugin_name)
-    if not catalog:
-        return
-
-    cur_cfg = config.setdefault("video_gen", {})
-    if not isinstance(cur_cfg, dict):
-        cur_cfg = {}
-        config["video_gen"] = cur_cfg
-    current_model = cur_cfg.get("model") or default_model
-    if current_model not in catalog:
-        current_model = default_model
-
-    model_ids = list(catalog.keys())
-    ordered = [current_model] + [m for m in model_ids if m != current_model]
-
-    widths = {
-        "model": max(len(m) for m in model_ids),
-        "speed": max((len(catalog[m].get("speed", "")) for m in model_ids), default=6),
-        "strengths": max((len(catalog[m].get("strengths", "")) for m in model_ids), default=0),
-    }
-
-    print()
-    header = (
-        f"  {'Model':<{widths['model']}}  "
-        f"{'Speed':<{widths['speed']}}  "
-        f"{'Strengths':<{widths['strengths']}}  "
-        f"Price"
-    )
-    print(color(header, Colors.CYAN))
-
-    rows = []
-    for mid in ordered:
-        meta = catalog[mid]
-        row = (
-            f"  {mid:<{widths['model']}}  "
-            f"{meta.get('speed', ''):<{widths['speed']}}  "
-            f"{meta.get('strengths', ''):<{widths['strengths']}}  "
-            f"{meta.get('price', '')}"
-        )
-        if mid == current_model:
-            row += "  ← currently in use"
-        rows.append(row)
-
-    idx = _prompt_choice(
-        f"  Choose {plugin_name} model:",
-        rows,
-        default=0,
-    )
-
-    chosen = ordered[idx]
-    cur_cfg["model"] = chosen
-    _print_success(f"  Model set to: {chosen}")
-
-
-def _select_plugin_video_gen_provider(plugin_name: str, config: dict) -> None:
-    """Persist a plugin-backed video generation provider selection."""
-    vid_cfg = config.setdefault("video_gen", {})
-    if not isinstance(vid_cfg, dict):
-        vid_cfg = {}
-        config["video_gen"] = vid_cfg
-    vid_cfg["provider"] = plugin_name
-    vid_cfg["use_gateway"] = False
-    _print_success(f"  video_gen.provider set to: {plugin_name}")
-    _configure_videogen_model_for_plugin(plugin_name, config)
 
 
 def _configure_provider(provider: dict, config: dict):
@@ -2275,8 +1677,8 @@ def _configure_provider(provider: dict, config: dict):
         web_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
-    # For tools without a specific config key (e.g. image_gen), still
-    # track use_gateway so the runtime knows the user's intent.
+    # For tools without a specific config key, still track use_gateway so
+    # the runtime knows the user's intent.
     if managed_feature and managed_feature not in {"web", "tts", "browser"}:
         config.setdefault(managed_feature, {})["use_gateway"] = True
     elif not managed_feature:
@@ -2295,28 +1697,6 @@ def _configure_provider(provider: dict, config: dict):
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
-        # Plugin-registered image_gen provider: write image_gen.provider
-        # and route model selection to the plugin's own catalog.
-        plugin_name = provider.get("image_gen_plugin_name")
-        if plugin_name:
-            _select_plugin_image_gen_provider(plugin_name, config)
-            return
-        # Plugin-registered video_gen provider — same flow, different
-        # registry.
-        video_plugin = provider.get("video_gen_plugin_name")
-        if video_plugin:
-            _select_plugin_video_gen_provider(video_plugin, config)
-            return
-        # Imagegen backends prompt for model selection after backend pick.
-        backend = provider.get("imagegen_backend")
-        if backend:
-            _configure_imagegen_model(backend, config)
-            # In-tree FAL is the only non-plugin backend today. Keep
-            # image_gen.provider clear so the dispatch shim falls through
-            # to the legacy FAL path.
-            img_cfg = config.setdefault("image_gen", {})
-            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
-                img_cfg["provider"] = "fal"
         return
 
     # Prompt for each required env var
@@ -2351,21 +1731,6 @@ def _configure_provider(provider: dict, config: dict):
 
     if all_configured:
         _print_success(f"  {provider['name']} configured!")
-        plugin_name = provider.get("image_gen_plugin_name")
-        if plugin_name:
-            _select_plugin_image_gen_provider(plugin_name, config)
-            return
-        video_plugin = provider.get("video_gen_plugin_name")
-        if video_plugin:
-            _select_plugin_video_gen_provider(video_plugin, config)
-            return
-        # Imagegen backends prompt for model selection after env vars are in.
-        backend = provider.get("imagegen_backend")
-        if backend:
-            _configure_imagegen_model(backend, config)
-            img_cfg = config.setdefault("image_gen", {})
-            if isinstance(img_cfg, dict) and img_cfg.get("provider") not in {None, "", "fal"}:
-                img_cfg["provider"] = "fal"
 
 
 def _configure_simple_requirements(ts_key: str):
@@ -2579,24 +1944,6 @@ def _reconfigure_provider(provider: dict, config: dict):
         _print_success(f"  {provider['name']} - no configuration needed!")
         if managed_feature:
             _print_info("  Requests for this tool will be billed to your Nous subscription.")
-        plugin_name = provider.get("image_gen_plugin_name")
-        if plugin_name:
-            _select_plugin_image_gen_provider(plugin_name, config)
-            return
-        # Plugin-registered video_gen provider — same flow, different registry.
-        video_plugin = provider.get("video_gen_plugin_name")
-        if video_plugin:
-            _select_plugin_video_gen_provider(video_plugin, config)
-            return
-        # Imagegen backends prompt for model selection on reconfig too.
-        backend = provider.get("imagegen_backend")
-        if backend:
-            _configure_imagegen_model(backend, config)
-            if backend == "fal":
-                img_cfg = config.setdefault("image_gen", {})
-                if isinstance(img_cfg, dict):
-                    img_cfg["provider"] = "fal"
-                    img_cfg["use_gateway"] = False
         return
 
     for var in env_vars:
@@ -2613,27 +1960,6 @@ def _reconfigure_provider(provider: dict, config: dict):
             _print_success("    Updated")
         else:
             _print_info("    Kept current")
-
-    # Imagegen backends prompt for model selection on reconfig too.
-    plugin_name = provider.get("image_gen_plugin_name")
-    if plugin_name:
-        _select_plugin_image_gen_provider(plugin_name, config)
-        return
-
-    # Plugin-registered video_gen provider — same flow, different registry.
-    video_plugin = provider.get("video_gen_plugin_name")
-    if video_plugin:
-        _select_plugin_video_gen_provider(video_plugin, config)
-        return
-
-    backend = provider.get("imagegen_backend")
-    if backend:
-        _configure_imagegen_model(backend, config)
-        if backend == "fal":
-            img_cfg = config.setdefault("image_gen", {})
-            if isinstance(img_cfg, dict):
-                img_cfg["provider"] = "fal"
-                img_cfg["use_gateway"] = False
 
 
 def _reconfigure_simple_requirements(ts_key: str):
@@ -2738,8 +2064,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
 
             # Walk through ALL selected tools that have provider options or
             # need API keys.  This ensures browser (Local vs Browserbase),
-            # TTS (Edge vs OpenAI vs ElevenLabs), etc. are shown even when
-            # a free provider exists.
+            # etc. are shown even when a free provider exists.
             to_configure = [
                 ts_key for ts_key in sorted(new_enabled)
                 if (TOOL_CATEGORIES.get(ts_key) or TOOLSET_ENV_REQUIREMENTS.get(ts_key))
