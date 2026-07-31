@@ -788,7 +788,7 @@ def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
 
 def test_get_platform_tools_second_pass_skips_fully_claimed_toolsets():
     """Toolsets whose tools are fully covered by configurable keys should NOT
-    be added by the second pass (prevents 'search', 'hermes-acp' noise).
+    be added by the second pass (prevents 'search' noise).
     """
     enabled = _get_platform_tools({}, "cli")
 

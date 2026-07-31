@@ -490,7 +490,7 @@ def load_cli_config() -> Dict[str, Any]:
                         defaults[key] = file_config[key]
             
             # Second: carry over keys from file_config that aren't in defaults
-            # (e.g. platform_toolsets, provider_routing, memory, honcho, etc.)
+            # (e.g. platform_toolsets, provider_routing, memory, etc.)
             for key in file_config:
                 if key not in defaults and key != "model":
                     defaults[key] = file_config[key]
@@ -11772,8 +11772,7 @@ class HermesCLI:
                 # Set callbacks inside the agent thread so thread-local storage
                 # in terminal_tool is populated for this thread.  The main thread
                 # registration (run() line ~9046) is invisible here because
-                # _callback_tls is threading.local().  Matches the pattern used
-                # by acp_adapter/server.py for ACP sessions.
+                # _callback_tls is threading.local().
                 set_sudo_password_callback(self._sudo_password_callback)
                 set_approval_callback(self._approval_callback)
                 try:

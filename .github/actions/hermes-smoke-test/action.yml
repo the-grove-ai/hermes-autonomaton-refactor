@@ -33,15 +33,3 @@ runs:
           -v /tmp/hermes-test:/opt/data \
           --entrypoint /opt/hermes/docker/entrypoint.sh \
           "${{ inputs.image }}" --help
-
-    - name: hermes dashboard --help
-      shell: bash
-      run: |
-        # Regression guard for #9153: dashboard was present in source but
-        # missing from the published image.  If this fails, something in
-        # the Dockerfile is excluding the dashboard subcommand from the
-        # installed package.
-        docker run --rm \
-          -v /tmp/hermes-test:/opt/data \
-          --entrypoint /opt/hermes/docker/entrypoint.sh \
-          "${{ inputs.image }}" dashboard --help

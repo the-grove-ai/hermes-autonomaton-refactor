@@ -264,9 +264,6 @@ TOOLSETS = {
         "includes": []
     },
 
-    # "honcho" toolset removed — Honcho is now a memory provider plugin.
-    # Tools are injected via MemoryManager, not the toolset system.
-
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
@@ -340,25 +337,6 @@ TOOLSETS = {
     # All platforms share the same core tools (including send_message,
     # which is gated on gateway running via its check_fn).
     # ==========================================================================
-
-    "hermes-acp": {
-        "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
-        "tools": [
-            "web_search", "web_extract",
-            "terminal", "process",
-            "read_file", "write_file", "patch", "search_files",
-            "vision_analyze",
-            "skills_list", "skill_view", "skill_manage",
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-            "todo",
-            "session_search",
-            "execute_code", "delegate_task",
-        ],
-        "includes": []
-    },
 
     "hermes-api-server": {
         # Parity with the messaging platforms: the OpenAI-compatible API server

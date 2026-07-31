@@ -1,9 +1,9 @@
 """
 Unified self-relaunch for Hermes CLI.
 
-Preserves critical flags (--tui, --dev, --profile, --model, etc.) across
+Preserves critical flags (--profile, --model, --yolo, etc.) across
 process replacement so that ``hermes sessions browse`` or post-setup relaunch
-doesn't silently drop the user's UI mode or other preferences.
+doesn't silently drop the user's preferences.
 
 Also works when ``hermes`` is not on PATH (e.g. ``nix run`` or ``python -m``).
 """

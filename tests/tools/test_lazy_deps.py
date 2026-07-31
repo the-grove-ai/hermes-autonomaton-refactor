@@ -95,10 +95,10 @@ class TestAllowlist:
                     f"{feature}: spec {spec!r} fails safety check"
 
     def test_feature_install_command_returns_pip_invocation(self):
-        cmd = ld.feature_install_command("memory.honcho")
+        cmd = ld.feature_install_command("platform.telegram")
         assert cmd is not None
         assert cmd.startswith("uv pip install")
-        assert "honcho-ai" in cmd
+        assert "python-telegram-bot" in cmd
 
     def test_feature_install_command_unknown(self):
         assert ld.feature_install_command("not.real") is None
@@ -305,16 +305,15 @@ class TestActiveFeatures:
         assert ld.active_features() == []
 
     def test_finds_features_with_at_least_one_package_installed(self, monkeypatch):
-        # Pretend only honcho-ai is installed; nothing else.
+        # Pretend only python-telegram-bot is installed; nothing else.
         monkeypatch.setattr(
             ld, "_is_present",
-            lambda spec: ld._pkg_name_from_spec(spec) == "honcho-ai",
+            lambda spec: ld._pkg_name_from_spec(spec) == "python-telegram-bot",
         )
         active = ld.active_features()
-        assert "memory.honcho" in active
-        # Backends the user never enabled stay quiet.
-        assert "memory.hindsight" not in active
-        assert "platform.slack" not in active
+        assert "platform.telegram" in active
+        # Features the user never enabled stay quiet.
+        assert "skill.youtube" not in active
 
     def test_multi_package_feature_active_if_any_present(self, monkeypatch):
         # skill.google_workspace has 3 packages; only one needs to be present

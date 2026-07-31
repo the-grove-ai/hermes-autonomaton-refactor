@@ -15,12 +15,6 @@
     {
       packages = {
         default = hermesAgent;
-        tui = hermesAgent.hermesTui;
-        web = hermesAgent.hermesWeb;
-
-        fix-lockfiles = hermesAgent.hermesNpmLib.mkFixLockfiles {
-          packages = [ hermesAgent.hermesTui hermesAgent.hermesWeb ];
-        };
       };
     };
 }

@@ -1,7 +1,7 @@
 """Tests for hermes_bootstrap — Windows UTF-8 stdio shim.
 
 The bootstrap module is imported at the top of every Hermes entry point
-(hermes, hermes-agent, hermes-acp, gateway, batch_runner, cli.py).  It
+(hermes, run_agent, gateway, cli.py).  It
 fixes Python's Windows UTF-8 defaults so print("café") doesn't crash and
 subprocess children inherit UTF-8 mode.
 
@@ -243,8 +243,7 @@ class TestEntryPointsImportBootstrap:
     # import hermes_bootstrap before doing any file I/O or stdout writes.
     ENTRY_POINTS = [
         "hermes_cli/main.py",   # hermes CLI (console_script)
-        "run_agent.py",          # hermes-agent (console_script)
-        "acp_adapter/entry.py",  # hermes-acp (console_script)
+        "run_agent.py",          # run_agent:main (direct launch)
         "gateway/run.py",        # gateway
         "cli.py",                # legacy direct-launch CLI
     ]

@@ -112,7 +112,6 @@ class TestAcceptHooksOnAgentSubparsers:
         ["--accept-hooks", "mcp", "serve", "--help"],
         ["mcp", "--accept-hooks", "serve", "--help"],
         ["mcp", "serve", "--accept-hooks", "--help"],
-        ["acp", "--accept-hooks", "--help"],
     ])
     def test_accepted_at_every_position(self, argv):
         """Invoking `hermes <argv>` must exit 0 (help) rather than

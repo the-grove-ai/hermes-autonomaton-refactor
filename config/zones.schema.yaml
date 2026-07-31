@@ -177,7 +177,6 @@ tool_effects:
   ha_get_state:                          read_only
   ha_list_entities:                      read_only
   ha_list_services:                      read_only
-  honcho.dialectic.read:                 read_only
   kanban_list:                           read_only
   kanban_show:                           read_only
   mcp_grove_browser_browser_extract:     read_only

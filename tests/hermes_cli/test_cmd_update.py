@@ -126,10 +126,9 @@ class TestCmdUpdateBranchFallback:
             if call.args and call.args[0][0] == "/usr/bin/npm"
         ]
 
-        # cmd_update runs npm commands in three locations:
-        #   1. repo root  — slash-command / TUI bridge deps
-        #   2. ui-tui/    — Ink TUI deps
-        #   3. web/       — install + "npm run build" for the web frontend
+        # cmd_update runs npm only in the repo root now — the ui-tui/ Ink TUI
+        # and web/ dashboard frontends were removed with the dashboard stack
+        # (hermes-severance-v1), so their npm install + build steps are gone.
         full_flags = [
             "/usr/bin/npm",
             "ci",
@@ -138,15 +137,9 @@ class TestCmdUpdateBranchFallback:
             "--no-audit",
             "--progress=false",
         ]
-        assert npm_calls[:2] == [
+        assert npm_calls == [
             (full_flags, PROJECT_ROOT),
-            (full_flags, PROJECT_ROOT / "ui-tui"),
         ]
-        if len(npm_calls) > 2:
-            assert npm_calls[2:] == [
-                (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT / "web"),
-                (["/usr/bin/npm", "run", "build"], PROJECT_ROOT / "web"),
-            ]
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""

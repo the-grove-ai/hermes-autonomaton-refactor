@@ -236,7 +236,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
         sys.modules[module_name] = mod
 
         # Register submodules so relative imports work
-        # e.g., "from .store import MemoryStore" in holographic plugin
+        # e.g., "from .store import MemoryStore" in a provider that ships submodules
         for sub_file in provider_dir.glob("*.py"):
             if sub_file.name == "__init__.py":
                 continue
@@ -308,8 +308,8 @@ class _ProviderCollector:
 def _get_active_memory_provider() -> Optional[str]:
     """Read the active memory provider name from config.yaml.
 
-    Returns the provider name (e.g. ``"honcho"``) or None if no
-    external provider is configured.  Lightweight — only reads config,
+    Returns the configured provider name or None if no external
+    provider is configured.  Lightweight — only reads config,
     no plugin loading.
     """
     try:
@@ -390,8 +390,7 @@ def discover_plugin_cli_commands() -> List[dict]:
             except Exception:
                 pass
 
-        handler_fn = getattr(cli_mod, f"{active_provider}_command", None) or \
-                     getattr(cli_mod, "honcho_command", None)
+        handler_fn = getattr(cli_mod, f"{active_provider}_command", None)
 
         results.append({
             "name": active_provider,

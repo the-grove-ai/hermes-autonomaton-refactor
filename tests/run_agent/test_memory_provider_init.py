@@ -1,22 +1,16 @@
 """Regression tests for memory provider selection during AIAgent init."""
 
-from types import SimpleNamespace
 from unittest.mock import patch
 from tests._runtime_ctx import MOCK_RUNTIME_CTX, MOCK_CAPABILITY_PROVIDER
 
 
-def test_blank_memory_provider_does_not_auto_enable_honcho():
-    """Blank memory.provider should remain opt-out even if Honcho fallback looks configured."""
+def test_blank_memory_provider_does_not_auto_enable_external():
+    """Blank memory.provider must stay opt-out — no external provider is loaded or saved."""
     cfg = {"memory": {"provider": ""}, "agent": {}}
-    honcho_cfg = SimpleNamespace(enabled=True, api_key="stale-key", base_url=None)
 
     with (
         patch("hermes_cli.config.load_config", return_value=cfg),
         patch("hermes_cli.config.save_config") as save_config,
-        patch(
-            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
-            return_value=honcho_cfg,
-        ) as from_global_config,
         patch("plugins.memory.load_memory_provider") as load_memory_provider,
         patch("agent.model_metadata.get_model_context_length", return_value=204_800),
         patch("run_agent.get_tool_definitions", return_value=[]),
@@ -25,7 +19,7 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
     ):
         from run_agent import AIAgent
 
-        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX, 
+        agent = AIAgent(runtime_ctx=MOCK_RUNTIME_CTX,
             api_mode="chat_completions",
             api_key="test-key-1234567890",
             base_url="https://openrouter.ai/api/v1",
@@ -34,8 +28,8 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
             skip_memory=False, get_available_tools=lambda *_a, **_k: ([])
         )
 
-    assert agent._memory_manager is None
-    from_global_config.assert_not_called()
+    # Sprint 40 retired the Agent-held ``_memory_manager`` (now resolved via
+    # dispatcher on demand); a blank provider must leave memory disabled.
+    assert agent._memory_enabled is False
     load_memory_provider.assert_not_called()
     save_config.assert_not_called()
-

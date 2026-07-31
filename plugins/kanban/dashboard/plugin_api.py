@@ -72,13 +72,15 @@ def _check_ws_token(provided: Optional[str]) -> bool:
     try:
         from hermes_cli import web_server as _ws
     except Exception:
-        # No dashboard context (tests). Accept so the tail loop is still
-        # testable; in production the dashboard module always imports
-        # cleanly because it's the caller.
-        return True
+        # web_server — the dashboard that minted ``_SESSION_TOKEN`` — was
+        # severed in the unsupported-surface removal (hermes-severance-v1).
+        # With no token source there is nothing to authenticate against, so
+        # this guard fails CLOSED: deny every websocket auth attempt rather
+        # than silently accepting an unauthenticated socket.
+        return False
     expected = getattr(_ws, "_SESSION_TOKEN", None)
     if not expected:
-        return True
+        return False
     return hmac.compare_digest(str(provided), str(expected))
 
 

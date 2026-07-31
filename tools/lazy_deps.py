@@ -1,7 +1,7 @@
 """
 Lazy dependency installer for opt-in Hermes Agent backends.
 
-Many Hermes features (Mistral TTS, Honcho memory, Bedrock, Slack, Matrix,
+Many Hermes features (Mistral TTS, Bedrock, Slack, Matrix,
 etc.) require Python packages that not every user needs. The
 historical approach was to bundle them all under ``pyproject.toml`` extras
 (``hermes-agent[all]``) and install them eagerly at setup time. That has
@@ -110,10 +110,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Image generation backends ─────────────────────────────────────────
     "image.fal": ("fal-client==0.13.1",),
 
-    # ─── Memory providers ──────────────────────────────────────────────────
-    "memory.honcho": ("honcho-ai==2.0.1",),
-    "memory.hindsight": ("hindsight-client==0.6.1",),
-
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
 
@@ -131,8 +127,6 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "skill.youtube": ("youtube-transcript-api==1.2.4",),
 
     # ─── Tools ─────────────────────────────────────────────────────────────
-    # ACP adapter (VS Code / Zed / JetBrains integration)
-    "tool.acp": ("agent-client-protocol==0.9.0",),
     # Dashboard (`hermes dashboard`)
     "tool.dashboard": (
         "fastapi==0.133.1",
@@ -229,7 +223,7 @@ def _pkg_name_from_spec(spec: str) -> str:
 def _specifier_from_spec(spec: str) -> str:
     """Extract just the version-specifier portion of a pip spec.
 
-    ``"honcho-ai==2.0.1"`` → ``"==2.0.1"``
+    ``"edge-tts==7.2.7"`` → ``"==7.2.7"``
     ``"mautrix[encryption]>=0.20,<1"`` → ``">=0.20,<1"``
     ``"package"`` → ``""`` (no version constraint)
     """

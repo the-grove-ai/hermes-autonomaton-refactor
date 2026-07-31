@@ -221,7 +221,7 @@ _BASELINE_GREEN = frozenset({
     "drive_download", "drive_get", "drive_search", "emit_package",
     "feishu_doc_read", "feishu_drive_list_comment_replies",
     "feishu_drive_list_comments", "gmail_get", "gmail_labels", "gmail_search",
-    "ha_get_state", "ha_list_entities", "ha_list_services", "honcho.dialectic.read",
+    "ha_get_state", "ha_list_entities", "ha_list_services",
     "kanban_list", "kanban_show", "mcp_grove_browser_browser_extract",
     "mcp_grove_browser_browser_read_page", "mcp_grove_browser_browser_screenshot",
     "mcp_grove_browser_browser_search", "mcp_grove_browser_browser_session",
@@ -274,7 +274,9 @@ def test_baseline_counts_preserved() -> None:
     # hermes-severance-v1 T3 — media-gen + spotify severed: YELLOW 69→60
     # (dropped image_generate, video_generate, spotify_albums/devices/library/
     # playback/playlists/queue/search).
-    assert len(_BASELINE_GREEN) == 59
+    # hermes-severance-v1 T4 — honcho memory-provider severed: GREEN 59→58
+    # (dropped honcho.dialectic.read).
+    assert len(_BASELINE_GREEN) == 58
     assert len(_BASELINE_YELLOW) == 60
     assert len(_BASELINE_RED) == 8
 

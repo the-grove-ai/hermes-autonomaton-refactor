@@ -18,29 +18,12 @@ Usage:
     autonomaton cron list           # List cron jobs
     autonomaton cron status         # Check if cron scheduler is running
     autonomaton doctor              # Check configuration and dependencies
-    autonomaton honcho setup                    # Configure Honcho AI memory integration
-    autonomaton honcho status                   # Show Honcho config and connection status
-    autonomaton honcho sessions                 # List directory → session name mappings
-    autonomaton honcho map <name>               # Map current directory to a session name
-    autonomaton honcho peer                     # Show peer names and dialectic settings
-    autonomaton honcho peer --user NAME         # Set user peer name
-    autonomaton honcho peer --ai NAME           # Set AI peer name
-    autonomaton honcho peer --reasoning LEVEL   # Set dialectic reasoning level
-    autonomaton honcho mode                     # Show current memory mode
-    autonomaton honcho mode [hybrid|honcho|local]  # Set memory mode
-    autonomaton honcho tokens                   # Show token budget settings
-    autonomaton honcho tokens --context N       # Set session.context() token cap
-    autonomaton honcho tokens --dialectic N     # Set dialectic result char cap
-    autonomaton honcho identity                 # Show AI peer identity representation
-    autonomaton honcho identity <file>          # Seed AI peer identity from a file (SOUL.md etc.)
-    autonomaton honcho migrate                  # Step-by-step migration guide: OpenClaw native → Hermes + Honcho
     autonomaton version             Show version
     autonomaton update              Update to latest version
     autonomaton uninstall           Uninstall Hermes Agent
     autonomaton acp                 Run as an ACP server for editor integration
     autonomaton sessions browse     Interactive session picker with search
 
-    autonomaton claw migrate --dry-run  # Preview migration without changes
 """
 
 # IMPORTANT: hermes_bootstrap must be the very first import — it sets up
@@ -1024,267 +1007,6 @@ def _ensure_tui_node() -> None:
     os.environ["PATH"] = os.pathsep.join(parts)
 
 
-def _find_bundled_tui(hermes_cli_dir: Path | None = None) -> Path | None:
-    """Find a pre-built TUI entry.js bundled in the wheel."""
-    if hermes_cli_dir is None:
-        hermes_cli_dir = Path(__file__).parent
-    bundled = hermes_cli_dir / "tui_dist" / "entry.js"
-    return bundled if bundled.is_file() else None
-
-
-def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
-    """TUI: --dev → tsx src; else node dist (GROVE_TUI_DIR prebuilt or esbuild)."""
-    _ensure_tui_node()
-
-    def _node_bin(bin: str) -> str:
-        if bin == "node":
-            env_node = os.environ.get("GROVE_NODE")
-            if env_node and os.path.isfile(env_node) and os.access(env_node, os.X_OK):
-                return env_node
-        path = shutil.which(bin)
-        if not path and bin == "node":
-            try:
-                from hermes_cli.dep_ensure import ensure_dependency
-                if ensure_dependency("node"):
-                    path = shutil.which("node")
-            except Exception:
-                pass
-        if not path:
-            print(f"{bin} not found — install Node.js to use the TUI.")
-            sys.exit(1)
-        return path
-
-    # Footgun: --dev against a prebuilt bundle that has no source/node_modules.
-    ext_dir = os.environ.get("GROVE_TUI_DIR")
-    if tui_dev and ext_dir:
-        print(
-            f"Error: --dev is incompatible with GROVE_TUI_DIR={ext_dir}\n"
-            f"The prebuilt TUI has no source code to hot-reload.\n"
-            f"Unset GROVE_TUI_DIR (e.g. `unset GROVE_TUI_DIR`) to use --dev from a checkout.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-    # 1. Prebuilt bundle (nix / packaged release): just run it.
-    if not tui_dev:
-        if ext_dir:
-            p = Path(ext_dir)
-            if (p / "dist" / "entry.js").is_file():
-                node = _node_bin("node")
-                return [node, str(p / "dist" / "entry.js")], p
-
-        # 1b. Bundled in wheel (pip install)
-        bundled = _find_bundled_tui()
-        if bundled is not None:
-            node = _node_bin("node")
-            return [node, str(bundled)], bundled.parent
-
-    # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
-    #    --dev flow: npm install if needed, then tsx src/entry.tsx (no build).
-    if _tui_need_npm_install(tui_dir):
-        npm = _node_bin("npm")
-        if not os.environ.get("GROVE_QUIET"):
-            print("Installing TUI dependencies…")
-        result = subprocess.run(
-            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
-            cwd=str(tui_dir),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env={**os.environ, "CI": "1"},
-        )
-        if result.returncode != 0:
-            combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
-            preview = "\n".join(combined.splitlines()[-30:])
-            print("npm install failed.")
-            if preview:
-                print(preview)
-            sys.exit(1)
-
-    if tui_dev:
-        tsx = tui_dir / "node_modules" / ".bin" / "tsx"
-        if tsx.exists():
-            return [str(tsx), "src/entry.tsx"], tui_dir
-        npm = _node_bin("npm")
-        return [npm, "start"], tui_dir
-
-    # Always rebuild — esbuild is fast and this avoids staleness-edge-case bugs.
-    npm = _node_bin("npm")
-    result = subprocess.run(
-        [npm, "run", "build"],
-        cwd=str(tui_dir),
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode != 0:
-        combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
-        preview = "\n".join(combined.splitlines()[-30:])
-        print("TUI build failed.")
-        if preview:
-            print(preview)
-        sys.exit(1)
-
-    node = _node_bin("node")
-    return [node, str(tui_dir / "dist" / "entry.js")], tui_dir
-
-
-def _normalize_tui_toolsets(toolsets: object) -> list[str]:
-    """Normalize argparse/Fire-style toolset input for the TUI subprocess."""
-    try:
-        from hermes_cli.oneshot import _normalize_toolsets
-
-        return _normalize_toolsets(toolsets) or []
-    except (AttributeError, ImportError):
-        if not toolsets:
-            return []
-
-        raw_items = [toolsets] if isinstance(toolsets, str) else toolsets
-        if not isinstance(raw_items, (list, tuple)):
-            raw_items = [raw_items]
-
-        normalized: list[str] = []
-        for item in raw_items:
-            if isinstance(item, str):
-                normalized.extend(part.strip() for part in item.split(","))
-            else:
-                normalized.append(str(item).strip())
-
-        return [item for item in normalized if item]
-
-
-def _launch_tui(
-    resume_session_id: Optional[str] = None,
-    tui_dev: bool = False,
-    model: Optional[str] = None,
-    provider: Optional[str] = None,
-    toolsets: object = None,
-    skills: object = None,
-    verbose: bool = False,
-    quiet: bool = False,
-    query: Optional[str] = None,
-    image: Optional[str] = None,
-    worktree: bool = False,
-    checkpoints: bool = False,
-    pass_session_id: bool = False,
-    max_turns: Optional[int] = None,
-    accept_hooks: bool = False,
-):
-    """Replace current process with the TUI."""
-    tui_dir = PROJECT_ROOT / "ui-tui"
-
-    import tempfile
-
-    env = os.environ.copy()
-    active_session_fd, active_session_file = tempfile.mkstemp(
-        prefix="hermes-tui-active-session-", suffix=".json"
-    )
-    os.close(active_session_fd)
-    env["GROVE_TUI_ACTIVE_SESSION_FILE"] = active_session_file
-    env["GROVE_PYTHON_SRC_ROOT"] = os.environ.get(
-        "GROVE_PYTHON_SRC_ROOT", str(PROJECT_ROOT)
-    )
-    env.setdefault("GROVE_PYTHON", sys.executable)
-    env.setdefault("GROVE_CWD", os.getcwd())
-    env.setdefault("NODE_ENV", "development" if tui_dev else "production")
-
-    wt_info = None
-    if worktree:
-        try:
-            from cli import (
-                _cleanup_worktree,
-                _git_repo_root,
-                _prune_stale_worktrees,
-                _setup_worktree,
-            )
-
-            repo = _git_repo_root()
-            if repo:
-                _prune_stale_worktrees(repo)
-            wt_info = _setup_worktree()
-        except Exception as exc:
-            print(f"✗ Failed to create TUI worktree: {exc}", file=sys.stderr)
-            wt_info = None
-        if not wt_info:
-            sys.exit(1)
-        env["GROVE_CWD"] = wt_info["path"]
-        env["TERMINAL_CWD"] = wt_info["path"]
-
-    if model:
-        env["GROVE_MODEL"] = model
-        env["GROVE_INFERENCE_MODEL"] = model
-    if provider:
-        env["GROVE_TUI_PROVIDER"] = provider
-        env["GROVE_INFERENCE_PROVIDER"] = provider
-    tui_toolsets = _normalize_tui_toolsets(toolsets)
-    if tui_toolsets:
-        env["GROVE_TUI_TOOLSETS"] = ",".join(tui_toolsets)
-    if skills:
-        if isinstance(skills, (list, tuple)):
-            flattened = []
-            for item in skills:
-                flattened.extend(
-                    part.strip() for part in str(item).split(",") if part.strip()
-                )
-            if flattened:
-                env["GROVE_TUI_SKILLS"] = ",".join(flattened)
-        else:
-            value = str(skills).strip()
-            if value:
-                env["GROVE_TUI_SKILLS"] = value
-    if query:
-        env["GROVE_TUI_QUERY"] = query
-    if image:
-        env["GROVE_TUI_IMAGE"] = image
-    if checkpoints:
-        env["GROVE_TUI_CHECKPOINTS"] = "1"
-    if pass_session_id:
-        env["GROVE_TUI_PASS_SESSION_ID"] = "1"
-    if max_turns is not None:
-        env["GROVE_TUI_MAX_TURNS"] = str(max_turns)
-    if verbose:
-        env["GROVE_TUI_TOOL_PROGRESS"] = "verbose"
-    elif quiet:
-        env["GROVE_TUI_TOOL_PROGRESS"] = "off"
-    if accept_hooks:
-        env["GROVE_ACCEPT_HOOKS"] = "1"
-    # Guarantee an 8GB V8 heap + exposed GC for the TUI. Default node cap is
-    # ~1.5–4GB depending on version and can fatal-OOM on long sessions with
-    # large transcripts / reasoning blobs. Token-level merge: respect any
-    # user-supplied --max-old-space-size (they may have set it higher) and
-    # avoid duplicating --expose-gc.
-    _tokens = env.get("NODE_OPTIONS", "").split()
-    if not any(t.startswith("--max-old-space-size=") for t in _tokens):
-        _tokens.append("--max-old-space-size=8192")
-    if "--expose-gc" not in _tokens:
-        _tokens.append("--expose-gc")
-    env["NODE_OPTIONS"] = " ".join(_tokens)
-    if resume_session_id:
-        env["GROVE_TUI_RESUME"] = resume_session_id
-
-    argv, cwd = _make_tui_argv(tui_dir, tui_dev)
-    code: Optional[int] = None
-    try:
-        try:
-            code = subprocess.call(argv, cwd=str(cwd), env=env)
-        except KeyboardInterrupt:
-            code = 130
-
-        if code in {0, 130}:
-            _print_tui_exit_summary(resume_session_id, active_session_file)
-    finally:
-        try:
-            os.unlink(active_session_file)
-        except OSError:
-            pass
-        if wt_info:
-            try:
-                _cleanup_worktree(wt_info)
-            except Exception:
-                pass
-
-    sys.exit(code)
-
-
 def _pin_kanban_board_env() -> None:
     """Pin the active kanban board into ``GROVE_KANBAN_BOARD`` for the chat session.
 
@@ -1308,8 +1030,6 @@ def _pin_kanban_board_env() -> None:
 
 def cmd_chat(args):
     """Run interactive chat CLI."""
-    use_tui = getattr(args, "tui", False) or os.environ.get("GROVE_TUI") == "1"
-
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
@@ -1324,15 +1044,11 @@ def cmd_chat(args):
                 sys.exit(1)
         else:
             # -c with no argument — continue the most recent session
-            source = "tui" if use_tui else "cli"
-            last_id = _resolve_last_session(source=source)
-            if not last_id and source == "tui":
-                last_id = _resolve_last_session(source="cli")
+            last_id = _resolve_last_session(source="cli")
             if last_id:
                 args.resume = last_id
             else:
-                kind = "TUI" if use_tui else "CLI"
-                print(f"No previous {kind} session found to continue.")
+                print("No previous CLI session found to continue.")
                 sys.exit(1)
 
     # Resolve --resume by title if it's not a direct session ID
@@ -1416,25 +1132,6 @@ def cmd_chat(args):
 
     _pin_kanban_board_env()
 
-    if use_tui:
-        _launch_tui(
-            getattr(args, "resume", None),
-            tui_dev=getattr(args, "tui_dev", False),
-            model=getattr(args, "model", None),
-            provider=getattr(args, "provider", None),
-            toolsets=getattr(args, "toolsets", None),
-            skills=getattr(args, "skills", None),
-            verbose=getattr(args, "verbose", False),
-            quiet=getattr(args, "quiet", False),
-            query=getattr(args, "query", None),
-            image=getattr(args, "image", None),
-            worktree=getattr(args, "worktree", False),
-            checkpoints=getattr(args, "checkpoints", False),
-            pass_session_id=getattr(args, "pass_session_id", False),
-            max_turns=getattr(args, "max_turns", None),
-            accept_hooks=getattr(args, "accept_hooks", False),
-        )
-
     # Import and run the CLI
     from cli import main as cli_main
 
@@ -1473,237 +1170,8 @@ def cmd_gateway(args):
     gateway_command(args)
 
 
-def cmd_proxy(args):
-    """Local OpenAI-compatible proxy to OAuth providers."""
-    # Lazy import — pulls in aiohttp, which is gated behind an extras install
-    # for users who don't run the proxy or the messaging gateway.
-    from hermes_cli.proxy.cli import cmd_proxy as _cmd_proxy
-
-    rc = _cmd_proxy(args)
-    if isinstance(rc, int) and rc != 0:
-        raise SystemExit(rc)
 
 
-def cmd_whatsapp(args):
-    """Set up WhatsApp: choose mode, configure, install bridge, pair via QR."""
-    _require_tty("whatsapp")
-    from hermes_cli.config import get_env_value, save_env_value
-
-    print()
-    print("⚕ WhatsApp Setup")
-    print("=" * 50)
-
-    # ── Step 1: Choose mode ──────────────────────────────────────────────
-    current_mode = get_env_value("WHATSAPP_MODE") or ""
-    if not current_mode:
-        print()
-        print("How will you use WhatsApp with Autonomaton?")
-        print()
-        print("  1. Separate bot number (recommended)")
-        print("     People message the bot's number directly — cleanest experience.")
-        print(
-            "     Requires a second phone number with WhatsApp installed on a device."
-        )
-        print()
-        print("  2. Personal number (self-chat)")
-        print("     You message yourself to talk to the agent.")
-        print("     Quick to set up, but the UX is less intuitive.")
-        print()
-        try:
-            choice = input("  Choose [1/2]: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            print("\nSetup cancelled.")
-            return
-
-        if choice == "1":
-            save_env_value("WHATSAPP_MODE", "bot")
-            wa_mode = "bot"
-            print("  ✓ Mode: separate bot number")
-            print()
-            print("  ┌─────────────────────────────────────────────────┐")
-            print("  │  Getting a second number for the bot:           │")
-            print("  │                                                 │")
-            print("  │  Easiest: Install WhatsApp Business (free app)  │")
-            print("  │  on your phone with a second number:            │")
-            print("  │    • Dual-SIM: use your 2nd SIM slot            │")
-            print("  │    • Google Voice: free US number (voice.google) │")
-            print("  │    • Prepaid SIM: $3-10, verify once            │")
-            print("  │                                                 │")
-            print("  │  WhatsApp Business runs alongside your personal │")
-            print("  │  WhatsApp — no second phone needed.             │")
-            print("  └─────────────────────────────────────────────────┘")
-        else:
-            save_env_value("WHATSAPP_MODE", "self-chat")
-            wa_mode = "self-chat"
-            print("  ✓ Mode: personal number (self-chat)")
-    else:
-        wa_mode = current_mode
-        mode_label = (
-            "separate bot number" if wa_mode == "bot" else "personal number (self-chat)"
-        )
-        print(f"\n✓ Mode: {mode_label}")
-
-    # ── Step 2: Mode is selected, will enable WhatsApp only after pairing ──
-    # We intentionally don't write WHATSAPP_ENABLED=true here.  If the user
-    # aborts the wizard later (Ctrl+C, failed npm install, missed QR scan),
-    # we'd otherwise leave .env claiming WhatsApp is ready when the bridge
-    # has no creds.json.  Every subsequent `hermes gateway` then paid a 30s
-    # bridge-bootstrap timeout and queued WhatsApp for indefinite retries.
-    # Now: aborted setup leaves WHATSAPP_ENABLED unset → gateway skips it.
-    # Re-runs that already have WHATSAPP_ENABLED=true (from a prior
-    # successful pairing) stay enabled — we just don't write it pre-emptively.
-    print()
-    if (get_env_value("WHATSAPP_ENABLED") or "").lower() == "true":
-        print("✓ WhatsApp is already enabled")
-
-    # ── Step 3: Allowed users ────────────────────────────────────────────
-    current_users = get_env_value("WHATSAPP_ALLOWED_USERS") or ""
-    if current_users:
-        print(f"✓ Allowed users: {current_users}")
-        try:
-            response = input("\n  Update allowed users? [y/N] ").strip()
-        except (EOFError, KeyboardInterrupt):
-            response = "n"
-        if response.lower() in {"y", "yes"}:
-            if wa_mode == "bot":
-                phone = input(
-                    "  Phone numbers that can message the bot (comma-separated): "
-                ).strip()
-            else:
-                phone = input("  Your phone number (e.g. 15551234567): ").strip()
-            if phone:
-                save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
-                print(f"  ✓ Updated to: {phone}")
-    else:
-        print()
-        if wa_mode == "bot":
-            print("  Who should be allowed to message the bot?")
-            phone = input(
-                "  Phone numbers (comma-separated, or * for anyone): "
-            ).strip()
-        else:
-            phone = input("  Your phone number (e.g. 15551234567): ").strip()
-        if phone:
-            save_env_value("WHATSAPP_ALLOWED_USERS", phone.replace(" ", ""))
-            print(f"  ✓ Allowed users set: {phone}")
-        else:
-            print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
-
-    # ── Step 4: Install bridge dependencies ──────────────────────────────
-    project_root = Path(__file__).resolve().parents[1]
-    bridge_dir = project_root / "scripts" / "whatsapp-bridge"
-    bridge_script = bridge_dir / "bridge.js"
-
-    if not bridge_script.exists():
-        print(f"\n✗ Bridge script not found at {bridge_script}")
-        return
-
-    if not (bridge_dir / "node_modules").exists():
-        print(
-            "\n→ Installing WhatsApp bridge dependencies (this can take a few minutes)..."
-        )
-        npm = shutil.which("npm")
-        if not npm:
-            print("  ✗ npm not found on PATH — install Node.js first")
-            return
-        try:
-            result = subprocess.run(
-                [npm, "install", "--no-fund", "--no-audit", "--progress=false"],
-                cwd=str(bridge_dir),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-        except KeyboardInterrupt:
-            print("\n  ✗ Install cancelled")
-            return
-        if result.returncode != 0:
-            err = (result.stderr or "").strip()
-            preview = "\n".join(err.splitlines()[-30:]) if err else "(no output)"
-            print("  ✗ npm install failed:")
-            print(preview)
-            return
-        print("  ✓ Dependencies installed")
-    else:
-        print("✓ Bridge dependencies already installed")
-
-    # ── Step 5: Check for existing session ───────────────────────────────
-    session_dir = get_hermes_home() / "whatsapp" / "session"
-    session_dir.mkdir(parents=True, exist_ok=True)
-
-    if (session_dir / "creds.json").exists():
-        print("✓ Existing WhatsApp session found")
-        try:
-            response = input(
-                "\n  Re-pair? This will clear the existing session. [y/N] "
-            ).strip()
-        except (EOFError, KeyboardInterrupt):
-            response = "n"
-        if response.lower() in {"y", "yes"}:
-            shutil.rmtree(session_dir, ignore_errors=True)
-            session_dir.mkdir(parents=True, exist_ok=True)
-            print("  ✓ Session cleared")
-        else:
-            # Existing pairing — ensure WHATSAPP_ENABLED reflects that.
-            # (Older installs may have lost the env var; covers re-runs
-            # where the user picked "no, keep my session" but the var
-            # was never set or got removed.)
-            if (get_env_value("WHATSAPP_ENABLED") or "").lower() != "true":
-                save_env_value("WHATSAPP_ENABLED", "true")
-            print("\n✓ WhatsApp is configured and paired!")
-            print("  Start the gateway with: hermes gateway")
-            return
-
-    # ── Step 6: QR code pairing ──────────────────────────────────────────
-    print()
-    print("─" * 50)
-    if wa_mode == "bot":
-        print("📱 Open WhatsApp (or WhatsApp Business) on the")
-        print("   phone with the BOT's number, then scan:")
-    else:
-        print("📱 Open WhatsApp on your phone, then scan:")
-    print()
-    print("   Settings → Linked Devices → Link a Device")
-    print("─" * 50)
-    print()
-
-    try:
-        subprocess.run(
-            ["node", str(bridge_script), "--pair-only", "--session", str(session_dir)],
-            cwd=str(bridge_dir),
-        )
-    except KeyboardInterrupt:
-        pass
-
-    # ── Step 7: Post-pairing ─────────────────────────────────────────────
-    print()
-    if (session_dir / "creds.json").exists():
-        # Only enable WhatsApp now that pairing actually succeeded.  If the
-        # user Ctrl+C'd at any earlier step, WHATSAPP_ENABLED stays unset
-        # and `hermes gateway` skips it cleanly instead of paying a 30s
-        # bridge timeout + queueing the platform for indefinite retries.
-        save_env_value("WHATSAPP_ENABLED", "true")
-        print("✓ WhatsApp paired successfully!")
-        print()
-        if wa_mode == "bot":
-            print("  Next steps:")
-            print("    1. Start the gateway:  hermes gateway")
-            print("    2. Send a message to the bot's WhatsApp number")
-            print("    3. The agent will reply automatically")
-            print()
-            print("  Tip: Agent responses are prefixed with '⚕ grove-autonomaton'")
-        else:
-            print("  Next steps:")
-            print("    1. Start the gateway:  hermes gateway")
-            print("    2. Open WhatsApp → Message Yourself")
-            print("    3. Type a message — the agent will reply")
-            print()
-            print("  Tip: Agent responses are prefixed with '⚕ grove-autonomaton'")
-            print("  so you can tell them apart from your own messages.")
-        print()
-        print("  Or install as a service: hermes gateway install")
-    else:
-        print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
 
 
 def cmd_setup(args):
@@ -5882,58 +5350,6 @@ def cmd_cron(args):
     cron_command(args)
 
 
-def cmd_webhook(args):
-    """Webhook subscription management."""
-    from hermes_cli.webhook import webhook_command
-
-    webhook_command(args)
-
-
-def cmd_slack(args):
-    """Slack integration helpers.
-
-    Dispatches ``hermes slack <subcommand>``. Currently supports:
-      manifest — print or write a Slack app manifest with every gateway
-                 command registered as a first-class slash.
-    """
-    sub = getattr(args, "slack_command", None)
-    if sub in {None, ""}:
-        # No subcommand — print usage hint.
-        print(
-            "usage: hermes slack <subcommand>\n"
-            "\n"
-            "subcommands:\n"
-            "  manifest   Generate a Slack app manifest with every gateway\n"
-            "             command registered as a native slash\n"
-            "\n"
-            "Run `hermes slack manifest -h` for details.",
-            file=sys.stderr,
-        )
-        return 1
-
-    if sub == "manifest":
-        from hermes_cli.slack_cli import slack_manifest_command
-
-        return slack_manifest_command(args)
-
-    print(f"Unknown slack subcommand: {sub}", file=sys.stderr)
-    return 1
-
-
-def cmd_kanban(args):
-    """Multi-profile collaboration board."""
-    from hermes_cli.kanban import kanban_command
-
-    return kanban_command(args)
-
-
-def cmd_hooks(args):
-    """Shell-hook inspection and management."""
-    from hermes_cli.hooks import hooks_command
-
-    hooks_command(args)
-
-
 def cmd_doctor(args):
     """Check configuration and dependencies."""
     from hermes_cli.doctor import run_doctor
@@ -6106,42 +5522,6 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     return default
 
 
-def _web_ui_build_needed(web_dir: Path) -> bool:
-    """Return True if the web UI dist is missing or stale.
-
-    The Vite build outputs to ``hermes_cli/web_dist/`` (per vite.config.ts
-    outDir: "../hermes_cli/web_dist"), NOT to ``web/dist/``.  Uses the Vite
-    manifest as the sentinel because it is written last and therefore has the
-    newest mtime of any build output.
-    """
-    dist_dir = web_dir.parent / "hermes_cli" / "web_dist"
-    sentinel = dist_dir / ".vite" / "manifest.json"
-    if not sentinel.exists():
-        sentinel = dist_dir / "index.html"
-    if not sentinel.exists():
-        return True
-    dist_mtime = sentinel.stat().st_mtime
-    skip = frozenset({"node_modules", "dist"})
-    for dirpath, dirnames, filenames in os.walk(web_dir, topdown=True):
-        dirnames[:] = [d for d in dirnames if d not in skip]
-        for fn in filenames:
-            if fn.endswith((".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".vue")):
-                if os.path.getmtime(os.path.join(dirpath, fn)) > dist_mtime:
-                    return True
-    for meta in (
-        "package.json",
-        "package-lock.json",
-        "yarn.lock",
-        "pnpm-lock.yaml",
-        "vite.config.ts",
-        "vite.config.js",
-    ):
-        mp = web_dir / meta
-        if mp.exists() and mp.stat().st_mtime > dist_mtime:
-            return True
-    return False
-
-
 def _run_npm_install_deterministic(
     npm: str,
     cwd: Path,
@@ -6184,117 +5564,6 @@ def _run_npm_install_deterministic(
         errors="replace",
         check=False,
     )
-
-
-def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
-    """Build the web UI frontend if npm is available.
-
-    Args:
-        web_dir: Path to the ``web/`` source directory.
-        fatal: If True, print error guidance and return False on failure
-               instead of a soft warning (used by ``hermes web``).
-
-    Returns True if the build succeeded or was skipped (no package.json).
-    """
-    if not (web_dir / "package.json").exists():
-        return True
-
-    if not _web_ui_build_needed(web_dir):
-        return True
-
-    # Console-encoding-safe print: Windows consoles default to cp1252
-    # (or similar) and will raise UnicodeEncodeError on arrow / check
-    # glyphs unless PYTHONIOENCODING=utf-8 is set. Routing every print
-    # in this function through _say() with errors="replace" keeps the
-    # build path usable on a stock `py -m hermes_cli.main web` invocation.
-    def _say(text: str) -> None:
-        try:
-            print(text)
-        except UnicodeEncodeError:
-            encoding = getattr(sys.stdout, "encoding", None) or "ascii"
-            print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
-
-    npm = shutil.which("npm")
-    if not npm:
-        if fatal:
-            _say("Web UI frontend not built and npm is not available.")
-            _say("Install Node.js, then run:  cd web && npm install && npm run build")
-        return not fatal
-    _say("→ Building web UI...")
-
-    def _relay(result: "subprocess.CompletedProcess") -> None:
-        """Print captured npm output so users can see *why* a step failed.
-
-        Windows users hitting `rm -rf` / `cp -r` errors (or any other
-        sync-assets / Vite failure) would otherwise see only ``Web UI
-        build failed`` with no hint of the underlying cause, because
-        the npm calls run with ``capture_output=True``.
-        """
-        for blob in (result.stdout, result.stderr):
-            if not blob:
-                continue
-            text = blob.decode("utf-8", errors="replace").rstrip() if isinstance(blob, bytes) else blob.rstrip()
-            if text:
-                _say(text)
-
-    r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
-    if r1.returncode != 0:
-        _say(
-            f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
-            + ("" if fatal else " (hermes web will not be available)")
-        )
-        _relay(r1)
-        if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
-        return False
-    # First attempt
-    r2 = subprocess.run(
-        [npm, "run", "build"],
-        cwd=web_dir,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    if r2.returncode != 0:
-        # Retry once after a short delay — covers boot-time races on Windows
-        # (antivirus scanning Node.js binaries, npm cache not ready, transient
-        # I/O when launched via Scheduled Task at logon). See issue #23817.
-        _time.sleep(3)
-        r2 = subprocess.run(
-            [npm, "run", "build"],
-            cwd=web_dir,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-        )
-
-    if r2.returncode != 0:
-        stderr_preview = (r2.stderr or "").strip()
-        stderr_tail = "\n  ".join(stderr_preview.splitlines()[-10:]) if stderr_preview else ""
-        dist_dir = web_dir.parent / "hermes_cli" / "web_dist"
-        dist_index = dist_dir / "index.html"
-
-        # If a stale dist exists, serve it as a fallback instead of failing.
-        # A stale UI is far better than no UI for non-interactive callers
-        # (Windows Scheduled Tasks, CI) — issue #23817.
-        if dist_index.exists():
-            _say("  ⚠ Web UI build failed — serving stale dist as fallback")
-            if stderr_tail:
-                _say(f"  Build error:\n  {stderr_tail}")
-            return True
-
-        _say(
-            f"  {'✗' if fatal else '⚠'} Web UI build failed"
-            + ("" if fatal else " (hermes web will not be available)")
-        )
-        _relay(r2)
-        if fatal:
-            _say("  Run manually:  cd web && npm install && npm run build")
-        return False
-    _say("  ✓ Web UI built")
-    return True
 
 
 def _find_stale_dashboard_pids() -> list[int]:
@@ -6733,7 +6002,6 @@ def _update_via_zip(args):
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
     _update_node_dependencies()
-    _build_web_ui(PROJECT_ROOT / "web")
 
     # Sync skills
     try:
@@ -7600,7 +6868,6 @@ def _update_node_dependencies() -> None:
 
     paths = (
         ("repo root", PROJECT_ROOT),
-        ("ui-tui", PROJECT_ROOT / "ui-tui"),
     )
     if not any((path / "package.json").exists() for _, path in paths):
         return
@@ -8423,7 +7690,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
         _refresh_active_lazy_features()
 
         _update_node_dependencies()
-        _build_web_ui(PROJECT_ROOT / "web")
 
         print()
         print("✓ Code updated!")
@@ -8501,16 +7767,6 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         print(f"  {p.name}: error ({pe})")
         except Exception:
             pass  # profiles module not available or no profiles
-
-        # Sync Honcho host blocks to all profiles
-        try:
-            from plugins.memory.honcho.cli import sync_honcho_profiles_quiet
-
-            synced = sync_honcho_profiles_quiet()
-            if synced:
-                print(f"\n-> Honcho: synced {synced} profile(s)")
-        except Exception:
-            pass  # honcho plugin not installed or not configured
 
         # Check for config migrations
         print()
@@ -9231,7 +8487,6 @@ def _coalesce_session_name_args(argv: list) -> list:
         "model",
         "gateway",
         "setup",
-        "whatsapp",
         "login",
         "logout",
         "auth",
@@ -9249,12 +8504,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "update",
         "uninstall",
         "profile",
-        "dashboard",
-        "honcho",
-        "claw",
         "plugins",
-        "acp",
-        "webhook",
         "memory",
         "dump",
         "debug",
@@ -9413,16 +8663,6 @@ def cmd_profile(args):
                     print(
                         f"Cloned config, .env, SOUL.md, and skills from {source_label}."
                     )
-
-            # Auto-clone Honcho config for the new profile (only with --clone/--clone-all)
-            if clone or clone_all:
-                try:
-                    from plugins.memory.honcho.cli import clone_honcho_for_profile
-
-                    if clone_honcho_for_profile(name):
-                        print(f"Honcho config cloned (peer: {name})")
-                except Exception:
-                    pass  # Honcho plugin not installed or not configured
 
             # Seed bundled skills (skip if --clone-all already copied them, or
             # if --no-skills was passed — in which case seed_profile_skills()
@@ -9820,108 +9060,6 @@ def _render_distribution_plan(plan) -> None:
         )
 
 
-def _report_dashboard_status() -> int:
-    """Print ``hermes dashboard`` PIDs and return the count.
-
-    Uses the same detection logic as ``_find_stale_dashboard_pids`` (the
-    current process is excluded, but since ``hermes dashboard --status``
-    runs in a short-lived CLI process that never matches the pattern,
-    the exclusion is irrelevant here).
-    """
-    pids = _find_stale_dashboard_pids()
-    if not pids:
-        print("No hermes dashboard processes running.")
-        return 0
-
-    print(f"{len(pids)} hermes dashboard process(es) running:")
-    for pid in pids:
-        # Best-effort: show the full cmdline so users can tell profiles apart.
-        cmdline = ""
-        try:
-            if sys.platform != "win32":
-                cmdline_path = f"/proc/{pid}/cmdline"
-                if os.path.exists(cmdline_path):
-                    with open(cmdline_path, "rb") as f:
-                        cmdline = (
-                            f.read()
-                            .replace(b"\x00", b" ")
-                            .decode("utf-8", errors="replace")
-                            .strip()
-                        )
-        except (OSError, ValueError):
-            pass
-        if cmdline:
-            print(f"    PID {pid}: {cmdline}")
-        else:
-            print(f"    PID {pid}")
-    return len(pids)
-
-
-def cmd_dashboard(args):
-    """Start the web UI server, or (with --stop/--status) manage running ones."""
-    # --status: report running dashboards and exit, no deps needed.
-    if getattr(args, "status", False):
-        count = _report_dashboard_status()
-        sys.exit(0 if count == 0 else 0)  # status is informational, always 0
-
-    # --stop: kill any running dashboards and exit, no deps needed.
-    if getattr(args, "stop", False):
-        pids = _find_stale_dashboard_pids()
-        if not pids:
-            print("No hermes dashboard processes running.")
-            sys.exit(0)
-        # Reuse the same SIGTERM-grace-SIGKILL path used after `hermes update`.
-        _kill_stale_dashboard_processes(reason="requested via --stop")
-        # _kill_stale_dashboard_processes prints outcomes itself.  Exit 0 if
-        # we killed at least one, 1 if they were all unkillable.
-        remaining = _find_stale_dashboard_pids()
-        sys.exit(1 if remaining else 0)
-
-    try:
-        import fastapi  # noqa: F401
-        import uvicorn  # noqa: F401
-    except ImportError as e:
-        print("Web UI dependencies not installed (need fastapi + uvicorn).")
-        print(
-            f"Re-install the package into this interpreter so metadata updates apply:\n"
-            f"  cd {PROJECT_ROOT}\n"
-            f"  {sys.executable} -m pip install -e .\n"
-            "If `pip` is missing in this venv, use:  uv pip install -e ."
-        )
-        print(f"Import error: {e}")
-        sys.exit(1)
-
-    if "GROVE_WEB_DIST" not in os.environ and not getattr(args, "skip_build", False):
-        if not _build_web_ui(PROJECT_ROOT / "web", fatal=True):
-            sys.exit(1)
-    elif getattr(args, "skip_build", False):
-        # --skip-build trusts the caller to have pre-built the web UI.
-        # Verify the dist actually exists; otherwise the server will start
-        # and serve 404s with no obvious cause (issue #23817).
-        _dist_root = (
-            Path(os.environ["GROVE_WEB_DIST"])
-            if "GROVE_WEB_DIST" in os.environ
-            else PROJECT_ROOT / "hermes_cli" / "web_dist"
-        )
-        if not (_dist_root / "index.html").exists():
-            print(f"✗ --skip-build was passed but no web dist found at: {_dist_root}")
-            print("  Pre-build first:  cd web && npm install && npm run build")
-            print("  Or drop --skip-build to build automatically.")
-            sys.exit(1)
-        print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
-
-    from hermes_cli.web_server import start_server
-
-    embedded_chat = args.tui or os.environ.get("GROVE_DASHBOARD_TUI") == "1"
-    start_server(
-        host=args.host,
-        port=args.port,
-        open_browser=not args.no_open,
-        allow_public=getattr(args, "insecure", False),
-        embedded_chat=embedded_chat,
-    )
-
-
 def cmd_completion(args, parser=None):
     """Print shell completion script."""
     from hermes_cli.completion import generate_bash, generate_zsh, generate_fish
@@ -9983,15 +9121,14 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "checkpoints", "claw", "completion",
-        "computer-use",
-        "config", "cron", "curator", "dashboard", "debug", "doctor",
-        "dump", "fallback", "gate", "gateway", "hooks", "import", "index", "insights",
-        "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
-        "model", "pairing", "plugins", "postinstall", "profile", "proxy",
+        "auth", "backup", "checkpoints", "completion",
+        "config", "cron", "curator", "debug", "doctor",
+        "dump", "fallback", "gate", "gateway", "import", "index", "insights",
+        "login", "logout", "logs", "mcp", "memory",
+        "model", "pairing", "plugins", "postinstall", "profile",
         "repair-instance", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "chat",
+        "skills", "status", "tools", "uninstall", "update",
+        "version", "chat",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -10331,63 +9468,8 @@ def main():
         help="Skip the confirmation prompt",
     )
 
-    # =========================================================================
-    # proxy command — local OpenAI-compatible proxy that attaches the user's
-    # OAuth-authenticated provider credentials to outbound requests. Lets
-    # external apps (OpenViking, Karakeep, Open WebUI, ...) ride a logged-in
-    # subscription without copy-pasting static API keys.
-    # =========================================================================
-    proxy_parser = subparsers.add_parser(
-        "proxy",
-        help="Local OpenAI-compatible proxy to OAuth providers",
-        description=(
-            "Run a local HTTP server that forwards OpenAI-compatible requests "
-            "to an OAuth-authenticated provider (e.g. Nous Portal). External "
-            "apps can point at the proxy with any bearer token; the proxy "
-            "attaches your real credentials."
-        ),
-    )
-    proxy_subparsers = proxy_parser.add_subparsers(dest="proxy_command")
-
-    proxy_start = proxy_subparsers.add_parser(
-        "start", help="Run the proxy in the foreground"
-    )
-    proxy_start.add_argument(
-        "--provider",
-        default="nous",
-        help="Upstream provider (default: nous). See `hermes proxy providers`.",
-    )
-    proxy_start.add_argument(
-        "--host",
-        default=None,
-        help="Bind address (default: 127.0.0.1). Use 0.0.0.0 to expose on LAN.",
-    )
-    proxy_start.add_argument(
-        "--port",
-        type=int,
-        default=None,
-        help="Bind port (default: 8645)",
-    )
-
-    proxy_subparsers.add_parser(
-        "status", help="Show which proxy upstreams are ready"
-    )
-    proxy_subparsers.add_parser(
-        "providers", help="List available proxy upstream providers"
-    )
-    proxy_parser.set_defaults(func=cmd_proxy)
     gateway_parser.set_defaults(func=cmd_gateway)
 
-    # =========================================================================
-    # lsp command
-    # =========================================================================
-    try:
-        from agent.lsp.cli import register_subparser as _lsp_register
-        _lsp_register(subparsers)
-    except Exception as _lsp_err:  # noqa: BLE001
-        # LSP is optional infrastructure — never let a registration
-        # failure break the CLI overall.
-        logger.debug("LSP CLI registration failed: %s", _lsp_err)
 
     # =========================================================================
     # setup command
@@ -10439,63 +9521,7 @@ def main():
     )
     postinstall_parser.set_defaults(func=cmd_postinstall)
 
-    # =========================================================================
-    # whatsapp command
-    # =========================================================================
-    whatsapp_parser = subparsers.add_parser(
-        "whatsapp",
-        help="Set up WhatsApp integration",
-        description="Configure WhatsApp and pair via QR code",
-    )
-    whatsapp_parser.set_defaults(func=cmd_whatsapp)
 
-    # =========================================================================
-    # slack command
-    # =========================================================================
-    slack_parser = subparsers.add_parser(
-        "slack",
-        help="Slack integration helpers (manifest generation, etc.)",
-        description="Slack integration helpers for Autonomaton.",
-    )
-    slack_sub = slack_parser.add_subparsers(dest="slack_command")
-    slack_manifest = slack_sub.add_parser(
-        "manifest",
-        help="Print or write a Slack app manifest with every gateway command "
-        "registered as a native slash (/btw, /stop, /model, ...)",
-        description=(
-            "Generate a Slack app manifest that registers every gateway "
-            "command in COMMAND_REGISTRY as a first-class Slack slash "
-            "command (matching Discord and Telegram parity). Paste the "
-            "output into Slack app config → Features → App Manifest → "
-            "Edit, then Save. Reinstall the app if Slack prompts for it."
-        ),
-    )
-    slack_manifest.add_argument(
-        "--write",
-        nargs="?",
-        const=True,
-        default=None,
-        metavar="PATH",
-        help="Write manifest to a file instead of stdout. With no PATH "
-        "writes to $GROVE_HOME/slack-manifest.json.",
-    )
-    slack_manifest.add_argument(
-        "--name",
-        default=None,
-        help='Bot display name (default: "Autonomaton")',
-    )
-    slack_manifest.add_argument(
-        "--description",
-        default=None,
-        help="Bot description shown in Slack's app directory.",
-    )
-    slack_manifest.add_argument(
-        "--slashes-only",
-        action="store_true",
-        help="Emit only the features.slash_commands array (for merging "
-        "into an existing manifest manually).",
-    )
-    slack_parser.set_defaults(func=cmd_slack)
 
     # =========================================================================
     # login command
@@ -11173,144 +10199,8 @@ def main():
     _add_accept_hooks_flag(cron_parser)
     cron_parser.set_defaults(func=cmd_cron)
 
-    # =========================================================================
-    # webhook command
-    # =========================================================================
-    webhook_parser = subparsers.add_parser(
-        "webhook",
-        help="Manage dynamic webhook subscriptions",
-        description="Create, list, and remove webhook subscriptions for event-driven agent activation",
-    )
-    webhook_subparsers = webhook_parser.add_subparsers(dest="webhook_action")
 
-    wh_sub = webhook_subparsers.add_parser(
-        "subscribe", aliases=["add"], help="Create a webhook subscription"
-    )
-    wh_sub.add_argument("name", help="Route name (used in URL: /webhooks/<name>)")
-    wh_sub.add_argument(
-        "--prompt", default="", help="Prompt template with {dot.notation} payload refs"
-    )
-    wh_sub.add_argument(
-        "--events", default="", help="Comma-separated event types to accept"
-    )
-    wh_sub.add_argument("--description", default="", help="What this subscription does")
-    wh_sub.add_argument(
-        "--skills", default="", help="Comma-separated skill names to load"
-    )
-    wh_sub.add_argument(
-        "--deliver",
-        default="log",
-        help="Delivery target: log, telegram, discord, slack, etc.",
-    )
-    wh_sub.add_argument(
-        "--deliver-chat-id",
-        default="",
-        help="Target chat ID for cross-platform delivery",
-    )
-    wh_sub.add_argument(
-        "--secret", default="", help="HMAC secret (auto-generated if omitted)"
-    )
-    wh_sub.add_argument(
-        "--deliver-only",
-        action="store_true",
-        help="Skip the agent — deliver the rendered prompt directly as the "
-        "message. Zero LLM cost. Requires --deliver to be a real target "
-        "(not 'log').",
-    )
 
-    webhook_subparsers.add_parser(
-        "list", aliases=["ls"], help="List all dynamic subscriptions"
-    )
-
-    wh_rm = webhook_subparsers.add_parser(
-        "remove", aliases=["rm"], help="Remove a subscription"
-    )
-    wh_rm.add_argument("name", help="Subscription name to remove")
-
-    wh_test = webhook_subparsers.add_parser(
-        "test", help="Send a test POST to a webhook route"
-    )
-    wh_test.add_argument("name", help="Subscription name to test")
-    wh_test.add_argument(
-        "--payload", default="", help="JSON payload to send (default: test payload)"
-    )
-
-    webhook_parser.set_defaults(func=cmd_webhook)
-
-    # =========================================================================
-    # kanban command — multi-profile collaboration board
-    # =========================================================================
-    from hermes_cli.kanban import build_parser as _build_kanban_parser
-
-    kanban_parser = _build_kanban_parser(subparsers)
-    kanban_parser.set_defaults(func=cmd_kanban)
-
-    # =========================================================================
-    # hooks command — shell-hook inspection and management
-    # =========================================================================
-    hooks_parser = subparsers.add_parser(
-        "hooks",
-        help="Inspect and manage shell-script hooks",
-        description=(
-            "Inspect shell-script hooks declared in ~/.grove/config.yaml, "
-            "test them against synthetic payloads, and manage the first-use "
-            "consent allowlist at ~/.grove/shell-hooks-allowlist.json."
-        ),
-    )
-    hooks_subparsers = hooks_parser.add_subparsers(dest="hooks_action")
-
-    hooks_subparsers.add_parser(
-        "list",
-        aliases=["ls"],
-        help="List configured hooks with matcher, timeout, and consent status",
-    )
-
-    _hk_test = hooks_subparsers.add_parser(
-        "test",
-        help="Fire every hook matching <event> against a synthetic payload",
-    )
-    _hk_test.add_argument(
-        "event",
-        help="Hook event name (e.g. pre_tool_call, pre_llm_call, subagent_stop)",
-    )
-    _hk_test.add_argument(
-        "--for-tool",
-        dest="for_tool",
-        default=None,
-        help=(
-            "Only fire hooks whose matcher matches this tool name "
-            "(used for pre_tool_call / post_tool_call)"
-        ),
-    )
-    _hk_test.add_argument(
-        "--payload-file",
-        dest="payload_file",
-        default=None,
-        help=(
-            "Path to a JSON file whose contents are merged into the "
-            "synthetic payload before execution"
-        ),
-    )
-
-    _hk_revoke = hooks_subparsers.add_parser(
-        "revoke",
-        aliases=["remove", "rm"],
-        help="Remove a command's allowlist entries (takes effect on next restart)",
-    )
-    _hk_revoke.add_argument(
-        "command",
-        help="The exact command string to revoke (as declared in config.yaml)",
-    )
-
-    hooks_subparsers.add_parser(
-        "doctor",
-        help=(
-            "Check each configured hook: exec bit, allowlist, mtime drift, "
-            "JSON validity, and synthetic run timing"
-        ),
-    )
-
-    hooks_parser.set_defaults(func=cmd_hooks)
 
     # =========================================================================
     # doctor command
@@ -11938,8 +10828,6 @@ Examples:
         help="Configure external memory provider",
         description=(
             "Set up and manage external memory provider plugins.\n\n"
-            "Available providers: honcho, openviking, mem0, hindsight,\n"
-            "holographic, retaindb, byterover.\n\n"
             "Only one external provider can be active at a time.\n"
             "Built-in memory (MEMORY.md/USER.md) is always active."
         ),
@@ -12110,75 +10998,6 @@ Examples:
 
     tools_parser.set_defaults(func=cmd_tools)
 
-    # =========================================================================
-    # computer-use command — manage Computer Use (cua-driver) on macOS
-    # =========================================================================
-    computer_use_parser = subparsers.add_parser(
-        "computer-use",
-        help="Manage the Computer Use (cua-driver) backend (macOS)",
-        description=(
-            "Install or check the cua-driver binary used by the\n"
-            "`computer_use` toolset. macOS-only.\n\n"
-            "Use `hermes computer-use install` to fetch and run the\n"
-            "upstream cua-driver installer. This is equivalent to the\n"
-            "post-setup hook that `hermes tools` runs when you first\n"
-            "enable the Computer Use toolset, and is a stable target\n"
-            "for re-running the install if it didn't fire (e.g. when\n"
-            "toggling the toolset on a returning-user setup)."
-        ),
-    )
-    computer_use_sub = computer_use_parser.add_subparsers(dest="computer_use_action")
-
-    computer_use_install = computer_use_sub.add_parser(
-        "install",
-        help="Install or repair the cua-driver binary (macOS)",
-    )
-    computer_use_install.add_argument(
-        "--upgrade",
-        action="store_true",
-        help=(
-            "Re-run the upstream installer even if cua-driver is already on "
-            "PATH. The upstream install.sh always pulls the latest release, "
-            "so this performs an in-place upgrade."
-        ),
-    )
-    computer_use_sub.add_parser(
-        "status",
-        help="Print whether cua-driver is installed and on PATH",
-    )
-
-    def cmd_computer_use(args):
-        action = getattr(args, "computer_use_action", None)
-        if action == "install":
-            from hermes_cli.tools_config import install_cua_driver
-            install_cua_driver(upgrade=bool(getattr(args, "upgrade", False)))
-            return
-        if action == "status":
-            import shutil
-            import subprocess
-            path = shutil.which("cua-driver")
-            if path:
-                version = ""
-                try:
-                    version = subprocess.run(
-                        ["cua-driver", "--version"],
-                        capture_output=True, text=True, timeout=5,
-                    ).stdout.strip()
-                except Exception:
-                    pass
-                if version:
-                    print(f"cua-driver: installed at {path} ({version})")
-                else:
-                    print(f"cua-driver: installed at {path}")
-                print("  Refresh to latest: hermes computer-use install --upgrade")
-                return
-            print("cua-driver: not installed")
-            print("  Run: hermes computer-use install")
-            return
-        # No subcommand → show help
-        computer_use_parser.print_help()
-
-    computer_use_parser.set_defaults(func=cmd_computer_use)
     # =========================================================================
     # mcp command — manage MCP server connections
     # =========================================================================
@@ -12530,94 +11349,6 @@ Examples:
 
     insights_parser.set_defaults(func=cmd_insights)
 
-    # =========================================================================
-    # claw command (OpenClaw migration)
-    # =========================================================================
-    claw_parser = subparsers.add_parser(
-        "claw",
-        help="OpenClaw migration tools",
-        description="Migrate settings, memories, skills, and API keys from OpenClaw to Autonomaton",
-    )
-    claw_subparsers = claw_parser.add_subparsers(dest="claw_action")
-
-    # claw migrate
-    claw_migrate = claw_subparsers.add_parser(
-        "migrate",
-        help="Migrate from OpenClaw to Autonomaton",
-        description="Import settings, memories, skills, and API keys from an OpenClaw installation. "
-        "Always shows a preview before making changes.",
-    )
-    claw_migrate.add_argument(
-        "--source", help="Path to OpenClaw directory (default: ~/.openclaw)"
-    )
-    claw_migrate.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview only — stop after showing what would be migrated",
-    )
-    claw_migrate.add_argument(
-        "--preset",
-        choices=["user-data", "full"],
-        default="full",
-        help="Migration preset (default: full). Neither preset imports secrets — "
-        "pass --migrate-secrets to include API keys.",
-    )
-    claw_migrate.add_argument(
-        "--overwrite",
-        action="store_true",
-        help="Overwrite existing files (default: refuse to apply when the plan has conflicts)",
-    )
-    claw_migrate.add_argument(
-        "--migrate-secrets",
-        action="store_true",
-        help="Include allowlisted secrets (TELEGRAM_BOT_TOKEN, API keys, etc.). "
-        "Required even under --preset full.",
-    )
-    claw_migrate.add_argument(
-        "--no-backup",
-        action="store_true",
-        help="Skip the pre-migration zip snapshot of ~/.grove/ (by default a "
-        "single restore-point archive is written to ~/.grove/backups/ "
-        "before apply; restorable with 'hermes import').",
-    )
-    claw_migrate.add_argument(
-        "--workspace-target", help="Absolute path to copy workspace instructions into"
-    )
-    claw_migrate.add_argument(
-        "--skill-conflict",
-        choices=["skip", "overwrite", "rename"],
-        default="skip",
-        help="How to handle skill name conflicts (default: skip)",
-    )
-    claw_migrate.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompts"
-    )
-
-    # claw cleanup
-    claw_cleanup = claw_subparsers.add_parser(
-        "cleanup",
-        aliases=["clean"],
-        help="Archive leftover OpenClaw directories after migration",
-        description="Scan for and archive leftover OpenClaw directories to prevent state fragmentation",
-    )
-    claw_cleanup.add_argument(
-        "--source", help="Path to a specific OpenClaw directory to clean up"
-    )
-    claw_cleanup.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Preview what would be archived without making changes",
-    )
-    claw_cleanup.add_argument(
-        "--yes", "-y", action="store_true", help="Skip confirmation prompts"
-    )
-
-    def cmd_claw(args):
-        from hermes_cli.claw import claw_command
-
-        claw_command(args)
-
-    claw_parser.set_defaults(func=cmd_claw)
 
     # =========================================================================
     # version command
@@ -12683,70 +11414,6 @@ Examples:
         "--yes", "-y", action="store_true", help="Skip confirmation prompts"
     )
     uninstall_parser.set_defaults(func=cmd_uninstall)
-
-    # =========================================================================
-    # acp command
-    # =========================================================================
-    acp_parser = subparsers.add_parser(
-        "acp",
-        help="Run grove-autonomaton as an ACP (Agent Client Protocol) server",
-        description="Start grove-autonomaton in ACP mode for editor integration (VS Code, Zed, JetBrains)",
-    )
-    _add_accept_hooks_flag(acp_parser)
-    acp_parser.add_argument(
-        "--version",
-        action="store_true",
-        dest="acp_version",
-        help="Print Autonomaton ACP version and exit",
-    )
-    acp_parser.add_argument(
-        "--check",
-        action="store_true",
-        help="Verify ACP dependencies and adapter imports, then exit",
-    )
-    acp_parser.add_argument(
-        "--setup",
-        action="store_true",
-        help="Run interactive Autonomaton provider/model setup for ACP terminal auth",
-    )
-    acp_parser.add_argument(
-        "--setup-browser",
-        action="store_true",
-        help="Install agent-browser + Playwright Chromium into ~/.grove/node/ "
-             "for browser tool support (idempotent).",
-    )
-    acp_parser.add_argument(
-        "--yes",
-        "-y",
-        action="store_true",
-        dest="assume_yes",
-        help="Accept all prompts (used by --setup-browser to skip the "
-             "~400 MB Chromium download confirmation).",
-    )
-
-    def cmd_acp(args):
-        """Launch Hermes Agent as an ACP server."""
-        try:
-            from acp_adapter.entry import main as acp_main
-
-            acp_argv = []
-            if getattr(args, "acp_version", False):
-                acp_argv.append("--version")
-            if getattr(args, "check", False):
-                acp_argv.append("--check")
-            if getattr(args, "setup", False):
-                acp_argv.append("--setup")
-            if getattr(args, "setup_browser", False):
-                acp_argv.append("--setup-browser")
-            if getattr(args, "assume_yes", False):
-                acp_argv.append("--yes")
-            acp_main(acp_argv)
-        except ImportError:
-            print("ACP dependencies not installed.", file=sys.stderr)
-            print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)
-            sys.exit(1)
-
-    acp_parser.set_defaults(func=cmd_acp)
 
     # =========================================================================
     # profile command
@@ -12915,63 +11582,6 @@ Examples:
     completion_parser.set_defaults(func=lambda args: cmd_completion(args, parser))
 
     # =========================================================================
-    # dashboard command
-    # =========================================================================
-    dashboard_parser = subparsers.add_parser(
-        "dashboard",
-        help="Start the web UI dashboard",
-        description="Launch the grove-autonomaton web dashboard for managing config, API keys, and sessions",
-    )
-    dashboard_parser.add_argument(
-        "--port", type=int, default=9119, help="Port (default 9119)"
-    )
-    dashboard_parser.add_argument(
-        "--host", default="127.0.0.1", help="Host (default 127.0.0.1)"
-    )
-    dashboard_parser.add_argument(
-        "--no-open", action="store_true", help="Don't open browser automatically"
-    )
-    dashboard_parser.add_argument(
-        "--insecure",
-        action="store_true",
-        help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
-    )
-    dashboard_parser.add_argument(
-        "--tui",
-        action="store_true",
-        help=(
-            "Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). "
-            "Alternatively set GROVE_DASHBOARD_TUI=1."
-        ),
-    )
-    dashboard_parser.add_argument(
-        "--skip-build",
-        action="store_true",
-        help=(
-            "Skip the web UI build step and serve the existing dist directly. "
-            "Useful for non-interactive contexts (Windows Scheduled Tasks, CI) "
-            "where npm may not be available. Pre-build with: cd web && npm run build"
-        ),
-    )
-    # Lifecycle flags — mutually exclusive with each other and with the
-    # start-a-server flags above (if both are passed, --stop / --status win
-    # because they exit before the server is started).  The dashboard has
-    # no service manager and no PID file, so these scan the process table
-    # for `hermes dashboard` cmdlines and SIGTERM them directly — the same
-    # path `hermes update` uses to clean up stale dashboards.
-    dashboard_parser.add_argument(
-        "--stop",
-        action="store_true",
-        help="Stop all running hermes dashboard processes and exit",
-    )
-    dashboard_parser.add_argument(
-        "--status",
-        action="store_true",
-        help="List running hermes dashboard processes and exit",
-    )
-    dashboard_parser.set_defaults(func=cmd_dashboard)
-
-    # =========================================================================
     # logs command
     # =========================================================================
     logs_parser = subparsers.add_parser(
@@ -13109,7 +11719,7 @@ Examples:
     # trigger consent prompts for hooks the user is still inspecting.
     # Groups with mixed admin/CRUD vs. agent-running entries narrow via
     # the nested subcommand (dest varies by parser).
-    _AGENT_COMMANDS = {None, "chat", "acp", "rl"}
+    _AGENT_COMMANDS = {None, "chat", "rl"}
     _AGENT_SUBCOMMANDS = {
         "cron": ("cron_command", {"run", "tick"}),
         "gateway": ("gateway_command", {"run"}),

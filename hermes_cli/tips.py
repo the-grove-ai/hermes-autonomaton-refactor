@@ -352,9 +352,7 @@ TIPS = [
     "GROVE_CRON_MAX_PARALLEL (default 4) caps how many cron jobs run per tick so bursts don't saturate your keys.",
 
     # --- Gateway Hooks ---
-    'Gateway hooks live under ~/.grove/hooks/<name>/ with HOOK.yaml + handler.py — handler must be named `handle`.',
     'Hook events include gateway:startup, session:start, agent:step, and command:* wildcard subscriptions.',
-    'Drop a ~/.grove/BOOT.md checklist and a gateway:startup hook runs it as a one-shot agent every boot.',
 
     # --- Curator ---
     'hermes curator run --dry-run previews what the curator would archive or consolidate without mutating anything.',
@@ -384,7 +382,6 @@ TIPS = [
     'GROVE_BACKGROUND_NOTIFICATIONS=result only pings when background tasks finish (vs all/error/off).',
     'GROVE_WRITE_SAFE_ROOT restricts write_file and patch to a directory prefix; writes outside require approval.',
     'GROVE_IGNORE_RULES skips auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills.',
-    'GROVE_ACCEPT_HOOKS auto-approves unseen shell hooks declared in config.yaml without a TTY prompt.',
     'auxiliary.goal_judge.model routes the /goal judge to a cheap fast model to keep loop cost near zero.',
     'Checkpoints skip directories with more than 50,000 files to avoid slow git operations on massive monorepos.',
 

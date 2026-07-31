@@ -45,7 +45,7 @@ class MemoryProvider(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Short identifier for this provider (e.g. 'builtin', 'honcho', 'hindsight')."""
+        """Short identifier for this provider (e.g. 'builtin')."""
 
     # -- Core lifecycle (implement these) ------------------------------------
 

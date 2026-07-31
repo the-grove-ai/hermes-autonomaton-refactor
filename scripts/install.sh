@@ -1668,16 +1668,6 @@ install_node_deps() {
         log_success "Browser engine setup complete"
     fi
 
-    # Install TUI dependencies
-    if [ -f "$INSTALL_DIR/ui-tui/package.json" ]; then
-        log_info "Installing TUI dependencies..."
-        cd "$INSTALL_DIR/ui-tui"
-        npm install --silent 2>/dev/null || {
-            log_warn "TUI npm install failed (hermes --tui may not work)"
-        }
-        log_success "TUI dependencies installed"
-    fi
-
 
 }
 

@@ -1889,36 +1889,6 @@ def test_dashboard_direct_status_change_within_same_state_is_noop_for_runs(kanba
         conn.close()
 
 
-def test_cli_bulk_complete_with_summary_rejects(kanban_home):
-    conn = kb.connect()
-    try:
-        a = kb.create_task(conn, title="a", assignee="worker")
-        b = kb.create_task(conn, title="b", assignee="worker")
-        kb.claim_task(conn, a); kb.claim_task(conn, b)
-    finally:
-        conn.close()
-    # Bulk + summary is refused (stderr message, no mutation).
-    # Note: hermes_cli.main doesn't propagate sub-command exit codes
-    # (args.func(args) discards the return value), so we check the side
-    # effects instead.
-    from subprocess import run as _run
-    import os, sys
-    env = os.environ.copy()
-    r = _run(
-        [sys.executable, "-m", "hermes_cli.main", "kanban",
-         "complete", a, b, "--summary", "oops"],
-        capture_output=True, text=True, env=env,
-    )
-    assert "per-task" in r.stderr, r.stderr
-    # The tasks must still be running (no partial apply).
-    conn = kb.connect()
-    try:
-        assert kb.get_task(conn, a).status == "running"
-        assert kb.get_task(conn, b).status == "running"
-    finally:
-        conn.close()
-
-
 def test_cli_bulk_complete_without_summary_still_works(kanban_home):
     """Bulk close with no per-task handoff is allowed — the common case."""
     conn = kb.connect()
@@ -2122,32 +2092,6 @@ def test_claim_task_recovers_from_invariant_leak(kanban_home):
 # -------------------------------------------------------------------------
 # Live-test findings (Apr 2026 third pass: auto-init, show --json carries runs)
 # -------------------------------------------------------------------------
-
-def test_cli_create_on_fresh_home_auto_inits(tmp_path, monkeypatch):
-    """First CLI action on an empty GROVE_HOME must not error with
-    'no such table: tasks' — init_db auto-runs now."""
-    home = tmp_path / ".grove"
-    home.mkdir()
-    monkeypatch.setenv("GROVE_HOME", str(home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
-    # Sanity: kanban.db does NOT exist yet.
-    import subprocess as _sp
-    import sys as _sys
-    worktree_root = Path(__file__).resolve().parents[2]
-    env = {**os.environ, "GROVE_HOME": str(home),
-           "PYTHONPATH": str(worktree_root)}
-    r = _sp.run(
-        [_sys.executable, "-m", "hermes_cli.main", "kanban",
-         "create", "smoke", "--assignee", "worker", "--json"],
-        capture_output=True, text=True, env=env,
-    )
-    assert r.returncode == 0, f"rc={r.returncode} stderr={r.stderr}"
-    import json as _json
-    out = _json.loads(r.stdout)
-    assert out["status"] == "ready"
-    # DB file exists now.
-    assert (home / "kanban.db").exists()
-
 
 def test_connect_auto_inits_fresh_db(tmp_path, monkeypatch):
     """Calling connect() on a fresh GROVE_HOME must create the

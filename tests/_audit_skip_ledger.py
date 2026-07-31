@@ -109,9 +109,6 @@ ENVIRONMENT_SKIPS = {
     'tests/hermes_cli/test_gateway_service.py::TestSystemdServiceRefresh::test_systemd_start_refreshes_outdated_unit': 'environment: Linux systemd / user D-Bus session unavailable on the macOS host (UserSystemdUnavailableError / missing systemctl).',
     'tests/hermes_cli/test_gateway_wsl.py::TestSupportsSystemdServicesWSL::test_native_linux': 'environment: Linux systemd / user D-Bus session unavailable on the macOS host (UserSystemdUnavailableError / missing systemctl).',
     'tests/hermes_cli/test_gateway_wsl.py::TestSupportsSystemdServicesWSL::test_wsl_with_systemd': 'environment: Linux systemd / user D-Bus session unavailable on the macOS host (UserSystemdUnavailableError / missing systemctl).',
-    'tests/hermes_cli/test_web_server.py::TestPtyWebSocket::test_client_input_reaches_child_stdin': 'environment: PTY websocket subprocess fixture unavailable in the headless dev environment.',
-    'tests/hermes_cli/test_web_server.py::TestPtyWebSocket::test_resize_escape_is_forwarded': 'environment: PTY websocket subprocess fixture unavailable in the headless dev environment.',
-    'tests/hermes_cli/test_web_server.py::TestPtyWebSocket::test_streams_child_stdout_to_client': 'environment: PTY websocket subprocess fixture unavailable in the headless dev environment.',
 }
 
 # Category D — upstream features/internals the fork intentionally replaced.

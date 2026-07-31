@@ -628,9 +628,9 @@ class TestProviderDiscovery:
         config_file = tmp_path / "config.yaml"
         config_file.write_text("memory:\n  provider: ''\n")
         from hermes_cli.plugins_cmd import _save_memory_provider
-        _save_memory_provider("honcho")
+        _save_memory_provider("myprovider")
         content = yaml.safe_load(config_file.read_text())
-        assert content["memory"]["provider"] == "honcho"
+        assert content["memory"]["provider"] == "myprovider"
 
     def test_save_context_engine(self, tmp_path, monkeypatch):
         """Saving a context engine persists to config.yaml."""

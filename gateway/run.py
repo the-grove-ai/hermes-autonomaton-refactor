@@ -3697,6 +3697,13 @@ class GatewayRunner:
                 "plugin discovery failed at gateway startup", exc_info=True,
             )
 
+        # ---------------------------------------------------------------
+        # SECURITY DEBT — ungoverned execution surface (hermes-severance-v1).
+        # Mechanism LIVE: this boot site loads shell hooks from the instance
+        # hooks dir (empty on both named machines). The operator `hooks`
+        # subcommand was removed at severance. This surface bypasses zones
+        # by construction and is slated for removal — do not add hooks.
+        # ---------------------------------------------------------------
         # Register declarative shell hooks from cli-config.yaml.  Gateway
         # has no TTY, so consent has to come from one of the three opt-in
         # channels (--accept-hooks on launch, GROVE_ACCEPT_HOOKS env var,
