@@ -33,7 +33,6 @@ they break when someone wires a shortcut.
 | **P3** | CLI background agent (`bg_agent`) | `cli.py:8493` | parent pre-routes on the `/bg` command; bg prompt is a fresh turn | no | yes — on bg prompt |
 | **P4** | CLI oneshot | `oneshot.py:430` (`agent.chat`) | yes (`oneshot.py:359`) | yes (`oneshot.py:433` via `chat()`) | n/a |
 | **P5** | Webui | `api/streaming.py` / `api/routes.py` (in webui repo) | no | no | yes |
-| **P6** | ACP adapter | `acp_adapter/server.py:1248` | no | no | yes |
 | **P7** | Gateway core | `gateway/run.py:10674`, `15718` | no | no | yes |
 | **P8** | Gateway platforms (Feishu comment, API server) | `gateway/platforms/feishu_comment.py:1089`, `gateway/platforms/api_server.py:2739`, `2993` | no | no | yes |
 | **P9** | TUI gateway | `tui_gateway/server.py:3251`, `3672` | no | no | yes |
@@ -63,7 +62,6 @@ file-line reading.
 | P3 CLI bg_agent | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | P4 CLI oneshot | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | P5 Webui | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| P6 ACP | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | P7 Gateway core | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | P8 Gateway platforms | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | P9 TUI gateway | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |

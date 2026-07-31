@@ -27,8 +27,6 @@ class TestCliTurnRoutePool:
             base_url=None,
             provider="openai-codex",
             api_mode="codex_responses",
-            acp_command=None,
-            acp_args=[],
             _credential_pool=fake_pool,
             service_tier=None,
             _operator_model_arg=None,

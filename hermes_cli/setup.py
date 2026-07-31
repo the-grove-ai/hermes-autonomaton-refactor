@@ -72,9 +72,6 @@ def _supports_same_provider_pool_setup(provider: str) -> bool:
 # Default model lists per provider — used as fallback when the live
 # /models endpoint can't be reached.
 _DEFAULT_PROVIDER_MODELS = {
-    "copilot-acp": [
-        "copilot-acp",
-    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -733,7 +730,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
         _prov_names = {
             "nous-api": "Nous Portal API key",
             "copilot": "GitHub Copilot",
-            "copilot-acp": "GitHub Copilot ACP",
             "zai": "Z.AI / GLM",
             "kimi-coding": "Kimi / Moonshot",
             "kimi-coding-cn": "Kimi / Moonshot (China)",

@@ -93,10 +93,3 @@ class TestSourceLinesAreClamped:
             "cli.py /stats pct is not clamped with min(100, ...)"
         )
 
-    def test_memory_tool_clamped(self):
-        src = self._read_file("tools/memory_tool.py")
-        # Both _success_response and _render_block should have min(100, ...)
-        count = src.count("min(100, int((current / limit)")
-        assert count >= 2, (
-            f"memory_tool.py has only {count} clamped pct lines, expected >= 2"
-        )

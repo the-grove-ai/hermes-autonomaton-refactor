@@ -39,7 +39,7 @@ def test_copilot_no_duplicate_entries():
     providers = list_authenticated_providers(current_provider="copilot")
 
     copilot_slugs = [p["slug"] for p in providers if "copilot" in p["slug"]]
-    # Should have at most one copilot entry (may also have copilot-acp if creds exist)
+    # Should have at most one copilot entry
     copilot_main = [s for s in copilot_slugs if s == "copilot"]
     assert len(copilot_main) == 1, f"Expected exactly one 'copilot' entry, got {copilot_main}"
 

@@ -311,40 +311,6 @@ def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypa
     assert "Current pooled credentials for openrouter: 3 (2 manual, 1 auto-detected from env/shared auth)" in out
 
 
-def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
-    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-    _clear_provider_env(monkeypatch)
-
-    config = load_config()
-
-    def fake_prompt_choice(question, choices, default=0):
-        if question == "Select your inference provider:":
-            return 15  # GitHub Copilot ACP
-        if question == "Select default model:":
-            return 0
-        if question == "Configure vision:":
-            return len(choices) - 1
-        tts_idx = _maybe_keep_current_tts(question, choices)
-        if tts_idx is not None:
-            return tts_idx
-        raise AssertionError(f"Unexpected prompt_choice call: {question}")
-
-    def fake_prompt_yes_no(question, default=True):
-        if question == "Add another credential for same-provider fallback?":
-            raise AssertionError("same-provider pool prompt should not appear for copilot-acp")
-        return False
-
-    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
-    monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
-    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
-    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
-
-    setup_model_provider(config)
-
-    assert config.get("credential_pool_strategies", {}) == {}
-
-
 def test_setup_copilot_uses_gh_auth_and_saves_provider(tmp_path, monkeypatch):
     """Copilot provider saves correctly through delegation."""
     monkeypatch.setenv("GROVE_HOME", str(tmp_path))
@@ -364,27 +330,6 @@ def test_setup_copilot_uses_gh_auth_and_saves_provider(tmp_path, monkeypatch):
     reloaded = load_config()
     assert isinstance(reloaded["model"], dict)
     assert reloaded["model"]["provider"] == "copilot"
-
-
-def test_setup_copilot_acp_uses_model_picker_and_saves_provider(tmp_path, monkeypatch):
-    """Copilot ACP provider saves correctly through delegation."""
-    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
-    _clear_provider_env(monkeypatch)
-    _stub_tts(monkeypatch)
-
-    config = load_config()
-
-    def fake_select():
-        _write_model_config("copilot-acp", "", "claude-sonnet-4")
-
-    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
-
-    setup_model_provider(config)
-    save_config(config)
-
-    reloaded = load_config()
-    assert isinstance(reloaded["model"], dict)
-    assert reloaded["model"]["provider"] == "copilot-acp"
 
 
 def test_setup_switch_custom_to_codex_clears_custom_endpoint_and_updates_config(

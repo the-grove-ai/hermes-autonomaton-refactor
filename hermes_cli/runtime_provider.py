@@ -26,7 +26,6 @@ from hermes_cli.auth import (
     resolve_qwen_runtime_credentials,
     resolve_gemini_oauth_runtime_credentials,
     resolve_api_key_provider_credentials,
-    resolve_external_process_provider_credentials,
     has_usable_secret,
 )
 from hermes_cli.config import get_compatible_custom_providers, load_config
@@ -1277,19 +1276,6 @@ def resolve_runtime_provider(
                 raise
             logger.info("Google Gemini OAuth credentials failed; "
                         "falling through to next provider.")
-
-    if provider == "copilot-acp":
-        creds = resolve_external_process_provider_credentials(provider)
-        return {
-            "provider": "copilot-acp",
-            "api_mode": "chat_completions",
-            "base_url": creds.get("base_url", "").rstrip("/"),
-            "api_key": creds.get("api_key", ""),
-            "command": creds.get("command", ""),
-            "args": list(creds.get("args") or []),
-            "source": creds.get("source", "process"),
-            "requested_provider": requested_provider,
-        }
 
     # Anthropic (native Messages API)
     if provider == "anthropic":

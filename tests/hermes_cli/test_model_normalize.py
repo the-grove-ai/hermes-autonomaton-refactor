@@ -132,16 +132,6 @@ class TestCopilotModelNormalization:
     def test_copilot_normalization(self, model, expected):
         assert normalize_model_for_provider(model, "copilot") == expected
 
-    @pytest.mark.parametrize("model,expected", [
-        ("anthropic/claude-sonnet-4.6", "claude-sonnet-4.6"),
-        ("claude-sonnet-4-6",           "claude-sonnet-4.6"),
-        ("claude-opus-4-6",             "claude-opus-4.6"),
-        ("openai/gpt-5.4",              "gpt-5.4"),
-    ])
-    def test_copilot_acp_normalization(self, model, expected):
-        """Copilot ACP shares the same API expectations as HTTP Copilot."""
-        assert normalize_model_for_provider(model, "copilot-acp") == expected
-
     def test_openai_codex_still_strips_openai_prefix(self):
         """Regression: openai-codex must still strip the openai/ prefix."""
         assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"

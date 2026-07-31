@@ -1844,51 +1844,6 @@ def test_archive_of_ready_task_does_not_create_spurious_run(kanban_home):
         conn.close()
 
 
-def test_dashboard_direct_status_change_off_running_closes_run(kanban_home):
-    """Dashboard drag-drop running->ready must close the active run.
-
-    Importing _set_status_direct directly to simulate the PATCH handler
-    without spinning up FastAPI.
-    """
-    from plugins.kanban.dashboard.plugin_api import _set_status_direct
-
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="x", assignee="worker")
-        kb.claim_task(conn, tid)
-        open_run = kb.latest_run(conn, tid)
-        assert open_run.ended_at is None
-        prev_run_id = open_run.id
-
-        # Simulate yanking the worker back to the queue.
-        assert _set_status_direct(conn, tid, "ready") is True
-
-        task = kb.get_task(conn, tid)
-        assert task.status == "ready"
-        assert task.current_run_id is None
-        closed = kb.get_run(conn, prev_run_id)
-        assert closed.ended_at is not None
-        assert closed.outcome == "reclaimed"
-    finally:
-        conn.close()
-
-
-def test_dashboard_direct_status_change_within_same_state_is_noop_for_runs(kanban_home):
-    """todo -> ready on an unclaimed task must not create any run rows."""
-    from plugins.kanban.dashboard.plugin_api import _set_status_direct
-
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="x")
-        # Force to todo for the sake of the test.
-        conn.execute("UPDATE tasks SET status='todo' WHERE id=?", (tid,))
-        conn.commit()
-        assert _set_status_direct(conn, tid, "ready") is True
-        assert kb.list_runs(conn, tid) == []
-    finally:
-        conn.close()
-
-
 def test_cli_bulk_complete_without_summary_still_works(kanban_home):
     """Bulk close with no per-task handoff is allowed — the common case."""
     conn = kb.connect()

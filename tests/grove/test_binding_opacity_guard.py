@@ -588,12 +588,6 @@ EXEMPTIONS: dict = {
         "the opaque routing slug R-2 governs; non-dispatch (CLI/model-listing "
         "only). Owned by declarative-flag-path-v1 if catalog-id normalization is "
         "ever centralized.",
-    ("plugins/hermes-achievements/dashboard/plugin_api.py", 306):
-        "is_local_model_name — detects a LOCAL ENDPOINT via name markers "
-        "(ollama/gguf/localhost/vllm-local). Same class as the GLM exemption: "
-        "the model name is a proxy for the backend; the correct key is the "
-        "endpoint, which the catalog has no field for. Non-dispatch (achievements "
-        "dashboard). Re-key to the endpoint when local-substrate work lands.",
 }
 
 

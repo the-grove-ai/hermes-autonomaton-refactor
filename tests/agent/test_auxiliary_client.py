@@ -85,10 +85,6 @@ class TestNormalizeAuxProvider:
         assert _normalize_aux_provider("github-copilot") == "copilot"
         assert _normalize_aux_provider("github-models") == "copilot"
 
-    def test_maps_github_copilot_acp_aliases(self):
-        assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
-        assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
-
 
 class TestReadCodexAccessToken:
     def test_valid_auth_store(self, tmp_path, monkeypatch):

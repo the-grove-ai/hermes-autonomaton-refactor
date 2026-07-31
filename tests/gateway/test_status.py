@@ -941,3 +941,52 @@ class TestReadProcessCmdlinePsFallback:
         )
         result = status._read_process_cmdline(12345)
         assert "hermes_cli/main.py" in result
+
+
+# ── Relocated from tests/tools/test_windows_native_support.py (hermes-severance-v1 T5,
+#    FLAG 2): POSIX-invariant coverage of the cross-platform pid-liveness primitive,
+#    lifted verbatim before that Windows-support file was deleted. ──
+
+
+class TestPidExistsOSErrorWidening:
+    """gateway.status._pid_exists itself must widen Windows errors correctly.
+
+    The POSIX fallback branch (reached when psutil isn't importable) is the
+    only path where Python raises ``OSError(WinError 87)`` on Windows for a
+    gone PID instead of ``ProcessLookupError``. The function must catch the
+    wider ``OSError`` to match POSIX semantics.
+    """
+
+    def test_oserror_gone_pid_returns_false(self, monkeypatch):
+        """Simulate Windows' OSError(WinError 87) for a gone PID via the POSIX fallback."""
+        from gateway import status
+
+        # Force the psutil-first branch to miss so we exercise the fallback.
+        monkeypatch.setitem(
+            __import__("sys").modules, "psutil",
+            type("P", (), {"pid_exists": staticmethod(lambda pid: (_ for _ in ()).throw(ImportError()))})()
+        )
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
+
+        def fake_kill(pid, sig):
+            raise OSError(22, "Invalid argument")
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+        assert status._pid_exists(12345) is False
+
+    def test_permission_error_returns_true(self, monkeypatch):
+        """POSIX fallback: PermissionError means alive (owned by another user)."""
+        from gateway import status
+
+        monkeypatch.setitem(
+            __import__("sys").modules, "psutil",
+            type("P", (), {"pid_exists": staticmethod(lambda pid: (_ for _ in ()).throw(ImportError()))})()
+        )
+        monkeypatch.setattr(status, "_IS_WINDOWS", False)
+
+        def fake_kill(pid, sig):
+            raise PermissionError(1, "Operation not permitted")
+
+        monkeypatch.setattr(status.os, "kill", fake_kill)
+        assert status._pid_exists(12345) is True
+

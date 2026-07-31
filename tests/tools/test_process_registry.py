@@ -1000,3 +1000,55 @@ def test_drain_notifications_empty_queue():
 
     results = process_registry.drain_notifications()
     assert results == []
+
+
+# ── Relocated from tests/tools/test_windows_native_support.py (hermes-severance-v1 T5,
+#    FLAG 2): POSIX-invariant coverage of the cross-platform pid-liveness primitive,
+#    lifted verbatim before that Windows-support file was deleted. ──
+
+
+class TestProcessRegistryOSErrorWidening:
+    """_is_host_pid_alive delegates to gateway.status._pid_exists."""
+
+    def test_oserror_treated_as_not_alive(self, monkeypatch):
+        """_pid_exists → False propagates as _is_host_pid_alive → False."""
+        from tools.process_registry import ProcessRegistry
+
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        assert ProcessRegistry._is_host_pid_alive(12345) is False
+
+    def test_permission_error_treated_as_alive(self, monkeypatch):
+        """PermissionError is encoded by _pid_exists as alive=True; propagates as-is.
+
+        This is a meaningful semantic change from the pre-#21561 version of
+        this test (which asserted PermissionError → not-alive). The old
+        ``os.kill(pid, 0)``-based probe couldn't distinguish "gone" from
+        "owned by another user" on some platforms, so it conservatively
+        returned False. The new psutil-based probe CAN distinguish them via
+        ``OpenProcess + ERROR_ACCESS_DENIED`` on Windows / ``except
+        PermissionError`` on POSIX, so alive=True is correct.
+        """
+        from tools.process_registry import ProcessRegistry
+
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+        assert ProcessRegistry._is_host_pid_alive(12345) is True
+
+    def test_zero_or_none_pid_returns_false_without_probing(self, monkeypatch):
+        """No wasted syscall on falsy pids."""
+        from tools.process_registry import ProcessRegistry
+
+        probes = []
+        monkeypatch.setattr(
+            "gateway.status._pid_exists",
+            lambda pid: probes.append(pid) or True,
+        )
+        assert ProcessRegistry._is_host_pid_alive(None) is False
+        assert ProcessRegistry._is_host_pid_alive(0) is False
+        assert probes == []
+
+    def test_alive_pid_returns_true(self, monkeypatch):
+        from tools.process_registry import ProcessRegistry
+
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
+        assert ProcessRegistry._is_host_pid_alive(os.getpid()) is True
+

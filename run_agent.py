@@ -1311,10 +1311,6 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,
-        acp_command: str = None,
-        acp_args: list[str] | None = None,
-        command: str = None,
-        args: list[str] | None = None,
         model: str = "",
         max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
         tool_delay: float = 1.0,
@@ -1566,8 +1562,6 @@ class AIAgent:
         provider_name = provider_name or None
         api_mode = api_mode or None
         self.provider = provider_name or ""
-        self.acp_command = acp_command or command
-        self.acp_args = list(acp_args or args or [])
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":
@@ -1638,9 +1632,7 @@ class AIAgent:
         # providers have exceptions (for example Copilot's gpt-5-mini still
         # uses chat completions). Also auto-upgrade for direct OpenAI URLs
         # (api.openai.com) since all newer tool-calling models prefer
-        # Responses there. ACP runtimes are excluded: CopilotACPClient
-        # handles its own routing and does not implement the Responses API
-        # surface.
+        # Responses there.
         # When api_mode was explicitly provided, respect it — the user
         # knows what their endpoint supports (#10473).
         # Exception: Azure OpenAI serves gpt-5.x on /chat/completions and
@@ -1649,9 +1641,6 @@ class AIAgent:
         if (
             api_mode is None
             and self.api_mode == "chat_completions"
-            and self.provider != "copilot-acp"
-            and not str(self.base_url or "").lower().startswith("acp://copilot")
-            and not str(self.base_url or "").lower().startswith("acp+tcp://")
             and not self._is_azure_openai_url()
             and (
                 self._is_direct_openai_url()
@@ -1975,9 +1964,6 @@ class AIAgent:
                     client_kwargs = {"api_key": api_key, "base_url": base_url}
                 if _provider_timeout is not None:
                     client_kwargs["timeout"] = _provider_timeout
-                if self.provider == "copilot-acp":
-                    client_kwargs["command"] = self.acp_command
-                    client_kwargs["args"] = self.acp_args
                 effective_base = base_url
                 if base_url_host_matches(effective_base, "openrouter.ai"):
                     from agent.auxiliary_client import build_or_headers
@@ -9016,17 +9002,6 @@ class AIAgent:
         client_kwargs = dict(client_kwargs)
         _validate_proxy_env_urls()
         _validate_base_url(client_kwargs.get("base_url"))
-        if self.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
-            from agent.copilot_acp_client import CopilotACPClient
-
-            client = CopilotACPClient(**client_kwargs)
-            logger.info(
-                "Copilot ACP client created (%s, shared=%s) %s",
-                reason,
-                shared,
-                self._client_log_context(),
-            )
-            return client
         if self.provider == "google-gemini-cli" or str(client_kwargs.get("base_url", "")).startswith("cloudcode-pa://"):
             from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
 
@@ -12905,8 +12880,6 @@ class AIAgent:
             toolsets=function_args.get("toolsets"),
             tasks=function_args.get("tasks"),
             max_iterations=function_args.get("max_iterations"),
-            acp_command=function_args.get("acp_command"),
-            acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
             parent_agent=self,
         )
@@ -15271,16 +15244,6 @@ class AIAgent:
                     # attempt — switch to non-streaming for the rest of this
                     # session instead of re-failing every retry.
                     if getattr(self, "_disable_streaming", False):
-                        _use_streaming = False
-                    # CopilotACPClient communicates via subprocess stdio and
-                    # returns a plain SimpleNamespace — not an iterable
-                    # stream.  Mirror the ACP exclusion used for Responses
-                    # API upgrade (lines ~1083-1085).
-                    elif (
-                        self.provider == "copilot-acp"
-                        or str(self.base_url or "").lower().startswith("acp://copilot")
-                        or str(self.base_url or "").lower().startswith("acp+tcp://")
-                    ):
                         _use_streaming = False
                     elif not self._has_stream_consumers():
                         # No display/TTS consumer. Still prefer streaming for

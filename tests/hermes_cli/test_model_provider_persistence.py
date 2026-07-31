@@ -217,68 +217,6 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("base_url") == "https://packy.example.com/v1"
         assert model.get("api_mode") == "codex_responses"
 
-    def test_copilot_acp_provider_saved_when_selected(self, config_home):
-        """_model_flow_copilot_acp should persist provider/base_url/model together."""
-        from hermes_cli.main import _model_flow_copilot_acp
-        from hermes_cli.config import load_config
-
-        with patch(
-            "hermes_cli.auth.get_external_process_provider_status",
-            return_value={
-                "resolved_command": "/usr/local/bin/copilot",
-                "command": "copilot",
-                "base_url": "acp://copilot",
-            },
-        ), patch(
-            "hermes_cli.auth.resolve_external_process_provider_credentials",
-            return_value={
-                "provider": "copilot-acp",
-                "api_key": "copilot-acp",
-                "base_url": "acp://copilot",
-                "command": "/usr/local/bin/copilot",
-                "args": ["--acp", "--stdio"],
-                "source": "process",
-            },
-        ), patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            return_value={
-                "provider": "copilot",
-                "api_key": "gh-cli-token",
-                "base_url": "https://api.githubcopilot.com",
-                "source": "gh auth token",
-            },
-        ), patch(
-            "hermes_cli.models.fetch_github_model_catalog",
-            return_value=[
-                {
-                    "id": "gpt-4.1",
-                    "capabilities": {"type": "chat", "supports": {}},
-                    "supported_endpoints": ["/chat/completions"],
-                },
-                {
-                    "id": "gpt-5.4",
-                    "capabilities": {"type": "chat", "supports": {"reasoning_effort": ["low", "medium", "high"]}},
-                    "supported_endpoints": ["/responses"],
-                },
-            ],
-        ), patch(
-            "hermes_cli.auth._prompt_model_selection",
-            return_value="gpt-5.4",
-        ), patch(
-            "hermes_cli.auth.deactivate_provider",
-        ):
-            _model_flow_copilot_acp(load_config(), "old-model")
-
-        import yaml
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict), f"model should be dict, got {type(model)}"
-        assert model.get("provider") == "copilot-acp"
-        assert model.get("base_url") == "acp://copilot"
-        assert model.get("default") == "gpt-5.4"
-        assert model.get("api_mode") == "chat_completions"
-
     def test_opencode_go_models_are_selectable_and_persist_normalized(self, config_home, monkeypatch):
         from hermes_cli.main import _model_flow_api_key_provider
         from hermes_cli.config import load_config
