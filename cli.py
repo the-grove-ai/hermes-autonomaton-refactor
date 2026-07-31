@@ -4486,8 +4486,6 @@ class HermesCLI:
                 runtime.get("provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
-                runtime.get("command"),
-                tuple(runtime.get("args") or ()),
             ),
         }
 
@@ -4891,8 +4889,6 @@ class HermesCLI:
                 runtime.get("provider"),
                 runtime.get("base_url"),
                 runtime.get("api_mode"),
-                runtime.get("command"),
-                tuple(runtime.get("args") or ()),
             )
             self._active_agent_model = effective_model
 
