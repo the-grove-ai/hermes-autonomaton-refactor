@@ -111,6 +111,36 @@ admission_friction:
   # per-intent add-intent to a single force_always:true offer.
   green_force_always_distinct_intents: 3
 
+# dock-detector-dedup-v1 — the Dock mutation detector proposes a staging goal
+# when memory records accumulate that no Dock goal tracks. An absent block uses
+# these defaults; a present key is validated fail-loud.
+dock_mutation_detector:
+  # Minimum unattached memory records before the model is asked for a theme.
+  # Below this the detector stages nothing and makes no model call.
+  # Integer >= 1.
+  unattached_threshold: 5
+
+  # Most records sent to the model in one synthesis call. Integer >= 1.
+  max_records_to_t1: 10
+
+  # Vector for a proposed goal when the model names none. One of:
+  # apex_strategic, strategic, operational, product, personal.
+  default_vector: personal
+
+  # INTERIM duplicate guards — both OFF by default. They make the detector
+  # more conservative and can leave it with too few records to propose
+  # anything, so turn them on only after a goal card has appeared once.
+  # Every suppression is logged.
+  #
+  # Skip records an existing goal or pending goal proposal already lists.
+  dedup_claimed_records: false
+  # Skip a proposed theme that only rewords an existing goal or pending
+  # proposal (name + keywords, normalized).
+  dedup_theme_overlap: false
+  # Share of wording that must match to count as a reworded theme.
+  # 0 < value <= 1. Lower = stricter. Used only when dedup_theme_overlap is on.
+  theme_overlap_threshold: 0.5
+
 # disposition-gate-v1 — a terminal disposition (approved / rejected /
 # dismissed) BINDS the three memory detectors against re-emitting the same
 # subject (keyed on target_id). The old guards checked "is a proposal for this

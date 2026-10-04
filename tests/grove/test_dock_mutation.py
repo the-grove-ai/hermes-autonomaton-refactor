@@ -150,6 +150,203 @@ class TestDetector:
 # ── writer (SPEC tests 6-8) ────────────────────────────────────────────────────
 
 
+def _dedup_cfg(**kw):
+    from grove.dock.detector import DockDetectorConfig
+
+    return DockDetectorConfig(
+        dedup_claimed_records=True, dedup_theme_overlap=True, **kw
+    )
+
+
+class TestDetectorDedup:
+    """dock-detector-dedup-v1 — the OPT-IN interim guards: claimed records +
+    reworded themes never re-propose (the live defect: 19 near-duplicate goals
+    from the same 10 records). Default OFF — pinned first."""
+
+    def test_guards_are_off_by_default(self, monkeypatch):
+        # Same inputs that the guards would suppress still propose by default.
+        _patch_t1(monkeypatch, _THEME)
+        store = _FakeStore([_rec(f"mem_{i}") for i in range(6)])
+        existing = [{"name": _THEME["name"], "keywords": _THEME["keywords"],
+                     "source_record_ids": [f"mem_{i}" for i in range(6)]}]
+        assert DockMutationDetector().detect(store, set(), existing_themes=existing)
+
+    def test_detect_reads_nothing_itself(self, monkeypatch):
+        # PURE: with no themes/config passed, no Dock/queue/config read happens.
+        import grove.dock.detector as det
+
+        def _boom(*a, **kw):
+            raise AssertionError("detect() must not read — the caller gathers")
+
+        monkeypatch.setattr(det, "existing_goal_themes", _boom)
+        monkeypatch.setattr(det, "load_dock_detector_config", _boom)
+        _patch_t1(monkeypatch, _THEME)
+        store = _FakeStore([_rec(f"mem_{i}") for i in range(6)])
+        assert DockMutationDetector().detect(store, set())
+
+    def test_records_claimed_by_existing_goal_are_not_unattached(self, monkeypatch):
+        _patch_t1(monkeypatch, _THEME)
+        store = _FakeStore([_rec(f"mem_{i}") for i in range(6)])
+        existing = [{"name": "Unrelated Carpentry", "keywords": ["wood"],
+                     "source_record_ids": [f"mem_{i}" for i in range(6)]}]
+        assert DockMutationDetector().detect(
+            store, set(), existing_themes=existing, config=_dedup_cfg()) == []
+
+    def test_claimed_suppression_is_logged(self, monkeypatch, caplog):
+        import logging
+
+        _patch_t1(monkeypatch, _THEME)
+        store = _FakeStore([_rec(f"mem_{i}") for i in range(6)])
+        existing = [{"name": "Unrelated Carpentry", "keywords": ["wood"],
+                     "source_record_ids": [f"mem_{i}" for i in range(6)]}]
+        with caplog.at_level(logging.INFO, logger="grove.dock.detector"):
+            DockMutationDetector().detect(
+                store, set(), existing_themes=existing, config=_dedup_cfg())
+        assert "dedup_claimed_records" in caplog.text
+
+    def test_only_unclaimed_records_are_sampled(self, monkeypatch):
+        _patch_t1(monkeypatch, _THEME)
+        store = _FakeStore([_rec(f"mem_{i}") for i in range(12)])
+        existing = [{"name": "Unrelated Carpentry", "keywords": ["wood"],
+                     "source_record_ids": [f"mem_{i}" for i in range(6)]}]
+        out = DockMutationDetector().detect(
+            store, set(), existing_themes=existing, config=_dedup_cfg())
+        assert out[0]["goal"]["source_record_ids"] == [f"mem_{i}" for i in range(6, 12)]
+
+    def test_reworded_theme_is_skipped_and_logged(self, monkeypatch, caplog):
+        import logging
+
+        # Fresh records, but T1 rewords a theme the Dock already tracks.
+        _patch_t1(monkeypatch, {"name": "Evolving Core Architecture",
+                                "keywords": ["model independence", "orchestration"]})
+        store = _FakeStore([_rec(f"mem_{i}") for i in range(6)])
+        existing = [{"name": "Evolve Autonomaton Architecture",
+                     "keywords": ["architectural", "model-independent", "orchestrator"],
+                     "source_record_ids": []}]
+        with caplog.at_level(logging.INFO, logger="grove.dock.detector"):
+            out = DockMutationDetector().detect(
+                store, set(), existing_themes=existing, config=_dedup_cfg())
+        assert out == []
+        assert "SUPPRESSED" in caplog.text
+
+    def test_distinct_theme_still_proposes(self, monkeypatch):
+        _patch_t1(monkeypatch, _THEME)
+        store = _FakeStore([_rec(f"mem_{i}") for i in range(6)])
+        existing = [{"name": "Carriage House Renovation",
+                     "keywords": ["contractor", "permits"], "source_record_ids": []}]
+        out = DockMutationDetector().detect(
+            store, set(), existing_themes=existing, config=_dedup_cfg())
+        assert out and out[0]["goal"]["name"] == _THEME["name"]
+
+    def test_existing_themes_reads_all_machine_goals_and_pending(self, tmp_path, monkeypatch):
+        # More machine goals than load_dock's merge cap — every one still claims.
+        import grove.dock as dock_mod
+        import grove.dock.detector as det
+        import grove.eval.proposal_queue as pq
+
+        dock_dir = tmp_path / "dock"
+        dock_dir.mkdir()
+        _write_operator_dock(dock_dir, [_op_goal()])
+        _write_machine(dock_dir, [
+            _mgoal(f"auto-g{i}", name=f"Theme {i}", source_record_ids=[f"mem_{i}"])
+            for i in range(5)
+        ])
+        monkeypatch.setattr(dock_mod, "_machine_dock_dir", lambda: dock_dir)
+        monkeypatch.setattr(
+            dock_mod, "load_dock", lambda path=None: load_dock(dock_dir / "dock.yaml")
+        )
+        pending = SimpleNamespace(
+            type=pq.PROPOSAL_TYPE_DOCK_MUTATION,
+            payload={"goal": {"name": "Pending Theme", "keywords": ["p"],
+                              "source_record_ids": ["mem_99"]}},
+        )
+        monkeypatch.setattr(pq, "read_all", lambda **kw: [pending])
+
+        themes = det.existing_goal_themes()
+        claimed = {i for t in themes for i in t["source_record_ids"]}
+        assert {f"mem_{i}" for i in range(5)} <= claimed and "mem_99" in claimed
+        assert "Op Goal" in {t["name"] for t in themes}
+
+
+class TestCardFields:
+    """The card's "why": rationale, definition of done, and vector come from
+    T1 — no more empty justification and hardcoded bottom-rank vector."""
+
+    def test_rationale_becomes_the_card_justification(self, monkeypatch):
+        import grove.eval.proposal_queue as pq
+
+        _patch_t1(monkeypatch, {**_THEME, "rationale": "All six concern the memory substrate."})
+        store = _FakeStore([_rec(f"mem_{i}") for i in range(6)])
+        det = DockMutationDetector()
+        out = det.detect(store, set())
+        captured = []
+        monkeypatch.setattr(pq, "append", lambda rec, **kw: captured.append(rec) or True)
+        assert det.stage_proposals(out, session_id="s") == 1
+        assert captured[0].semantic_justification == "All six concern the memory substrate."
+        assert "rationale" not in captured[0].payload   # payload stays {action, goal}
+
+    def test_vector_and_dod_from_theme(self, monkeypatch):
+        _patch_t1(monkeypatch, {**_THEME, "vector": "strategic",
+                                "definition_of_done": "Substrate spec published."})
+        store = _FakeStore([_rec(f"mem_{i}") for i in range(6)])
+        goal = DockMutationDetector().detect(store, set())[0]["goal"]
+        assert goal["vector"] == "strategic"
+        assert goal["definition_of_done"] == "Substrate spec published."
+
+    def test_vector_and_dod_defaults_when_theme_omits_them(self, monkeypatch):
+        from grove.dock.detector import DockDetectorConfig
+
+        _patch_t1(monkeypatch, _THEME)
+        store = _FakeStore([_rec(f"mem_{i}") for i in range(6)])
+        goal = DockMutationDetector().detect(store, set())[0]["goal"]
+        assert goal["vector"] == "personal" and goal["definition_of_done"] == ""
+        goal = DockMutationDetector().detect(
+            store, set(), config=DockDetectorConfig(default_vector="operational")
+        )[0]["goal"]
+        assert goal["vector"] == "operational"
+
+    def test_parse_theme_optional_fields(self):
+        parse = DockMutationDetector._parse_theme
+        assert parse('{"name": "X", "keywords": ["a"]}') == {"name": "X", "keywords": ["a"]}
+        full = parse('{"name": "X", "keywords": ["a"], "rationale": " why ", '
+                     '"definition_of_done": " done ", "vector": "strategic"}')
+        assert full["rationale"] == "why" and full["definition_of_done"] == "done"
+        assert full["vector"] == "strategic"
+        # An invalid vector is dropped (the configured default then applies).
+        assert "vector" not in parse('{"name": "X", "keywords": [], "vector": "cosmic"}')
+
+
+class TestDetectorConfig:
+    def test_absent_uses_defaults_and_bad_values_are_loud(self, tmp_path):
+        from grove.dock.detector import DockDetectorConfig, load_dock_detector_config
+
+        assert load_dock_detector_config(tmp_path / "missing.yaml") == DockDetectorConfig()
+        assert DockDetectorConfig().dedup_claimed_records is False
+        assert DockDetectorConfig().dedup_theme_overlap is False
+        cfg = tmp_path / "flywheel.config.yaml"
+        head = "dock_mutation_detector:\n  "
+        cfg.write_text(head + "theme_overlap_threshold: 0.8\n  dedup_theme_overlap: true\n")
+        loaded = load_dock_detector_config(cfg)
+        assert loaded.theme_overlap_threshold == 0.8 and loaded.dedup_theme_overlap is True
+        for bad, key in (
+            ("theme_overlap_threshold: 2", "theme_overlap_threshold"),
+            ("max_records_to_t1: 0", "max_records_to_t1"),
+            ("dedup_claimed_records: yes please", "dedup_claimed_records"),
+            ("default_vector: cosmic", "default_vector"),
+        ):
+            cfg.write_text(head + bad + "\n")
+            with pytest.raises(ValueError, match=key):
+                load_dock_detector_config(cfg)
+
+    def test_repo_template_block_loads(self):
+        from pathlib import Path
+
+        from grove.dock.detector import DockDetectorConfig, load_dock_detector_config
+
+        template = Path(__file__).resolve().parents[2] / "config" / "flywheel.config.yaml"
+        assert load_dock_detector_config(template) == DockDetectorConfig()
+
+
 class TestWriter:
     def test_6_goal_written(self, tmp_path):
         path = append_machine_goal(_THEME_goal(), dock_dir=tmp_path)

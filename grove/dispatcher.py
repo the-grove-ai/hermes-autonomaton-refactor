@@ -1222,8 +1222,24 @@ class Dispatcher:
                 for g in dock_goals
                 if isinstance(g, dict) and g.get("slug")
             }
+            # dock-detector-dedup-v1 — config + the opt-in dedup inputs are
+            # gathered HERE (the caller); the detector stays pure.
+            from grove.dock.detector import (
+                existing_goal_themes,
+                load_dock_detector_config,
+            )
+
+            dock_cfg = load_dock_detector_config()
+            dock_themes = (
+                existing_goal_themes()
+                if dock_cfg.dedup_claimed_records or dock_cfg.dedup_theme_overlap
+                else None
+            )
             dock_detector = DockMutationDetector()
-            dock_proposals = dock_detector.detect(store, active_goal_slugs)
+            dock_proposals = dock_detector.detect(
+                store, active_goal_slugs,
+                existing_themes=dock_themes, config=dock_cfg,
+            )
             if dock_proposals:
                 dock_detector.stage_proposals(
                     dock_proposals, session_id="dock-mutation-sweep"
