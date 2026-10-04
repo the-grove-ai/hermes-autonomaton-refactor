@@ -220,3 +220,66 @@ def test_workspace_zone_parity_unchanged():
     assert clf.classify("gmail_search").zone == "green"
     assert clf.classify("gmail_send").zone == "yellow"
     assert clf.classify("drive_delete").zone == "yellow"
+
+
+# ── capability-guidance-carrier-v1 — user_message carrier keeps tools stable ──
+
+
+def test_user_message_carrier_leaves_tool_surface_byte_stable():
+    import copy
+
+    surface = [
+        _tool("terminal"),
+        _tool("gmail_search", "Search Gmail; returns matching messages."),
+        _tool("calendar_list"),
+    ]
+    before = copy.deepcopy(surface)
+    agent = _ws_agent(surface)
+    agent._capability_guidance_carrier = "user_message"
+    agent._last_tool_selection = {}
+
+    agent._apply_capability_hook("scheduling")
+
+    # No tool description was rewritten — the cacheable prefix is unchanged.
+    assert agent._tools_for_turn == before
+    # The guidance is still composed and stamped as delivered, with provenance.
+    assert agent._capability_guidance and "GRV-009" in agent._capability_guidance
+    assert agent._capability_records_applied == WORKSPACE_IDS
+    sel = agent._last_tool_selection
+    assert sel["capability_payload_attached"] is True
+    assert sel["capability_payload_carrier"] == "user_message"
+
+
+def test_user_message_carrier_surface_identical_across_intents():
+    import copy
+
+    def _run(intent):
+        agent = _ws_agent([
+            _tool("terminal"),
+            _tool("gmail_search", "Search Gmail; returns matching messages."),
+            _tool("calendar_list"),
+        ])
+        agent._capability_guidance_carrier = "user_message"
+        agent._apply_capability_hook(intent)
+        return copy.deepcopy(agent._tools_for_turn), agent._capability_guidance
+
+    tools_a, guide_a = _run("scheduling")
+    tools_b, guide_b = _run("factual_lookup")
+    assert tools_a == tools_b          # same bytes regardless of intent
+    assert guide_a != guide_b          # while the guidance itself differs
+
+
+def test_default_carrier_outcome_shape_unchanged():
+    agent = _ws_agent([_tool("gmail_search", "Search Gmail.")])
+    agent._last_tool_selection = {}
+    agent._apply_capability_hook("scheduling")
+    assert "capability_payload_carrier" not in agent._last_tool_selection
+    assert "GRV-009" in agent._tools_for_turn[0]["function"]["description"]
+
+
+def test_user_message_injection_is_wired_into_the_conversation_loop():
+    # Producer-blind wiring pin: the conversation loop appends the fenced
+    # guidance to the current turn's user-message injections.
+    src = inspect.getsource(run_agent.AIAgent)
+    assert "<capability-guidance>" in src
+    assert '_capability_guidance_carrier", "tool_description")' in src

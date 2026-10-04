@@ -1770,6 +1770,34 @@ class AIAgent:
                 self._cache_ttl = _ttl
         except Exception:
             pass
+        # capability-guidance-carrier-v1 — WHERE the per-turn Capability-record
+        # guidance (GRV-009) rides. ``tool_description`` (default, the original
+        # carrier) rewrites one tool's description each turn; because tool
+        # definitions sit at the FRONT of the prompt and the guidance differs by
+        # intent, that invalidates the provider's prompt cache from that tool
+        # onward on every turn (live: 2,240 of ~52,000 tokens cached on each
+        # turn's first call). ``user_message`` delivers the SAME text on the
+        # current turn's user message instead — the tail, where the memory and
+        # plugin context already go — so tools + system prompt stay byte-stable.
+        # config.yaml: prompt_caching.capability_guidance.
+        self._capability_guidance_carrier = "tool_description"
+        try:
+            _carrier = (
+                self._config_load_or().get("prompt_caching", {}) or {}
+            ).get("capability_guidance", "tool_description")
+            if _carrier in {"tool_description", "user_message"}:
+                self._capability_guidance_carrier = _carrier
+            else:
+                logger.error(
+                    "[run_agent] config.yaml prompt_caching.capability_guidance "
+                    "must be 'tool_description' or 'user_message', got %r — "
+                    "using 'tool_description'", _carrier,
+                )
+        except Exception as exc:
+            logger.error(
+                "[run_agent] could not read prompt_caching.capability_guidance "
+                "(%r) — using 'tool_description'", exc,
+            )
 
         # Iteration budget: the LLM is only notified when it actually exhausts
         # the iteration budget (api_call_count >= max_iterations).  At that
@@ -3799,6 +3827,17 @@ class AIAgent:
             guidance = self._compose_capability_guidance(records)
             self._capability_guidance = guidance
 
+            # capability-guidance-carrier-v1 — in ``user_message`` mode the
+            # guidance is delivered at API-call time on the current turn's user
+            # message (see the injection block in the conversation loop); the
+            # tool surface is left byte-stable so the prompt cache holds.
+            user_message_carrier = (
+                getattr(self, "_capability_guidance_carrier", "tool_description")
+                == "user_message"
+            )
+            if user_message_carrier:
+                payload_attached = True
+
             surface = self._tools_for_turn
             if not surface:
                 return  # fallback / full-registry turn — guidance stays stashed
@@ -3813,6 +3852,8 @@ class AIAgent:
                 )
             )
             for i, t in enumerate(surface):
+                if user_message_carrier:
+                    break  # guidance rides the user message — no tool rewrite
                 if not isinstance(t, dict):
                     continue
                 if t.get("function", {}).get("name") in ws_names:
@@ -3851,6 +3892,9 @@ class AIAgent:
             "capability_carrier_verbs_present": list(carrier_verbs_present),
             "capability_payload_attached": bool(payload_attached),
         }
+        if getattr(self, "_capability_guidance_carrier", "tool_description") != "tool_description":
+            # Non-default carrier only — the default trace shape is unchanged.
+            outcome["capability_payload_carrier"] = self._capability_guidance_carrier
         sel = getattr(self, "_last_tool_selection", None)
         if isinstance(sel, dict):
             sel.update(outcome)
@@ -14962,6 +15006,19 @@ class AIAgent:
                             _injections.append(_fenced)
                     if _plugin_user_context:
                         _injections.append(_plugin_user_context)
+                    # capability-guidance-carrier-v1 — the turn's Capability
+                    # record guidance, when configured to ride the user
+                    # message instead of a tool description.
+                    if (
+                        getattr(self, "_capability_guidance_carrier", "tool_description")
+                        == "user_message"
+                        and getattr(self, "_capability_guidance", None)
+                    ):
+                        _injections.append(
+                            "<capability-guidance>\n"
+                            + self._capability_guidance
+                            + "\n</capability-guidance>"
+                        )
                     # K6 (D1) — Dock goal-context injection removed; Dock goals
                     # now serve via the cellar_context BM25 path (see above).
                     if _injections:

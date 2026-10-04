@@ -703,6 +703,10 @@ DEFAULT_CONFIG = {
     # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
     "prompt_caching": {
         "cache_ttl": "5m",
+        # Where per-turn capability guidance rides: "tool_description"
+        # (original) or "user_message" (keeps tools + system prompt
+        # byte-stable so the provider prompt cache holds across turns).
+        "capability_guidance": "tool_description",
     },
 
     # OpenRouter-specific settings.
