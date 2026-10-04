@@ -99,6 +99,25 @@ _SCOPE_DEFINING_REFUSED_TYPES = frozenset({
     PROPOSAL_TYPE_DOCK_DETACH,
 })
 
+
+def _demo_tokenless_approve() -> bool:
+    """demo-readiness — ``portal.demo_tokenless_approve`` in the sovereign config
+    (the portal.artifact_roots precedent). DEFAULT ON for this demo build: the
+    portal is treated as the operator-only surface and applies the six
+    scope-defining types WITHOUT a grant token. The operator sets the key to
+    ``false`` to restore the Confirmation Gate guarantee verbatim (token or RED
+    CLI). The portal carries no operator identity, so the default is a demo
+    posture, not a production one."""
+    # read_raw_config, not load_config: a READ-ONLY lookup — load_config runs the
+    # cold-start materializer, and a refused approve must write nothing.
+    from hermes_cli.config import read_raw_config
+
+    portal_cfg = (read_raw_config() or {}).get("portal")
+    if isinstance(portal_cfg, dict) and portal_cfg.get("demo_tokenless_approve") is False:
+        return False
+    return True
+
+
 # forge-jobsearch-v1 — the raw MCP tool name the gateway notion OAuth session
 # advertises for a page-property write (sanitized registry name:
 # mcp_notion_notion_update_page).
@@ -329,7 +348,18 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
         # unforgeably. reject/dismiss for these types are UNCHANGED this sprint
         # (they write no scope-defining file — approve is the gated verb).
         grant = None
-        if proposal.type in _SCOPE_DEFINING_REFUSED_TYPES:
+        demo_tokenless = (
+            proposal.type in _SCOPE_DEFINING_REFUSED_TYPES
+            and not token
+            and _demo_tokenless_approve()
+        )
+        if demo_tokenless:
+            logger.warning(
+                "[portal.actions] DEMO tokenless approve of scope-defining %s (%s) "
+                "— portal.demo_tokenless_approve is not false; no operator grant token",
+                proposal.type, proposal.proposal_id,
+            )
+        elif proposal.type in _SCOPE_DEFINING_REFUSED_TYPES:
             from grove.gate import GrantVerificationError, verify_grant_token
             from grove.red_pending_store import get_red_pending_store
 
@@ -444,6 +474,8 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
         # the applied_result and the kaizen_disposition event. Tokenless applies
         # (non-scope-defining types) and the RED CLI path carry no stamp.
         stamp = _grant_provenance_stamp(grant) if grant is not None else None
+        if demo_tokenless:
+            stamp = {"approval_surface": "portal_demo_tokenless"}
         if stamp is not None:
             applied = {**(applied or {}), **stamp}
         proposal_queue.remove(proposal.proposal_id)
@@ -1276,13 +1308,11 @@ def _unknown_tier_card_html(tier: str) -> str:
 
 
 async def handle_tier_model_swap(request: web.Request) -> web.Response:
-    """FILE a tier-model swap as an EXPLORATION_NUDGE proposal (portal-action-
-    checkpoint-parity). The portal press proposes; the system writes only when the
-    operator runs ``autonomaton flywheel approve <id>`` (the RED CLI apply path →
-    RoutingConfigWriter.swap_tier_model). Form body: ``tier`` (T1/T2/T3) and
-    ``model_slug``. The read-only validation (tier swappable, catalog membership)
-    runs at FILE time so a proposal that cannot apply is never queued. NO writer
-    is called on this request."""
+    """Swap the model bound to a tier. Form body: ``tier`` (T1/T2/T3, R3) and
+    ``model_slug`` (must be in the catalog). Calls the sole routing writer, then
+    returns the re-rendered tier card reflecting the POST-write state (N2). An
+    off-catalog slug or a ``ConfigValidationError`` re-renders the SAME card with
+    the error inline — the card stays, no 500 (C3)."""
     data = await request.post()
     tier = str(data.get("tier") or "")
     model_slug = str(data.get("model_slug") or "")
@@ -1313,23 +1343,45 @@ async def handle_tier_model_swap(request: web.Request) -> web.Response:
             status=400,
         )
 
-    pid, _ = file_agentless(
-        type=PROPOSAL_TYPE_EXPLORATION_NUDGE,
-        payload={"slug": model_slug, "tier": tier},
-        evidence=(),
-        proposer="portal_operator",
+    try:
+        result = await get_writer().swap_tier_model(tier, model_slug)
+    except ConfigValidationError as exc:
+        return await _loud_action_failure(
+            render_tier_card(
+                tier, _live_tier_preferences().get(tier), catalog, error=str(exc)
+            ),
+            failure_class="tier_config_invalid",
+            action="tier_swap",
+            message=str(exc),
+            status=422,
+        )
+
+    # ledger-eventtype-hygiene-v1 Change 3 — a no-op swap (tier already bound to
+    # this model) wrote nothing and is NOT a failure. Success-class 200 with an
+    # info line on the card, not the _loud_action_failure error surface.
+    if result.status == "noop":
+        logger.info(
+            "[portal.actions] tier %s already bound to %s (no-op)", tier, model_slug
+        )
+        return _html_fragment(
+            render_tier_card(
+                tier, _live_tier_preferences().get(tier), catalog,
+                info=f"Already bound to {model_slug} — no change.",
+            )
+        )
+
+    logger.info("[portal.actions] tier %s swapped to %s", tier, model_slug)
+    # N2 — render the live, post-write state (re-read after the writer committed).
+    return _html_fragment(
+        render_tier_card(tier, _live_tier_preferences().get(tier), catalog)
     )
-    logger.info("[portal.actions] tier swap FILED %s: %s -> %s", pid, tier, model_slug)
-    return _filed_card(pid, "tier swap", f"{tier} → {model_slug}")
 
 
 async def handle_tier_model_revert(request: web.Request) -> web.Response:
-    """FILE a one-level tier revert as an EXPLORATION_NUDGE proposal to the tier's
-    ``previous_model`` (portal-action-checkpoint-parity). The portal press
-    proposes; the operator's ``flywheel approve`` applies via the same writer as a
-    swap. Form body: ``tier``. File-time validation: the tier is swappable, a
-    ``previous_model`` exists on record, and it is still cataloged — a revert that
-    cannot apply is never queued. NO writer is called on this request."""
+    """Revert a tier to its ``previous_model`` — one-level undo (AC-6). Form body:
+    ``tier``. Same write path and N2 re-read as swap; a ``ConfigValidationError``
+    (e.g. no previous_model on record) re-renders the card with the error
+    inline."""
     data = await request.post()
     tier = str(data.get("tier") or "")
 
@@ -1346,38 +1398,23 @@ async def handle_tier_model_revert(request: web.Request) -> web.Response:
         )
 
     catalog = load_catalog()
-    prev = (_live_tier_preferences().get(tier) or {}).get("previous_model")
-    if not prev:
+    try:
+        await get_writer().revert_tier_model(tier)
+    except ConfigValidationError as exc:
         return await _loud_action_failure(
             render_tier_card(
-                tier, _live_tier_preferences().get(tier), catalog,
-                error="No previous model on record to revert to.",
+                tier, _live_tier_preferences().get(tier), catalog, error=str(exc)
             ),
-            failure_class="tier_no_previous_model",
+            failure_class="tier_config_invalid",
             action="tier_revert",
-            message=f"Tier {tier!r} has no previous_model to revert to.",
-            status=422,
-        )
-    if prev not in {m["slug"] for m in catalog}:
-        return await _loud_action_failure(
-            render_tier_card(
-                tier, _live_tier_preferences().get(tier), catalog,
-                error=f"Previous model {prev!r} is no longer in the catalog.",
-            ),
-            failure_class="tier_previous_off_catalog",
-            action="tier_revert",
-            message=f"Previous model {prev!r} is not in the catalog.",
+            message=str(exc),
             status=422,
         )
 
-    pid, _ = file_agentless(
-        type=PROPOSAL_TYPE_EXPLORATION_NUDGE,
-        payload={"slug": prev, "tier": tier},
-        evidence=(),
-        proposer="portal_operator",
+    logger.info("[portal.actions] tier %s reverted", tier)
+    return _html_fragment(
+        render_tier_card(tier, _live_tier_preferences().get(tier), catalog)
     )
-    logger.info("[portal.actions] tier revert FILED %s: %s -> %s", pid, tier, prev)
-    return _filed_card(pid, "tier revert", f"{tier} → {prev}")
 
 
 def _fresh_binding_row_html(skill: str, catalog, error: str | None = None) -> str:

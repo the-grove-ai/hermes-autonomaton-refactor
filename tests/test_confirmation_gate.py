@@ -595,9 +595,13 @@ def _append_dock_mutation(pid):
     ))
 
 
-async def test_wire_tokenless_scope_defining_refused(client, grove_home):
-    """Regression pin: a six-type approve WITHOUT a token keeps the current
-    guarantee — 422, refused card, RED CLI named, proposal untouched in queue."""
+async def test_wire_tokenless_scope_defining_refused(client, grove_home, monkeypatch):
+    """Regression pin: with the demo switch OFF, a six-type approve WITHOUT a
+    token keeps the guarantee — 422, refused card, RED CLI named, proposal
+    untouched in queue."""
+    import grove.api.actions as actions
+
+    monkeypatch.setattr(actions, "_demo_tokenless_approve", lambda: False)
     pid = f"{PROPOSAL_TYPE_DOCK_MUTATION}:tokenless"
     _append_dock_mutation(pid)
     r = await client.post(f"/portal/actions/proposals/{pid}/approve")
@@ -606,6 +610,19 @@ async def test_wire_tokenless_scope_defining_refused(client, grove_home):
     assert "refused" in body and "scope-defining" in body
     assert "flywheel approve" in body
     assert proposal_queue.read(pid) is not None  # not applied
+
+
+async def test_wire_demo_switch_applies_tokenless(client, grove_home, monkeypatch):
+    """demo-readiness — by DEFAULT (portal.demo_tokenless_approve absent), a
+    tokenless six-type approve APPLIES (200, proposal consumed). Off is pinned
+    above."""
+    pid = f"{PROPOSAL_TYPE_DOCK_MUTATION}:demo-tokenless"
+    _append_dock_mutation(pid)
+    r = await client.post(f"/portal/actions/proposals/{pid}/approve")
+    body = await r.text()
+    assert r.status == 200, body
+    assert "approved" in body and "refused" not in body
+    assert proposal_queue.read(pid) is None  # applied + removed
 
 
 async def test_wire_valid_token_applies_and_stamps(

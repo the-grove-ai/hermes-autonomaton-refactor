@@ -448,15 +448,15 @@ async def test_tier_revert_unknown_tier_loud_but_not_filed(client, grove_home, m
     assert _paf() == []                       # SUPPRESSED
 
 
-async def test_tier_swap_files_proposal_and_writes_nothing(client, grove_home, monkeypatch):
-    # portal-action-checkpoint-parity — a tier swap FILES an exploration_nudge
-    # proposal; the portal writes NOTHING (the loopback-vuln fix). The no-op
-    # short-circuit moved to apply time (swap_tier_model). HTTP 200 pending card
-    # with the operator apply command; the config file is byte-untouched.
+async def test_tier_swap_writes_directly(client, grove_home, monkeypatch):
+    # demo-readiness — the operator's own tier swap is a DIRECT write through the
+    # sole routing writer (no proposal, no grant token). HTTP 200 with the
+    # re-rendered tier card; the config carries the new model and a .bak exists.
     import shutil
     from pathlib import Path
 
     import grove.config.routing_writer as rw
+    from grove.config.model_catalog import load_catalog
 
     repo_root = Path(__file__).resolve().parents[1]
     cfg = grove_home / "routing.operational.yaml"
@@ -464,23 +464,20 @@ async def test_tier_swap_files_proposal_and_writes_nothing(client, grove_home, m
     # rebind the cached writer singleton to THIS test's GROVE_HOME config.
     monkeypatch.setattr(rw, "_writer", None)
 
-    bytes_before = cfg.read_bytes()
-    mtime_before = cfg.stat().st_mtime_ns
+    current = rw.get_writer()._current_tier_model("T2")
+    target = next(m["slug"] for m in load_catalog() if m["slug"] != current)
     sent = _capture_broadcast(monkeypatch)
 
     r = await client.post(
-        "/portal/actions/routing/swap",
-        data={"tier": "T2", "model_slug": "anthropic/claude-sonnet-4.6"},
+        "/portal/actions/routing/swap", data={"tier": "T2", "model_slug": target},
     )
-    assert r.status == 200
     body = await r.text()
-    assert "proposed" in body                     # pending, not applied
-    assert "flywheel approve" in body             # the operator apply command
+    assert r.status == 200, body
+    assert "flywheel approve" not in body         # applied, not proposed
     assert 'class="meta error"' not in body       # NOT the error surface
-    # PIN: the portal wrote nothing — bytes + mtime unchanged, no .bak.
-    assert cfg.read_bytes() == bytes_before
-    assert cfg.stat().st_mtime_ns == mtime_before
-    assert not cfg.with_suffix(cfg.suffix + ".bak").exists()
+    # PIN: the portal wrote — new model bound, backup taken.
+    assert rw.get_writer()._current_tier_model("T2") == target
+    assert cfg.with_suffix(cfg.suffix + ".bak").exists()
     assert sent == []                             # no failure broadcast
     assert _paf() == []                           # no failure proposal filed
 

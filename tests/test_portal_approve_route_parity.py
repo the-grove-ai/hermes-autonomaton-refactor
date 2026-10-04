@@ -174,7 +174,14 @@ def _target_for(home, ptype):
 
 
 @pytest.mark.parametrize("ptype", SCOPE_DEFINING_TYPES)
-async def test_portal_approve_refuses_scope_defining_type(client, grove_home, ptype):
+async def test_portal_approve_refuses_scope_defining_type(
+    client, grove_home, ptype, monkeypatch
+):
+    # demo-readiness — the refusal holds when the operator turns the demo
+    # switch OFF (portal.demo_tokenless_approve: false).
+    import grove.api.actions as actions
+
+    monkeypatch.setattr(actions, "_demo_tokenless_approve", lambda: False)
     target = _target_for(grove_home, ptype)
     before = _snapshot(target)
 
