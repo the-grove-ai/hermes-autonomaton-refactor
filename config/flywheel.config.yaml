@@ -111,6 +111,21 @@ admission_friction:
   # per-intent add-intent to a single force_always:true offer.
   green_force_always_distinct_intents: 3
 
+# init-sweeps-background-v1 — when a new session starts, the Dispatcher runs
+# maintenance over sessions that have gone quiet: memory extraction, the
+# detectors, and compacting old transcripts into wiki pages. These make several
+# model calls and can take a minute or more.
+#
+#   inline      (default) run them before the first reply of the session. Use
+#               this for the one-shot CLI, where a background task would be cut
+#               off when the command exits.
+#   background  run the same work, in the same order, on a background thread so
+#               the first reply is not held up. Use this on the long-lived
+#               gateway. Results (proposals, wiki pages) land a minute or so
+#               after the reply instead of before it.
+init_sweeps:
+  mode: inline
+
 # dock-detector-dedup-v1 — the Dock mutation detector proposes a staging goal
 # when memory records accumulate that no Dock goal tracks. An absent block uses
 # these defaults; a present key is validated fail-loud.

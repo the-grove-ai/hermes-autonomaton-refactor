@@ -43,6 +43,8 @@ import logging
 import os
 import re
 import sys as _sys
+import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -494,6 +496,44 @@ def _file_producer_failure(producer: str, exc: BaseException) -> None:
             "[grove.dispatcher] producer_failure filing ITSELF "
             "failed (the producer failure above stands): %r", file_exc,
         )
+
+
+# init-sweeps-background-v1 — one sweep at a time, process-wide. Two Dispatchers
+# built close together (a turn + a hygiene agent) serialize here instead of
+# running the same detectors concurrently.
+_INIT_SWEEP_LOCK = threading.Lock()
+
+_INIT_SWEEPS_MODES = ("inline", "background")
+
+
+def _init_sweeps_mode() -> str:
+    """``init_sweeps.mode`` from ``~/.grove/flywheel.config.yaml``.
+
+    ``inline`` (the default, and the only safe mode for a one-shot CLI process
+    — a daemon thread dies with the process) runs the dormant-session sweeps
+    inside Dispatcher construction, so the first turn of a session waits for
+    them. ``background`` (for the long-lived gateway) runs the SAME sweeps, in
+    the SAME order, on a daemon thread so the turn is not held behind them.
+    An absent file/block/key means ``inline``; a present value is validated
+    fail-loud."""
+    import yaml
+
+    from hermes_constants import get_hermes_home
+
+    config_path = Path(get_hermes_home()) / "flywheel.config.yaml"
+    if not config_path.exists():
+        return "inline"
+    raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    block = raw.get("init_sweeps")
+    if not isinstance(block, dict) or "mode" not in block:
+        return "inline"
+    mode = block["mode"]
+    if mode not in _INIT_SWEEPS_MODES:
+        raise ValueError(
+            f"flywheel.config.yaml init_sweeps.mode must be one of "
+            f"{list(_INIT_SWEEPS_MODES)}, got {mode!r}"
+        )
+    return mode
 
 
 def _run_guarded_producer(
@@ -1024,64 +1064,113 @@ class Dispatcher:
             # admitted. Memory rides the CONTEXT path (provider prefetch /
             # system_prompt_block), never tools.
 
-        # memory-substrate-v1 — extract tacit operator knowledge from the
-        # sessions captured dormant above and stage memory_context proposals.
-        # Best-effort: a failure logs loud and never bricks Dispatcher
-        # construction (the Implicit Success Sweep precedent). Needs a
-        # session-DB handle to hydrate transcripts; test Dispatchers without
-        # one skip naturally. Surfacing/approval is asynchronous — staged
-        # proposals wait for the operator's review surface; nothing is applied
-        # here.
-        if getattr(self, "_memory_dormant_sessions", None) and \
-                self.session is not None:
-            try:
-                self._extract_memory_from_dormant_sessions(
-                    self._memory_dormant_sessions
+        # init-sweeps-background-v1 — the dormant-session sweeps below (memory
+        # extraction + detectors + session compaction, goal attachment,
+        # recurrence) make several model calls and measured ~68s on the live
+        # gateway, all of it BEFORE the first turn of a session was even
+        # classified. They are wrapped in one closure so the SAME code, in the
+        # SAME load-bearing order, runs either inline (default) or on a
+        # background thread (``init_sweeps.mode: background``). Nothing in the
+        # turn reads their output synchronously: they stage proposals and
+        # write wiki pages for LATER review.
+        def _init_sweeps() -> None:
+            # memory-substrate-v1 — extract tacit operator knowledge from the
+            # sessions captured dormant above and stage memory_context proposals.
+            # Best-effort: a failure logs loud and never bricks Dispatcher
+            # construction (the Implicit Success Sweep precedent). Needs a
+            # session-DB handle to hydrate transcripts; test Dispatchers without
+            # one skip naturally. Surfacing/approval is asynchronous — staged
+            # proposals wait for the operator's review surface; nothing is applied
+            # here.
+            if getattr(self, "_memory_dormant_sessions", None) and \
+                    self.session is not None:
+                try:
+                    self._extract_memory_from_dormant_sessions(
+                        self._memory_dormant_sessions
+                    )
+                except Exception as exc:
+                    # detector-sweep-resilience-v1 R-4 + gate ruling (b): a raise
+                    # that reaches this guard is SWEEP-level BY DESIGN — the
+                    # per-producer guards inside contain producer raises, so what
+                    # escapes is prologue/structural failure. Per-producer
+                    # attribution here would be a lie; file the sweep name as
+                    # data, same filing floor.
+                    _file_producer_failure("memory_extraction_sweep", exc)
+                    logger.warning(
+                        "[grove.dispatcher] memory extraction failed at init: "
+                        "%r — staged proposals (if any) are unaffected", exc,
+                    )
+
+            # goal-spine-v1 P3 (J4 ruling, shape b) — the goal-attachment sweep
+            # runs under ITS OWN isolation guard, invoked BESIDE the memory-sweep
+            # guard above: a raise in either cannot abort or be masked by the
+            # other. Same dormancy gate (G1 ruling: dormancy satisfies R-6
+            # structurally); no session-DB requirement — the detector reads the
+            # ledger, not transcripts.
+            if getattr(self, "_memory_dormant_sessions", None):
+                self._run_goal_attachment_sweep()
+
+            # detector-sweep-resilience-v1 P3 — the recurrence detector is the
+            # THIRD SIBLING, strictly AFTER both sweep sites above. ORDERING IS
+            # LOAD-BEARING (gate ruling c condition): the sweeps' guards file
+            # producer_failure events SYNCHRONOUSLY, so this scan sees the SAME
+            # init's failures — a failure and its recurrence card can land in one
+            # init. Reordering above the sweeps silently turns same-init detection
+            # into next-init detection (pinned by
+            # test_recurrence_sibling_runs_last). Same dormancy gate; itself
+            # pausable + guarded under its own producer name — by design.
+            if getattr(self, "_memory_dormant_sessions", None):
+                def _invoke_recurrence() -> None:
+                    from grove.eval.producer_recurrence import (
+                        build_producer_recurrence_proposals,
+                    )
+
+                    build_producer_recurrence_proposals()
+
+                _run_guarded_producer(
+                    "producer_recurrence_detector",
+                    _invoke_recurrence,
+                    paused=_paused_producers(),
                 )
-            except Exception as exc:
-                # detector-sweep-resilience-v1 R-4 + gate ruling (b): a raise
-                # that reaches this guard is SWEEP-level BY DESIGN — the
-                # per-producer guards inside contain producer raises, so what
-                # escapes is prologue/structural failure. Per-producer
-                # attribution here would be a lie; file the sweep name as
-                # data, same filing floor.
-                _file_producer_failure("memory_extraction_sweep", exc)
-                logger.warning(
-                    "[grove.dispatcher] memory extraction failed at init: "
-                    "%r — staged proposals (if any) are unaffected", exc,
-                )
 
-        # goal-spine-v1 P3 (J4 ruling, shape b) — the goal-attachment sweep
-        # runs under ITS OWN isolation guard, invoked BESIDE the memory-sweep
-        # guard above: a raise in either cannot abort or be masked by the
-        # other. Same dormancy gate (G1 ruling: dormancy satisfies R-6
-        # structurally); no session-DB requirement — the detector reads the
-        # ledger, not transcripts.
-        if getattr(self, "_memory_dormant_sessions", None):
-            self._run_goal_attachment_sweep()
+        if not getattr(self, "_memory_dormant_sessions", None):
+            return  # nothing dormant — every sweep above is gated on this
 
-        # detector-sweep-resilience-v1 P3 — the recurrence detector is the
-        # THIRD SIBLING, strictly AFTER both sweep sites above. ORDERING IS
-        # LOAD-BEARING (gate ruling c condition): the sweeps' guards file
-        # producer_failure events SYNCHRONOUSLY, so this scan sees the SAME
-        # init's failures — a failure and its recurrence card can land in one
-        # init. Reordering above the sweeps silently turns same-init detection
-        # into next-init detection (pinned by
-        # test_recurrence_sibling_runs_last). Same dormancy gate; itself
-        # pausable + guarded under its own producer name — by design.
-        if getattr(self, "_memory_dormant_sessions", None):
-            def _invoke_recurrence() -> None:
-                from grove.eval.producer_recurrence import (
-                    build_producer_recurrence_proposals,
-                )
-
-                build_producer_recurrence_proposals()
-
-            _run_guarded_producer(
-                "producer_recurrence_detector",
-                _invoke_recurrence,
-                paused=_paused_producers(),
+        def _timed_init_sweeps(mode: str) -> None:
+            started = time.monotonic()
+            with _INIT_SWEEP_LOCK:
+                waited = time.monotonic() - started
+                try:
+                    _init_sweeps()
+                except Exception as exc:
+                    # Each sweep is guarded internally; anything that still
+                    # escapes is structural. Loud + filed, never silent.
+                    logger.exception(
+                        "[grove.dispatcher] init sweeps (%s) failed: %r",
+                        mode, exc,
+                    )
+                    _file_producer_failure("init_sweeps", exc)
+                    if mode == "inline":
+                        raise
+            logger.info(
+                "[grove.dispatcher] init sweeps (%s) finished in %.1fs "
+                "(waited %.1fs for a prior sweep)",
+                mode, time.monotonic() - started, waited,
             )
+
+        sweeps_mode = _init_sweeps_mode()
+        if sweeps_mode == "background":
+            logger.info(
+                "[grove.dispatcher] init sweeps starting in the background "
+                "(%d dormant session(s)) — the turn is not waiting on them",
+                len(self._memory_dormant_sessions),
+            )
+            threading.Thread(
+                target=_timed_init_sweeps, args=("background",),
+                name="grove-init-sweeps", daemon=True,
+            ).start()
+        else:
+            _timed_init_sweeps("inline")
 
     def _run_goal_attachment_sweep(self) -> None:
         """goal-spine-v1 P3 — the ISOLATED detector sweep guard (J4 shape b).

@@ -18,6 +18,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from grove.dispatcher import (
     Dispatcher,
     _file_producer_failure,
@@ -296,3 +298,125 @@ def test_sweep_floor_files_sweep_name_on_structural_failure(
     assert len(events) == 1
     assert events[0]["producer"] == "memory_extraction_sweep"
     assert "prologue boom" in events[0]["error"]
+
+
+# ── init-sweeps-background-v1 — inline (default) vs background ───────────────
+
+
+def _stub_three_sweeps(monkeypatch, order, gate=None):
+    monkeypatch.setattr(
+        "grove.memory.lifecycle.dormant_session_ids",
+        lambda store, minutes=30: ["sess-x"],
+    )
+
+    def _memory(self, sids):
+        if gate is not None:
+            gate.wait(timeout=10)
+        order.append("memory_sweep")
+
+    monkeypatch.setattr(
+        Dispatcher, "_extract_memory_from_dormant_sessions", _memory
+    )
+    monkeypatch.setattr(
+        "grove.dock.attachment.run_goal_attachment_sweep",
+        lambda: order.append("goal_attachment"),
+    )
+    monkeypatch.setattr(
+        "grove.eval.producer_recurrence.build_producer_recurrence_proposals",
+        lambda: order.append("recurrence"),
+    )
+
+
+def _join_init_sweeps():
+    import threading
+
+    for t in threading.enumerate():
+        if t.name == "grove-init-sweeps":
+            t.join(timeout=10)
+            assert not t.is_alive()
+
+
+def test_init_sweeps_default_is_inline(monkeypatch, tmp_path):
+    from grove.intent_store import IntentStore
+    import grove.dispatcher as disp
+
+    assert disp._init_sweeps_mode() == "inline"   # no config file → inline
+    order: list = []
+    _stub_three_sweeps(monkeypatch, order)
+    Dispatcher(
+        intent_store=IntentStore(store_path=tmp_path / "records.jsonl"),
+        session_db=SimpleNamespace(),
+    )
+    # Inline: all three have run, in order, by the time construction returns.
+    assert order == ["memory_sweep", "goal_attachment", "recurrence"]
+
+
+def test_init_sweeps_background_does_not_block_construction(
+    monkeypatch, tmp_path
+):
+    import threading
+
+    from grove.intent_store import IntentStore
+    import grove.dispatcher as disp
+
+    monkeypatch.setattr(disp, "_init_sweeps_mode", lambda: "background")
+    order: list = []
+    gate = threading.Event()   # holds the first sweep until we release it
+    _stub_three_sweeps(monkeypatch, order, gate=gate)
+
+    Dispatcher(
+        intent_store=IntentStore(store_path=tmp_path / "records.jsonl"),
+        session_db=SimpleNamespace(),
+    )
+    # Construction returned while the sweep is still held — the turn is free.
+    assert order == []
+    gate.set()
+    _join_init_sweeps()
+    # Same work, same load-bearing order, just later.
+    assert order == ["memory_sweep", "goal_attachment", "recurrence"]
+
+
+def test_init_sweeps_background_failure_is_contained_and_filed(
+    monkeypatch, tmp_path
+):
+    from grove.intent_store import IntentStore
+    import grove.dispatcher as disp
+
+    monkeypatch.setattr(disp, "_init_sweeps_mode", lambda: "background")
+    monkeypatch.setattr(
+        "grove.memory.lifecycle.dormant_session_ids",
+        lambda store, minutes=30: ["sess-x"],
+    )
+    monkeypatch.setattr(
+        Dispatcher, "_extract_memory_from_dormant_sessions",
+        lambda self, sids: None,
+    )
+
+    def _structural_boom(self):
+        raise RuntimeError("background boom")
+
+    # An UNGUARDED raise inside the sweep closure (structural) must not kill
+    # the thread silently — it is logged and filed under the sweep's name.
+    monkeypatch.setattr(Dispatcher, "_run_goal_attachment_sweep", _structural_boom)
+
+    Dispatcher(
+        intent_store=IntentStore(store_path=tmp_path / "records.jsonl"),
+        session_db=SimpleNamespace(),
+    )
+    _join_init_sweeps()
+    events = [e for e in _producer_failures() if e["producer"] == "init_sweeps"]
+    assert len(events) == 1 and "background boom" in events[0]["error"]
+
+
+def test_init_sweeps_mode_config(monkeypatch, tmp_path):
+    import grove.dispatcher as disp
+
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    cfg = tmp_path / "flywheel.config.yaml"
+    cfg.write_text("init_sweeps:\n  mode: background\n")
+    assert disp._init_sweeps_mode() == "background"
+    cfg.write_text("admission_friction:\n  window_days: 30\n")
+    assert disp._init_sweeps_mode() == "inline"       # absent block → inline
+    cfg.write_text("init_sweeps:\n  mode: sometimes\n")
+    with pytest.raises(ValueError, match="init_sweeps.mode"):
+        disp._init_sweeps_mode()
