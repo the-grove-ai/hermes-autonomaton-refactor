@@ -270,28 +270,35 @@ def _summary_dock_mutation(proposal: RoutingProposal) -> str:
     name = goal.get("name", "an emerging theme")
     n = len(goal.get("source_record_ids") or [])
     noun = "record" if n == 1 else "records"
-    return (
+    summary = (
         f"{n} memory {noun} accumulating around '{name}'. No Dock goal tracks "
         f"this. Add a staging goal?"
     )
+    # dock-detector card fields — the detector's one-sentence rationale (what
+    # the records have in common), verbatim. Rendered, never re-inferred; an
+    # older proposal with no rationale renders exactly as before.
+    why = (getattr(proposal, "semantic_justification", "") or "").strip()
+    if why:
+        summary += f" Why: {why}"
+    return summary
 
 
 def _dock_mutation_to_diff(proposal: RoutingProposal) -> Dict[str, Any]:
     """The one-file change the operator reviews before approving."""
     goal = (proposal.payload or {}).get("goal") or {}
-    return {
-        "dock.autonomaton.yaml": {
-            "goals": {
-                "+add": {
-                    "id": goal.get("id", "?"),
-                    "name": goal.get("name", "?"),
-                    "keywords": goal.get("keywords", []),
-                    "vector": goal.get("vector", "personal"),
-                    "status": goal.get("status", "staging"),
-                },
-            },
-        },
+    added = {
+        "id": goal.get("id", "?"),
+        "name": goal.get("name", "?"),
+        "keywords": goal.get("keywords", []),
+        "vector": goal.get("vector", "personal"),
+        "status": goal.get("status", "staging"),
     }
+    # The definition of done is written to the Dock with the goal, so the
+    # operator sees it before approving. Omitted when empty (older proposals
+    # render exactly as before).
+    if goal.get("definition_of_done"):
+        added["definition_of_done"] = goal["definition_of_done"]
+    return {"dock.autonomaton.yaml": {"goals": {"+add": added}}}
 
 
 def _summary_dock_goal_status(proposal: RoutingProposal) -> str:

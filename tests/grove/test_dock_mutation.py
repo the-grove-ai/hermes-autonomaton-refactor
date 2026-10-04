@@ -316,6 +316,47 @@ class TestCardFields:
         assert "vector" not in parse('{"name": "X", "keywords": [], "vector": "cosmic"}')
 
 
+class TestCardRendering:
+    """The approval card shows the rationale and the definition of done —
+    rendered from the stored proposal, and unchanged for older proposals."""
+
+    def _proposal(self, sj="", dod=""):
+        return SimpleNamespace(
+            semantic_justification=sj,
+            payload={"action": "create_goal", "goal": {
+                "id": "auto-x", "name": "X Theme", "keywords": ["a"],
+                "vector": "strategic", "status": "staging",
+                "definition_of_done": dod,
+                "source_record_ids": ["m1", "m2"],
+            }},
+        )
+
+    def test_summary_carries_the_rationale(self):
+        from grove.kaizen.rendering import _summary_dock_mutation
+
+        out = _summary_dock_mutation(self._proposal(sj="Both concern X."))
+        assert out.startswith("2 memory records accumulating around 'X Theme'.")
+        assert out.endswith("Why: Both concern X.")
+
+    def test_summary_unchanged_without_rationale(self):
+        from grove.kaizen.rendering import _summary_dock_mutation
+
+        assert _summary_dock_mutation(self._proposal()) == (
+            "2 memory records accumulating around 'X Theme'. No Dock goal "
+            "tracks this. Add a staging goal?"
+        )
+
+    def test_diff_shows_definition_of_done_only_when_present(self):
+        from grove.kaizen.rendering import _dock_mutation_to_diff
+
+        add = _dock_mutation_to_diff(self._proposal(dod="X shipped."))[
+            "dock.autonomaton.yaml"]["goals"]["+add"]
+        assert add["definition_of_done"] == "X shipped."
+        add = _dock_mutation_to_diff(self._proposal())[
+            "dock.autonomaton.yaml"]["goals"]["+add"]
+        assert "definition_of_done" not in add
+
+
 class TestDetectorConfig:
     def test_absent_uses_defaults_and_bad_values_are_loud(self, tmp_path):
         from grove.dock.detector import DockDetectorConfig, load_dock_detector_config
