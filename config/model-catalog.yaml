@@ -102,13 +102,13 @@ models:
     provider: openrouter
     input_cost_per_mtok: 0.435     # USD/Mtok — display-only, verified deepseek/deepseek-v4-pro (live OpenRouter 2026-06-30)
     output_cost_per_mtok: 0.87     # USD/Mtok — display-only
-    notes: "1M context, reliable tool calling. Verified on OpenRouter 2026-06-30."
+    notes: "The 0423 snapshot of V4 Pro. Superseded by deepseek/deepseek-v4-pro-0813 — prefer that. 1M context."
   - slug: "deepseek/deepseek-v4-flash"
     display_name: "DeepSeek V4 Flash"
     provider: openrouter
     input_cost_per_mtok: 0.09     # USD/Mtok — display-only, verified deepseek/deepseek-v4-flash (live OpenRouter 2026-06-30)
     output_cost_per_mtok: 0.18    # USD/Mtok — display-only
-    notes: "1M context, reliable tool calling, ultra-cheap. Strong fleet/compaction candidate."
+    notes: "Retired by DeepSeek 2026-09-10 in favour of deepseek/deepseek-v4.1-flash — prefer that. 1M context."
   - slug: "deepseek/deepseek-v3.2"
     display_name: "DeepSeek V3.2"
     provider: openrouter
@@ -199,3 +199,61 @@ models:
     input_cost_per_mtok: 0.42     # USD/Mtok — display-only (promoted from the operator overlay, P4 fold-in)
     output_cost_per_mtok: 2.61    # USD/Mtok — display-only
     notes: "550B MoE / 55B active. Strong US open-weight model, 1M context. Free route available on OpenRouter. Built for long-running agents. NVIDIA Open Model License."
+
+  # ── model-list-refresh 2026-10-04 — costs are the price at the endpoint the
+  # live routing prefers (provider_routing.openrouter.order) where it hosts the
+  # model, else the OpenRouter list price. Display-only, as above. ──
+  - slug: "deepseek/deepseek-v4.1-flash"
+    display_name: "DeepSeek V4.1 Flash"
+    provider: openrouter
+    input_cost_per_mtok: 0.14     # USD/Mtok — display-only, DeepInfra endpoint, verified deepseek/deepseek-v4.1-flash (live OpenRouter 2026-10-04)
+    output_cost_per_mtok: 0.42    # USD/Mtok — display-only
+    notes: "Fast tier candidate (Telemetry / T1). Replaces V4 Flash, which DeepSeek retired 2026-09-10. 1M context, tools + structured outputs, native vision."
+  - slug: "openai/gpt-6-luna"
+    display_name: "GPT-6 Luna"
+    provider: openrouter
+    input_cost_per_mtok: 0.1     # USD/Mtok — display-only, list price, verified openai/gpt-6-luna (live OpenRouter 2026-10-04)
+    output_cost_per_mtok: 0.5    # USD/Mtok — display-only
+    notes: "Fast tier candidate (Telemetry / T1). Small, cheap, tools + structured outputs. 1M context."
+  - slug: "google/gemini-3.5-flash-lite"
+    display_name: "Gemini 3.5 Flash Lite"
+    provider: openrouter
+    input_cost_per_mtok: 0.3     # USD/Mtok — display-only, list price, verified google/gemini-3.5-flash-lite (live OpenRouter 2026-10-04)
+    output_cost_per_mtok: 2.5    # USD/Mtok — display-only
+    notes: "Fast tier candidate (Telemetry / T1). In-family successor to Gemini 2.5 Flash Lite (2.5 family expires 2026-10-20). 1M context."
+  - slug: "z-ai/glm-5.3-flash"
+    display_name: "GLM 5.3 Flash"
+    provider: openrouter
+    input_cost_per_mtok: 0.075     # USD/Mtok — display-only, DeepInfra endpoint, verified z-ai/glm-5.3-flash (live OpenRouter 2026-10-04)
+    output_cost_per_mtok: 0.25    # USD/Mtok — display-only
+    notes: "Fast tier candidate (Telemetry / T1). Small GLM 5.3, tools + structured outputs. 1M context."
+  - slug: "google/gemini-3.8-flash"
+    display_name: "Gemini 3.8 Flash"
+    provider: openrouter
+    input_cost_per_mtok: 0.75     # USD/Mtok — display-only, list price, verified google/gemini-3.8-flash (live OpenRouter 2026-10-04)
+    output_cost_per_mtok: 3.75    # USD/Mtok — display-only
+    notes: "Workhorse candidate (T2). Implicit prompt caching, all endpoints Google-hosted. 1M context."
+  - slug: "anthropic/claude-sonnet-5.5"
+    display_name: "Claude Sonnet 5.5"
+    provider: openrouter
+    input_cost_per_mtok: 2     # USD/Mtok — display-only, list price, verified anthropic/claude-sonnet-5.5 (live OpenRouter 2026-10-04)
+    output_cost_per_mtok: 10    # USD/Mtok — display-only
+    notes: "Workhorse candidate (T2). Latest Anthropic Sonnet; reliable tool calling. 1M context."
+  - slug: "z-ai/glm-5.3"
+    display_name: "GLM 5.3"
+    provider: openrouter
+    input_cost_per_mtok: 0.562     # USD/Mtok — display-only, DeepInfra endpoint, verified z-ai/glm-5.3 (live OpenRouter 2026-10-04)
+    output_cost_per_mtok: 2.5    # USD/Mtok — display-only
+    notes: "Workhorse candidate (T2). In-family successor to GLM 5.2. 1M context."
+  - slug: "deepseek/deepseek-v4-pro-0813"
+    display_name: "DeepSeek V4 Pro (0813)"
+    provider: openrouter
+    input_cost_per_mtok: 1.3     # USD/Mtok — display-only, DeepInfra endpoint, verified deepseek/deepseek-v4-pro-0813 (live OpenRouter 2026-10-04)
+    output_cost_per_mtok: 2.6    # USD/Mtok — display-only
+    notes: "Workhorse / Apex candidate (T2 / T3). The current V4 Pro (2026-08-13 update: thinking effort low/high/max). Supersedes the plain deepseek-v4-pro slug, which is the 0423 snapshot. 1M context."
+  - slug: "anthropic/claude-opus-5.5"
+    display_name: "Claude Opus 5.5"
+    provider: openrouter
+    input_cost_per_mtok: 4     # USD/Mtok — display-only, list price, verified anthropic/claude-opus-5.5 (live OpenRouter 2026-10-04)
+    output_cost_per_mtok: 20    # USD/Mtok — display-only
+    notes: "Apex candidate (T3). Newest Anthropic Opus. 1M context."

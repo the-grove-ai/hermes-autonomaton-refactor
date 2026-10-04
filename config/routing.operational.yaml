@@ -149,6 +149,88 @@ model_facts:
     system_message_role: system
     cost_per_mtok_input: 1.5
     cost_per_mtok_output: 7.5
+    # model-list-refresh 2026-10-04 — context windows + prices from the live
+    # OpenRouter endpoint list (price basis noted per entry).
+  "moonshotai/kimi-k3":
+    context_window: 1048576
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # DeepInfra endpoint, live OpenRouter 2026-10-04
+    cost_per_mtok_input: 2.85
+    cost_per_mtok_output: 14.25
+  "deepseek/deepseek-v4.1-flash":
+    context_window: 1048576
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # DeepInfra endpoint, live OpenRouter 2026-10-04
+    cost_per_mtok_input: 0.14
+    cost_per_mtok_output: 0.42
+  "openai/gpt-6-luna":
+    context_window: 1050000
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # list price, live OpenRouter 2026-10-04
+    cost_per_mtok_input: 0.1
+    cost_per_mtok_output: 0.5
+  "google/gemini-3.5-flash-lite":
+    context_window: 1048576
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # list price, live OpenRouter 2026-10-04
+    cost_per_mtok_input: 0.3
+    cost_per_mtok_output: 2.5
+  "z-ai/glm-5.3-flash":
+    context_window: 1048576
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # DeepInfra endpoint, live OpenRouter 2026-10-04
+    cost_per_mtok_input: 0.075
+    cost_per_mtok_output: 0.25
+  "google/gemini-3.8-flash":
+    context_window: 1048576
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # list price, live OpenRouter 2026-10-04
+    cost_per_mtok_input: 0.75
+    cost_per_mtok_output: 3.75
+  "anthropic/claude-sonnet-5.5":
+    context_window: 1000000
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # list price, live OpenRouter 2026-10-04
+    cost_per_mtok_input: 2
+    cost_per_mtok_output: 10
+  "z-ai/glm-5.3":
+    context_window: 1048576
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # DeepInfra endpoint, live OpenRouter 2026-10-04
+    cost_per_mtok_input: 0.562
+    cost_per_mtok_output: 2.5
+  "deepseek/deepseek-v4-pro-0813":
+    context_window: 1048576
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # DeepInfra endpoint, live OpenRouter 2026-10-04
+    cost_per_mtok_input: 1.3
+    cost_per_mtok_output: 2.6
+  "anthropic/claude-opus-5.5":
+    context_window: 1000000
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # list price, live OpenRouter 2026-10-04
+    cost_per_mtok_input: 4
+    cost_per_mtok_output: 20
 
   # Tier blocks declare NO cost. Cost is a MODEL fact, declared ONCE per slug in
   # model_facts above — the per-tier copy drifted from its model on the first
