@@ -111,6 +111,18 @@ admission_friction:
   # per-intent add-intent to a single force_always:true offer.
   green_force_always_distinct_intents: 3
 
+# slow-turn-report-v1 — when a gateway turn takes longer than the threshold,
+# the log gets a timeline of where the time went: which of our functions the
+# turn was sitting in and what it was waiting on (a network read, a lock, a
+# subprocess). Nothing is logged for turns under the threshold.
+slow_turn_report:
+  enabled: true
+  # A turn at or over this many seconds gets a report. Number > 0.
+  threshold_seconds: 10
+  # How often stacks are sampled. Smaller = finer timeline, slightly more
+  # overhead. Number > 0.
+  sample_interval_seconds: 0.5
+
 # init-sweeps-background-v1 — when a new session starts, the Dispatcher runs
 # maintenance over sessions that have gone quiet: memory extraction, the
 # detectors, and compacting old transcripts into wiki pages. These make several

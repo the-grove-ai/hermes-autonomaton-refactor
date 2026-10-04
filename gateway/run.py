@@ -7240,6 +7240,38 @@ class GatewayRunner:
         return source
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
+        """slow-turn-report-v1 — run the turn under a stack sampler; when the
+        turn runs past the configured threshold, log where the time went.
+        Observation only: a sampler/config fault is logged and the turn runs
+        unsampled."""
+        sampler = None
+        threshold = 0.0
+        try:
+            from grove.turn_sampler import TurnSampler, load_slow_turn_config
+
+            _stc = load_slow_turn_config()
+            if _stc.enabled:
+                threshold = _stc.threshold_seconds
+                sampler = TurnSampler(_stc.sample_interval_seconds).start()
+        except Exception as exc:
+            logger.warning("[slow-turn] sampler not started: %r", exc)
+        try:
+            return await self._handle_message_with_agent_inner(
+                event, source, _quick_key, run_generation
+            )
+        finally:
+            if sampler is not None:
+                try:
+                    elapsed = sampler.stop()
+                    if elapsed >= threshold:
+                        sampler.log_report(
+                            elapsed,
+                            f"turn platform={getattr(source.platform, 'value', source.platform)}",
+                        )
+                except Exception as exc:
+                    logger.warning("[slow-turn] report failed: %r", exc)
+
+    async def _handle_message_with_agent_inner(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
