@@ -17,13 +17,15 @@ per-turn disclosure hook that reads the registry lands in E2 commit 3.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import logging
 import os
 import re
 import tempfile
+import threading
 from pathlib import Path
-from typing import Any, Dict, FrozenSet, List, NamedTuple, Optional
+from typing import Any, Dict, FrozenSet, List, NamedTuple, Optional, Tuple
 
 import yaml
 
@@ -1321,6 +1323,35 @@ def _report_uncovered_toolsets(uncovered: FrozenSet[str]) -> None:
     )
 
 
+# capability-parse-cache-v1 — PARSED record documents, keyed on the file's
+# identity + (mtime_ns, size). The registry is loaded dozens of times per turn
+# and each load re-parsed all ~150 record files with the pure-Python YAML
+# scanner (~0.4s a load on a fast machine; the live slow-turn report showed it
+# as the bulk of a 36s turn). Only the PARSE is cached: every load still builds
+# fresh ``Capability`` objects from a deep copy and re-runs validation, so
+# callers that mutate records (the state overlay) never share state, and an
+# edited file (new mtime/size) is re-read on the next load. Failures are never
+# cached.
+_PARSE_CACHE: Dict[str, Tuple[Tuple[int, int, int], Any]] = {}
+_PARSE_CACHE_LOCK = threading.Lock()
+
+
+def _parsed_record_doc(path: Path) -> Any:
+    """The YAML document for one record file — parsed once per file version.
+    Raises ``OSError`` (unreadable) or a YAML error (malformed), uncached."""
+    st = path.stat()
+    sig = (st.st_ino, st.st_mtime_ns, st.st_size)
+    key = str(path)
+    with _PARSE_CACHE_LOCK:
+        hit = _PARSE_CACHE.get(key)
+    if hit is not None and hit[0] == sig:
+        return copy.deepcopy(hit[1])
+    doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    with _PARSE_CACHE_LOCK:
+        _PARSE_CACHE[key] = (sig, doc)
+    return copy.deepcopy(doc)
+
+
 def _load_records_from_dir(target: Path) -> Dict[str, Capability]:
     """Load + dry-run-validate every ``*.yaml`` in one dir (no collection-level
     validation, no empty-check). Raises :class:`CapabilityLoadError` on an
@@ -1331,15 +1362,18 @@ def _load_records_from_dir(target: Path) -> Dict[str, Capability]:
     records: Dict[str, Capability] = {}
     for path in sorted(target.glob("*.yaml")):
         try:
-            text = path.read_text(encoding="utf-8")
+            doc = _parsed_record_doc(path)
         except OSError as exc:
             raise CapabilityLoadError(f"{path.name}: unreadable ({exc})") from exc
+        except Exception as exc:
+            raise CapabilityLoadError(f"{path.name}: {exc}") from exc
 
         # Dry-run validation (Amendment A3): full construction triggers
-        # Capability.validate(); a malformed YAML or invalid field raises here,
-        # naming the field, and we wrap it with the filename.
+        # Capability.validate(); an invalid field raises here, naming the
+        # field, and we wrap it with the filename. Runs on EVERY load — only
+        # the YAML parse above is cached.
         try:
-            cap = Capability.from_yaml(text)
+            cap = Capability.from_dict(doc)
         except Exception as exc:
             raise CapabilityLoadError(f"{path.name}: {exc}") from exc
 
