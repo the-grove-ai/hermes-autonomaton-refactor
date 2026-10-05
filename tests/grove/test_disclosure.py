@@ -129,6 +129,52 @@ def test_resolve_goal_record_returns_record():
     assert "record" in payload
 
 
+def test_resolve_goal_record_empty_record_says_why():
+    # A goal with no context_sources is not a failed load — the result says so.
+    payload = json.loads(resolve_goal_record("[REDACTED]", dock=_FakeDock()))
+    assert payload["record"] == ""
+    assert "declares no context_sources" in payload["record_note"]
+
+
+def test_resolve_goal_record_carries_the_goals_own_dock_fields():
+    class _RichGoal(_FakeGoal):
+        status = "cruising"
+        vector = "strategic"
+        definition_of_done = "Three advisors formally engaged."
+        keywords = ("advisors",)
+        extra = {"deadline": "2026-12-01", "milestones": ["a", "b"],
+                 "context_sources": [], "unlocked_skills": []}
+
+    class _Dock:
+        goals = (_RichGoal("advisory-board"),)
+        context_char_budget = 5000
+
+    payload = json.loads(resolve_goal_record("advisory-board", dock=_Dock()))
+    assert payload["status"] == "cruising" and payload["vector"] == "strategic"
+    assert payload["definition_of_done"] == "Three advisors formally engaged."
+    assert payload["keywords"] == ["advisors"]
+    assert payload["fields"] == {"deadline": "2026-12-01", "milestones": ["a", "b"]}
+
+
+def test_resolve_goal_record_with_context_has_no_note():
+    class _Loaded(_FakeGoal):
+        context_sources = ("goals/x.md",)
+
+    class _Dock:
+        goals = (_Loaded("with-context"),)
+        context_char_budget = 5000
+
+    import grove.dock as dock_mod
+    real = dock_mod.load_goal_context
+    dock_mod.load_goal_context = lambda goal, budget: "Long-form context."
+    try:
+        payload = json.loads(resolve_goal_record("with-context", dock=_Dock()))
+    finally:
+        dock_mod.load_goal_context = real
+    assert payload["record"] == "Long-form context."
+    assert "record_note" not in payload
+
+
 def test_resolve_goal_record_unknown_goal_is_loud():
     text = resolve_goal_record("nope", dock=_FakeDock())
     assert "error" in json.loads(text)

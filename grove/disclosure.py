@@ -344,6 +344,36 @@ def resolve_goal_record(
         return json.dumps({
             "error": f"goal {goal_id!r} record could not be loaded: {exc}",
         })
-    return json.dumps(
-        {"id": goal_id, "name": goal.name, "record": record}, ensure_ascii=False
-    )
+    # goal-record-completeness-v1 — the pull is advertised as the goal's FULL
+    # record, so it carries the goal's own Dock entry (status, vector,
+    # definition of done, keywords, and any operator-authored extra fields such
+    # as milestones or deadlines), not only the long-form context files. A goal
+    # that declares NO context sources returned ``"record": ""`` with no
+    # explanation — indistinguishable from a failed load. It now says so.
+    payload: dict = {"id": goal_id, "name": goal.name}
+    for field in ("status", "vector", "definition_of_done"):
+        value = getattr(goal, field, None)
+        if value:
+            payload[field] = value
+    keywords = list(getattr(goal, "keywords", None) or ())
+    if keywords:
+        payload["keywords"] = keywords
+    extra = getattr(goal, "extra", None)
+    if isinstance(extra, dict) and extra:
+        payload["fields"] = {
+            k: v for k, v in extra.items()
+            if k not in ("context_sources", "unlocked_skills") and v not in (None, "", [], {})
+        }
+        if not payload["fields"]:
+            del payload["fields"]
+    payload["record"] = record
+    if not record:
+        declared = list(getattr(goal, "context_sources", None) or ())
+        payload["record_note"] = (
+            "This goal declares no context_sources in dock.yaml, so there is no "
+            "long-form record to load. The fields above are everything the Dock "
+            "holds for it."
+            if not declared else
+            "The declared context_sources loaded as empty."
+        )
+    return json.dumps(payload, ensure_ascii=False, default=str)
