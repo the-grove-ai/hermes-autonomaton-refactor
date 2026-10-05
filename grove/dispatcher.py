@@ -2907,6 +2907,34 @@ class Dispatcher:
             },
         }
 
+    def _anchor_chain_head(self, persisted: Any) -> None:
+        """provenance-chain-v1 — record the session's latest ``record_hash`` in
+        the session database (``state_meta``, beside the turn counter), so the
+        verifier can tell when a session's NEWEST records were removed from the
+        store. No session database → nothing to anchor against. A write fault
+        is logged at ERROR and never fails the turn: the record itself is
+        already durable and chained."""
+        # Called unbound (``Dispatcher._anchor_chain_head(self, …)``) so the
+        # stand-in dispatchers the finalization tests use need not define it.
+        session = getattr(self, "session", None)
+        set_meta = getattr(session, "set_meta", None) if session is not None else None
+        if not callable(set_meta) or not isinstance(persisted, dict):
+            return
+        sid, head = persisted.get("session_id"), persisted.get("record_hash")
+        if not sid or not head:
+            return
+        try:
+            from grove.intent_store import chain_head_key
+
+            set_meta(chain_head_key(str(sid)), str(head))
+        except Exception as exc:
+            logger.error(
+                "[grove.dispatcher] chain-head anchor write failed for session "
+                "%s (record is stored; truncation of this session's newest "
+                "records would go undetected until the next anchor): %r",
+                sid, exc,
+            )
+
     def _issue_turn_sequence(
         self, session_id: Optional[str]
     ) -> "Tuple[Optional[int], Optional[str]]":
@@ -3012,11 +3040,11 @@ class Dispatcher:
             classification = self._current_turn_classification
             is_correction = bool(getattr(classification, "is_correction", False))
             outcome = "correction" if is_correction else "success"
-            self._intent_store.append(finalize_record(
+            Dispatcher._anchor_chain_head(self, self._intent_store.append(finalize_record(
                 latest,
                 outcome=outcome,
                 timestamp=datetime.now(timezone.utc).isoformat(),
-            ))
+            )))
         except Exception as exc:
             logger.warning(
                 "[grove.dispatcher] finalization failed for previous "
@@ -3532,7 +3560,7 @@ class Dispatcher:
                 failure_kind=failure_kind,
                 failure_summary=failure_summary,
             )
-            self._intent_store.append(record)
+            Dispatcher._anchor_chain_head(self, self._intent_store.append(record))
             self._current_turn_outcome_written = True
         except Exception as exc:
             logger.warning(

@@ -317,7 +317,19 @@ def record_digest(data: Dict[str, Any]) -> str:
     )).hexdigest()
 
 
-def verify_chain(lines: Iterator[str]) -> Dict[str, Any]:
+CHAIN_HEAD_KEY_PREFIX = "intent_chain_head:"
+
+
+def chain_head_key(session_id: str) -> str:
+    """Session-database ``state_meta`` key holding a session's latest
+    ``record_hash`` — the anchor that makes removal of a session's NEWEST
+    records detectable (the file alone cannot show it)."""
+    return f"{CHAIN_HEAD_KEY_PREFIX}{session_id}"
+
+
+def verify_chain(
+    lines: Iterator[str], anchors: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
     """Verify the per-session hash chains over raw store lines (append order).
 
     Returns a report dict::
@@ -333,12 +345,18 @@ def verify_chain(lines: Iterator[str]) -> Dict[str, Any]:
     appearing AFTER its session's chain began. Records written before the
     chain existed are counted as ``unchained`` and are not problems. Removal of
     a session's NEWEST records cannot be seen from the file alone — nothing
-    later points back at them.
+    later points back at them. ``anchors`` closes that: ``{session_id:
+    latest record_hash}`` as recorded OUTSIDE the file (the session database).
+    An anchored hash that is absent from its session's chain means the newest
+    records were removed. (Presence anywhere in the chain passes — a crash
+    between the append and the anchor write leaves the anchor one step behind,
+    which is not tampering.) ``report["anchored"]`` counts sessions checked.
     """
     report: Dict[str, Any] = {
         "records": 0, "chained": 0, "unchained": 0, "sessions": {}, "problems": [],
     }
     heads: Dict[str, Optional[str]] = {}
+    seen: Dict[str, set] = {}
 
     def _problem(line_no, data, text):
         report["problems"].append({
@@ -383,6 +401,18 @@ def verify_chain(lines: Iterator[str]) -> Dict[str, Any]:
         if has_content and data.get("purgeable_sha256") != purgeable_digest(data):
             _problem(line_no, data, "response content does not match its digest")
         heads[sid] = stored
+        seen.setdefault(sid, set()).add(stored)
+    report["anchored"] = 0
+    for sid, anchor in sorted((anchors or {}).items()):
+        if not anchor:
+            continue
+        report["anchored"] += 1
+        if anchor not in seen.get(str(sid), ()):
+            report["problems"].append({
+                "line": None, "session_id": str(sid), "turn_id": None,
+                "problem": "the session's recorded latest hash is not in the "
+                           "store (its newest records were removed)",
+            })
     return report
 
 

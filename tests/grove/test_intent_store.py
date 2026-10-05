@@ -579,3 +579,73 @@ class TestProvenanceChain:
         doc = json.loads(lines[0]); doc["turn_uid"] = "01a10ded-1fe1-7000-8000-00000000ffff"
         lines[0] = json.dumps(doc, sort_keys=True)
         assert verify_chain(iter(lines))["problems"]
+
+
+class TestChainHeadAnchor:
+    """The latest hash recorded OUTSIDE the file makes tail truncation visible."""
+
+    def _store_with(self, tmp_path, n=3):
+        store = IntentStore(store_path=tmp_path / "r.jsonl")
+        return store, [store.append(_rec(turn=f"s1#{i+1}")) for i in range(n)]
+
+    def test_intact_store_passes_the_anchor_check(self, tmp_path):
+        from grove.intent_store import verify_chain
+
+        store, recs = self._store_with(tmp_path)
+        report = verify_chain(iter(_lines(store)), anchors={"s1": recs[-1]["record_hash"]})
+        assert report["anchored"] == 1 and report["problems"] == []
+
+    def test_removed_newest_record_is_detected(self, tmp_path):
+        from grove.intent_store import verify_chain
+
+        store, recs = self._store_with(tmp_path)
+        lines = _lines(store)[:-1]                    # drop the newest record
+        assert verify_chain(iter(lines))["problems"] == []   # invisible from the file
+        problems = verify_chain(iter(lines), anchors={"s1": recs[-1]["record_hash"]})["problems"]
+        assert len(problems) == 1 and "newest records were removed" in problems[0]["problem"]
+
+    def test_whole_session_removed_is_detected(self, tmp_path):
+        from grove.intent_store import verify_chain
+
+        _store, recs = self._store_with(tmp_path)
+        problems = verify_chain(iter([]), anchors={"s1": recs[-1]["record_hash"]})["problems"]
+        assert len(problems) == 1
+
+    def test_anchor_one_step_behind_is_not_a_problem(self, tmp_path):
+        # A crash between the append and the anchor write leaves the anchor on
+        # the previous record. That is not tampering.
+        from grove.intent_store import verify_chain
+
+        store, recs = self._store_with(tmp_path)
+        report = verify_chain(iter(_lines(store)), anchors={"s1": recs[-2]["record_hash"]})
+        assert report["problems"] == []
+
+    def test_dispatcher_anchors_the_head_in_the_session_database(self, tmp_path):
+        from grove.dispatcher import Dispatcher
+        from grove.intent_store import chain_head_key
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "t.db")
+        store = IntentStore(store_path=tmp_path / "r.jsonl")
+        d = Dispatcher(intent_store=store, session_db=db)
+        first = store.append(_rec(turn="s1#1"))
+        d._anchor_chain_head(first)
+        assert db.get_meta(chain_head_key("s1")) == first["record_hash"]
+        second = store.append(_rec(turn="s1#2"))
+        d._anchor_chain_head(second)
+        assert db.get_meta(chain_head_key("s1")) == second["record_hash"]
+
+    def test_anchor_fault_is_loud_and_does_not_raise(self, tmp_path, caplog):
+        import logging
+
+        from grove.dispatcher import Dispatcher
+
+        class _Broken:
+            def set_meta(self, key, value):
+                raise RuntimeError("db locked")
+
+        d = Dispatcher(intent_store=IntentStore(store_path=tmp_path / "r.jsonl"))
+        d.session = _Broken()
+        with caplog.at_level(logging.ERROR, logger="grove.dispatcher"):
+            d._anchor_chain_head({"session_id": "s1", "record_hash": "abc"})
+        assert any("chain-head anchor write failed" in r.message for r in caplog.records)
