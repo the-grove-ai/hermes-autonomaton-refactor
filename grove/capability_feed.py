@@ -9,7 +9,7 @@ Design (GATE-A locked):
     feed.jsonl`` (grove home per machine: ``~/.grove`` on Mac,
     ``/mnt/grove-data/.grove`` on the VM). Size-based rotation to
     ``feed-<seq>.jsonl``.
-  * Schema: thirteen fields (``FIELDS``). ``capability_id`` is NULLABLE — null
+  * Schema: the fields in ``FIELDS``. ``capability_id`` is NULLABLE — null
     marks a non-capability invocation (terminal, web_search, …). ``invocation``
     is an explicit kind — ``native`` / ``mcp`` / ``agent-tool`` — NOT derived
     from a name prefix: name-prefix derivation is an implicit convention that
@@ -76,7 +76,11 @@ FIELDS = (
     "tool_name",
     "intent_class",
     "tier",
-    "zone",
+    "zone",            # the verdict that governed this call (see zone_source)
+    "zone_rule",       # nullable — the classifier rule that produced the verdict
+    "zone_source",     # classifier source, or "tool_name_static" when the call
+                       # carried no per-call verdict (zone is then the tool
+                       # name's static zone, not a verdict)
     "invocation",      # explicit kind: native / mcp / agent-tool
     "result_status",
     "cost_usd",        # nullable

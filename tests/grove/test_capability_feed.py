@@ -54,8 +54,11 @@ def test_record_shape_persisted_with_all_thirteen_fields(feed_home):
     assert set(rec.keys()) == set(capability_feed.FIELDS)
     # 13 original fields + turn_uid (turn-identity-v1 — the globally unique
     # link key to the turn's intent record).
-    assert len(capability_feed.FIELDS) == 14
+    # ...+ zone_rule and zone_source (shell-stamping-v1 — the verdict that
+    # governed the call and where it came from).
+    assert len(capability_feed.FIELDS) == 16
     assert "turn_uid" in capability_feed.FIELDS
+    assert {"zone_rule", "zone_source"} <= set(capability_feed.FIELDS)
     assert "invocation" in rec
     assert rec["capability_id"] == "workspace_read"
     assert rec["tool_name"] == "calendar_list"
