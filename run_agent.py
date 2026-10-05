@@ -13115,11 +13115,13 @@ class AIAgent:
                 self._emit_capability_feed_record(
                     function_name, _status,
                     (_time.perf_counter() - _start) * 1000.0, _capfeed,
+                    tool_call_id=tool_call_id,
                 )
             except Exception:
                 pass  # A7: telemetry never crosses into the turn
 
-    def _emit_capability_feed_record(self, tool_name, result_status, latency_ms, capfeed) -> None:
+    def _emit_capability_feed_record(self, tool_name, result_status, latency_ms, capfeed,
+                                     tool_call_id=None) -> None:
         """Assemble + enqueue one feed record for an executed invocation. All
         attribution comes from already-present turn state (the spike-C1 hook
         instruments + the per-turn classification); the only turn-path cost is a
@@ -13133,6 +13135,24 @@ class AIAgent:
             zone = None
         _disp = getattr(self, "_dispatcher_singleton", None)
         turn_id = getattr(_disp, "_current_turn_id", None) or self.session_id
+        # shell-stamping-v1 — ``zone`` above is the tool NAME's static zone (kept
+        # for capability attribution). The row records the verdict that actually
+        # governed THIS call — for a shell command, the command classifier's
+        # zone and the rule that produced it. No verdict on record → the row
+        # says so rather than passing the static zone off as a verdict.
+        _verdict = None
+        _lookup = getattr(_disp, "zone_verdict_for_call", None)
+        if callable(_lookup):
+            try:
+                _verdict = _lookup(tool_call_id)
+            except Exception:
+                _verdict = None
+        if isinstance(_verdict, dict) and _verdict.get("zone"):
+            row_zone = _verdict.get("zone")
+            zone_rule = _verdict.get("rule")
+            zone_source = _verdict.get("source")
+        else:
+            row_zone, zone_rule, zone_source = zone, None, "tool_name_static"
         capfeed.enqueue({
             "ts": capfeed.utc_now_iso(),
             "session_id": self.session_id,
@@ -13142,7 +13162,9 @@ class AIAgent:
             "tool_name": tool_name,
             "intent_class": cls.intent_class if cls else None,
             "tier": current_tier(),
-            "zone": zone,
+            "zone": row_zone,
+            "zone_rule": zone_rule,
+            "zone_source": zone_source,
             "invocation": self._invocation_kind(tool_name),
             "result_status": result_status,
             # Per-invocation cost is not separable at this layer; session-level

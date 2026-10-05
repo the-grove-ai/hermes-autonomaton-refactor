@@ -866,6 +866,9 @@ class Dispatcher:
         self._current_turn_started_at: Optional[str] = None
         self._current_turn_ledger_events: List[Dict[str, Any]] = []
         self._current_turn_zone_verdicts: List[Dict[str, Any]] = []
+        # shell-stamping-v1 — the same verdicts keyed by the model's tool-call id,
+        # so the tool-call feed row can carry the verdict that actually governed it.
+        self._current_turn_verdict_by_call: Dict[str, Dict[str, Any]] = {}
         self._current_turn_token_base: Tuple[int, int, int] = (0, 0, 0)
         self._current_turn_classification: Optional[Any] = None
         # Sprint 53.2 — turn-scoped quarantine-execution flag. Set in
@@ -2775,6 +2778,7 @@ class Dispatcher:
         self._current_turn_started_at = datetime.now(timezone.utc).isoformat()
         self._current_turn_ledger_events = []
         self._current_turn_zone_verdicts = []
+        self._current_turn_verdict_by_call = {}
         self._current_turn_token_base = self._agent_token_snapshot(agent)
         try:
             agent._turn_retries = 0
@@ -5372,6 +5376,14 @@ class Dispatcher:
 
     # ── Phase 4 helpers ──────────────────────────────────────────────────
 
+    def zone_verdict_for_call(self, call_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """The Approval-stage verdict recorded for one tool call this turn
+        (zone, rule, source), or None when the call was not classified through
+        the batch gate. Telemetry read only — never a governance input."""
+        if not call_id:
+            return None
+        return self._current_turn_verdict_by_call.get(str(call_id))
+
     def _classify_intents_batch_and_halt_or_raise(
         self,
         intents: List[Any],
@@ -5403,12 +5415,16 @@ class Dispatcher:
             zone_results.append(zone_result)
             # stage-summary-v1 — keep the ACTUAL verdict and the rule that
             # produced it for this turn's Approval stage.
-            self._current_turn_zone_verdicts.append({
+            _verdict = {
                 "tool": getattr(intent, "tool_name", None),
                 "zone": getattr(zone_result, "zone", None),
                 "rule": getattr(zone_result, "matched_rule", None),
                 "source": getattr(zone_result, "source", None),
-            })
+            }
+            self._current_turn_zone_verdicts.append(_verdict)
+            _call_id = getattr(intent, "call_id", None)
+            if _call_id:
+                self._current_turn_verdict_by_call[str(_call_id)] = _verdict
             # First Yellow or Red halts the batch. Green continues.
             if zone_result.zone in ("yellow", "red"):
                 # Continue classifying remaining intents for visibility,

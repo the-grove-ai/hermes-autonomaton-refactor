@@ -31,8 +31,10 @@ the effective state per turn.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 import threading
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta, timezone
@@ -266,6 +268,123 @@ class IntentRecord:
     # finalization record copies this block unchanged).
     stages: Optional[Dict[str, Any]] = None
 
+    # provenance-chain-v1 — a per-SESSION hash chain over this store's records.
+    #   prev_hash       — ``record_hash`` of the previous record written for the
+    #                     same session; None for the first chained record of a
+    #                     session.
+    #   record_hash     — SHA-256 over this record's canonical JSON, INCLUDING
+    #                     ``prev_hash`` (so each hash commits to the whole
+    #                     history before it) and EXCLUDING itself and the two
+    #                     retention-purgeable fields below.
+    #   purgeable_sha256 — SHA-256 of ``response_content`` + ``tool_invocation``
+    #                     as written. The retention policy nulls those two
+    #                     fields on old records (:meth:`purge_expired_content`);
+    #                     the chain covers this digest instead of the raw
+    #                     content, so a lawful purge does not break the chain
+    #                     while an edit to unpurged content is still caught.
+    # All three are assigned by :meth:`IntentStore.append` — the single door —
+    # and are None on records written before the chain existed.
+    prev_hash: Optional[str] = None
+    record_hash: Optional[str] = None
+    purgeable_sha256: Optional[str] = None
+
+
+# provenance-chain-v1 — fields left out of ``record_hash``: the hash itself, and
+# the two fields the retention policy is allowed to null later.
+_UNHASHED_FIELDS = frozenset({"record_hash", "response_content", "tool_invocation"})
+
+
+def _canonical(data: Dict[str, Any]) -> bytes:
+    return json.dumps(
+        data, sort_keys=True, separators=(",", ":"), default=str,
+    ).encode("utf-8")
+
+
+def purgeable_digest(data: Dict[str, Any]) -> str:
+    """Digest of the two retention-purgeable fields as written."""
+    return hashlib.sha256(_canonical({
+        "response_content": data.get("response_content"),
+        "tool_invocation": data.get("tool_invocation"),
+    })).hexdigest()
+
+
+def record_digest(data: Dict[str, Any]) -> str:
+    """The chain hash of one serialized record: SHA-256 of its canonical JSON
+    without the unhashed fields. ``prev_hash`` and ``purgeable_sha256`` ARE
+    covered."""
+    return hashlib.sha256(_canonical(
+        {k: v for k, v in data.items() if k not in _UNHASHED_FIELDS}
+    )).hexdigest()
+
+
+def verify_chain(lines: Iterator[str]) -> Dict[str, Any]:
+    """Verify the per-session hash chains over raw store lines (append order).
+
+    Returns a report dict::
+
+        {"records": n, "chained": n, "unchained": n,
+         "sessions": {session_id: {"chained": n, "unchained": n}},
+         "problems": [{"line", "session_id", "turn_id", "problem"}]}
+
+    Problems detected: a record whose content no longer matches its hash
+    (edited); a record whose ``prev_hash`` does not equal the previous chained
+    record of its session (a record was removed, inserted or reordered);
+    unpurged content that no longer matches its digest; an unchained record
+    appearing AFTER its session's chain began. Records written before the
+    chain existed are counted as ``unchained`` and are not problems. Removal of
+    a session's NEWEST records cannot be seen from the file alone — nothing
+    later points back at them.
+    """
+    report: Dict[str, Any] = {
+        "records": 0, "chained": 0, "unchained": 0, "sessions": {}, "problems": [],
+    }
+    heads: Dict[str, Optional[str]] = {}
+
+    def _problem(line_no, data, text):
+        report["problems"].append({
+            "line": line_no, "session_id": data.get("session_id"),
+            "turn_id": data.get("turn_id"), "problem": text,
+        })
+
+    for line_no, raw in enumerate(lines, start=1):
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            report["problems"].append({
+                "line": line_no, "session_id": None, "turn_id": None,
+                "problem": "line is not valid JSON",
+            })
+            continue
+        report["records"] += 1
+        sid = str(data.get("session_id"))
+        per = report["sessions"].setdefault(sid, {"chained": 0, "unchained": 0})
+        stored = data.get("record_hash")
+        if not stored:
+            report["unchained"] += 1
+            per["unchained"] += 1
+            if sid in heads:
+                _problem(line_no, data, "unchained record inside a chained session")
+            continue
+        report["chained"] += 1
+        per["chained"] += 1
+        if record_digest(data) != stored:
+            _problem(line_no, data, "content does not match record_hash (record was altered)")
+        if sid in heads and data.get("prev_hash") != heads[sid]:
+            _problem(line_no, data,
+                     "prev_hash does not match the previous record of this session "
+                     "(a record was removed, inserted or reordered)")
+        has_content = (
+            data.get("response_content") is not None
+            or data.get("tool_invocation") is not None
+        )
+        if has_content and data.get("purgeable_sha256") != purgeable_digest(data):
+            _problem(line_no, data, "response content does not match its digest")
+        heads[sid] = stored
+    return report
+
 
 class IntentStore:
     """Append-only JSON Lines store for IntentRecords.
@@ -287,6 +406,11 @@ class IntentStore:
         self._path = Path(store_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        # provenance-chain-v1 — last record_hash per session, valid while the
+        # file is exactly ``_chain_size`` bytes (another process appending
+        # invalidates it and forces a re-read).
+        self._chain_heads: Dict[str, str] = {}
+        self._chain_size: int = -1
 
     @property
     def path(self) -> Path:
@@ -313,11 +437,62 @@ class IntentStore:
         # Coerce tuple → list for stable JSON; reads coerce back.
         data["tools_yielded"] = list(data["tools_yielded"])
         data["tools_offered"] = list(data["tools_offered"])
-        line = json.dumps(data, sort_keys=True, default=str) + "\n"
+        # Normalize through JSON once so the hash is computed over EXACTLY the
+        # values a later reader will parse back (default=str coercions, etc.).
+        data = json.loads(json.dumps(data, sort_keys=True, default=str))
         with self._lock:
-            with open(self._path, "a", encoding="utf-8") as fh:
-                fh.write(line)
+            with open(self._path, "a+", encoding="utf-8") as fh:
+                # provenance-chain-v1 — the read-head / hash / append sequence
+                # runs under an exclusive lock on the file itself, so two
+                # processes cannot both extend the same head.
+                self._flock(fh, exclusive=True)
+                try:
+                    head = self._session_head(fh, str(data.get("session_id")))
+                    data["prev_hash"] = head
+                    data["purgeable_sha256"] = purgeable_digest(data)
+                    data["record_hash"] = record_digest(data)
+                    fh.seek(0, os.SEEK_END)
+                    fh.write(json.dumps(data, sort_keys=True, default=str) + "\n")
+                    fh.flush()
+                    self._chain_heads[str(data.get("session_id"))] = data["record_hash"]
+                    self._chain_size = fh.tell()
+                finally:
+                    self._flock(fh, exclusive=False)
         return data
+
+    @staticmethod
+    def _flock(fh, *, exclusive: bool) -> None:
+        """Advisory file lock (POSIX). On a platform without ``fcntl`` the
+        in-process lock is the only guard — single-process use stays correct."""
+        try:
+            import fcntl
+        except ImportError:  # pragma: no cover — non-POSIX
+            return
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_UN)
+
+    def _session_head(self, fh, session_id: str) -> Optional[str]:
+        """The last ``record_hash`` written for ``session_id``, or None.
+
+        Served from the cache while the file is the size this process last
+        left it; otherwise the file is re-read (another writer appended)."""
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        if size != self._chain_size:
+            heads: Dict[str, str] = {}
+            fh.seek(0)
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    row = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if row.get("record_hash"):
+                    heads[str(row.get("session_id"))] = row["record_hash"]
+            self._chain_heads = heads
+            self._chain_size = size
+        return self._chain_heads.get(session_id)
 
     def purge_expired_content(self, within_days: int) -> int:
         """Null ``response_content`` + ``tool_invocation`` on records older
@@ -367,6 +542,10 @@ class IntentStore:
                 try:
                     tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
                     tmp.replace(self._path)
+                    # The file was rewritten — drop the cached chain heads so
+                    # the next append re-reads them. (Hashes are unaffected:
+                    # the purged fields are outside record_hash by design.)
+                    self._chain_size = -1
                 except OSError as exc:
                     logger.warning(
                         "[grove.intent_store] content purge write failed: %r", exc,

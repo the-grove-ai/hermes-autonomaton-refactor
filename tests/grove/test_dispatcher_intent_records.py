@@ -1229,3 +1229,98 @@ class TestStageSummary:
             ledger.record("final_response", content_length=1, metadata={})
         assert len(list(ledger.events())) == 1
         assert "event observer failed" in caplog.text
+
+
+# ── shell-stamping-v1 — the tool-call row carries the verdict that governed it ──
+
+
+class _FeedSpy:
+    def __init__(self):
+        self.rows = []
+
+    def utc_now_iso(self):
+        return "2026-10-05T00:00:00+00:00"
+
+    def enqueue(self, row):
+        self.rows.append(row)
+
+
+def _emit_row(disp, tool_name, call_id):
+    import run_agent
+
+    agent = object.__new__(run_agent.AIAgent)
+    agent.session_id = "s1"
+    agent._dispatcher_singleton = disp
+    spy = _FeedSpy()
+    agent._emit_capability_feed_record(tool_name, "ok", 1.0, spy, tool_call_id=call_id)
+    return spy.rows[0]
+
+
+class TestShellStamping:
+    def _classify(self, intents):
+        d = Dispatcher()
+        d._begin_stage_capture(_bare_agent_with_exec([]))
+        try:
+            d._classify_intents_batch_and_halt_or_raise(intents)
+        except Exception:
+            pass  # a Yellow/Red verdict halts the batch; the verdict is still kept
+        return d
+
+    def test_shell_row_carries_the_command_verdict_not_the_tool_name_zone(self):
+        from grove import capability_feed
+        from grove import dispatch as _grove_dispatch
+        from grove.zones import classify as _static
+
+        cmd = "rm -rf /etc/hosts"
+        intent = ToolIntent(tool_name="terminal", arguments={"command": cmd}, call_id="call_sh")
+        real = _grove_dispatch.classify_command(cmd, tool_id="terminal")
+        d = self._classify([intent])
+
+        row = _emit_row(d, "terminal", "call_sh")
+        assert set(row) == set(capability_feed.FIELDS)
+        assert row["zone"] == real.zone
+        assert row["zone_rule"] == real.matched_rule
+        assert row["zone_source"] == real.source
+        # the point of the stamp: this is the command's verdict, which differs
+        # from what the bare tool name classifies as
+        assert real.zone != "green"
+        assert (row["zone"], row["zone_rule"]) != (
+            _static("terminal").zone, _static("terminal").matched_rule,
+        )
+
+    def test_two_shell_calls_in_one_batch_each_keep_their_own_verdict(self):
+        from grove import dispatch as _grove_dispatch
+
+        a, b = "ls -la", "rm -rf /etc/hosts"
+        d = self._classify([
+            ToolIntent(tool_name="terminal", arguments={"command": a}, call_id="c_a"),
+            ToolIntent(tool_name="terminal", arguments={"command": b}, call_id="c_b"),
+        ])
+        ra = _emit_row(d, "terminal", "c_a")
+        rb = _emit_row(d, "terminal", "c_b")
+        assert ra["zone"] == _grove_dispatch.classify_command(a, tool_id="terminal").zone
+        assert rb["zone"] == _grove_dispatch.classify_command(b, tool_id="terminal").zone
+        assert ra["zone_rule"] == _grove_dispatch.classify_command(a, tool_id="terminal").matched_rule
+        assert rb["zone_rule"] == _grove_dispatch.classify_command(b, tool_id="terminal").matched_rule
+
+    def test_row_without_a_recorded_verdict_says_so(self):
+        from grove.zones import classify as _static
+
+        d = Dispatcher()
+        d._begin_stage_capture(_bare_agent_with_exec([]))
+        row = _emit_row(d, "read_file", "never_classified")
+        assert row["zone"] == _static("read_file").zone
+        assert row["zone_rule"] is None
+        assert row["zone_source"] == "tool_name_static"
+
+    def test_verdicts_do_not_leak_into_the_next_turn(self):
+        d = self._classify([
+            ToolIntent(tool_name="terminal", arguments={"command": "ls"}, call_id="c1"),
+        ])
+        assert d.zone_verdict_for_call("c1") is not None
+        d._begin_stage_capture(_bare_agent_with_exec([]))
+        assert d.zone_verdict_for_call("c1") is None
+
+    def test_agent_without_a_dispatcher_still_emits(self):
+        row = _emit_row(None, "read_file", "c1")
+        assert row["zone_source"] == "tool_name_static"
