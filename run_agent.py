@@ -3929,6 +3929,16 @@ class AIAgent:
         self._model_facts = model_facts if model_facts is not None else _ModelFacts()
         if max_tokens is not None:
             self.max_tokens = max_tokens
+        # Prompt-cache markers are a fact of the MODEL (prompt_cache_style), so
+        # the decision must follow the model across a tier swap. It was set
+        # once at construction: an agent built on a non-Claude tier and then
+        # bound to a Claude tier sent no cache_control markers, and every call
+        # re-billed the full prompt (live: Sonnet 5 on T1, ~80-120k uncached
+        # input tokens per call). The policy is a pure read of provider /
+        # endpoint / api_mode / model facts — no client rebuild.
+        self._use_prompt_caching, self._use_native_cache_layout = (
+            self._anthropic_prompt_cache_policy()
+        )
 
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', model_facts=None):
         """Switch the model/provider in-place for a live agent.
