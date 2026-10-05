@@ -181,17 +181,47 @@ def suppressed_target_ids(
     return out
 
 
-def session_processed(records: Iterable[Dict], session_id: str) -> bool:
+# memory-extraction-retry-v1 — a RELEASE marker, not a disposition. The detector
+# writes a ``processing`` lock before its model call; when the reply cannot be
+# parsed it now appends a ``failed`` record, which releases that lock so the
+# session can be mined again on a later sweep. Deliberately in NEITHER status
+# set above: it is not in-flight and it is not an operator decision.
+EXTRACTION_FAILED_STATUS = "failed"
+DEFAULT_MAX_EXTRACTION_ATTEMPTS = 3
+
+
+def session_processed(
+    records: Iterable[Dict],
+    session_id: str,
+    *,
+    max_attempts: int = DEFAULT_MAX_EXTRACTION_ATTEMPTS,
+) -> bool:
     """detector.py idempotency, widened (R-13 note: SESSION-keyed). A session
-    with ANY record — an in-flight proposal OR a terminal disposition — has
-    been processed and must not be re-mined. Consulting TERMINAL closes the
-    re-mining of a session whose proposals were all disposed (which the old
-    pending/processing-only check let slip). Permanent by construction: a
-    transcript, once mined, is never re-mined."""
-    known = NON_TERMINAL_STATUSES | TERMINAL_STATUSES
+    with a staged proposal OR a terminal disposition has been processed and
+    must not be re-mined. Consulting TERMINAL closes the re-mining of a session
+    whose proposals were all disposed (which the old pending/processing-only
+    check let slip). Permanent by construction: a transcript, once mined, is
+    never re-mined.
+
+    memory-extraction-retry-v1 — a bare ``processing`` lock still means
+    processed (a valid extraction that found nothing leaves exactly that), BUT
+    a lock RELEASED by a later ``failed`` record does not: the model reply was
+    unusable, nothing was mined, and the session stays eligible until
+    ``max_attempts`` failures — then it is given up on, loudly, by the
+    detector. Without the release, one malformed reply lost the session
+    forever."""
+    locks = 0
+    failures = 0
     for rec in records:
-        if not isinstance(rec, dict):
+        if not isinstance(rec, dict) or rec.get("session_id") != session_id:
             continue
-        if rec.get("session_id") == session_id and rec.get("status") in known:
-            return True
-    return False
+        status = rec.get("status")
+        if status == "processing":
+            locks += 1
+        elif status == EXTRACTION_FAILED_STATUS:
+            failures += 1
+        elif status in NON_TERMINAL_STATUSES or status in TERMINAL_STATUSES:
+            return True  # a staged proposal or an operator disposition
+    if failures >= max_attempts:
+        return True  # gave up — never an unbounded retry loop
+    return locks > failures

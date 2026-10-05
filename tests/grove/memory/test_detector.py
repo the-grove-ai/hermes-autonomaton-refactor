@@ -251,3 +251,92 @@ def test_none_string_dock_goal_ref_nulled(detector):
     pending = [r for r in _proposal_records(detector)
                if r.get("status") == "pending"]
     assert pending[0]["proposal"]["dock_goal_ref"] is None
+
+
+# ── memory-extraction-retry-v1 — a bad reply must not lose the session ───────
+
+_ONE = {"proposals": [
+    {"action": "create", "target_id": None, "dock_goal_ref": None,
+     "proposed_record": {"entity_type": "DomainFact", "content": "Recovered.",
+                         "confidence": 0.9, "justification": "j"}},
+]}
+
+
+def _scripted(detector, replies):
+    """Make _call_detector return each reply in turn; record the call count."""
+    calls = []
+
+    def _next(*_a, **_k):
+        calls.append(1)
+        reply = replies[min(len(calls), len(replies)) - 1]
+        return reply if isinstance(reply, str) else json.dumps(reply)
+
+    detector._call_detector = _next  # type: ignore[assignment]
+    return calls
+
+
+def test_bad_reply_is_asked_again_within_the_sweep(detector):
+    calls = _scripted(detector, ["not json at all", _ONE])
+    assert detector.detect_and_stage("sess-retry", _GATE_OK, []) == 1
+    assert len(calls) == 2
+
+
+def test_persistent_bad_reply_records_failure_and_releases_the_session(
+    detector, caplog,
+):
+    import logging
+
+    calls = _scripted(detector, ["Sure! Here is what I found..."])
+    with caplog.at_level(logging.ERROR, logger="grove.memory.detector"):
+        assert detector.detect_and_stage("sess-fail", _GATE_OK, []) == 0
+    assert len(calls) == 2                      # asked twice, then recorded
+    failed = [r for r in _proposal_records(detector)
+              if r.get("session_id") == "sess-fail" and r.get("status") == "failed"]
+    assert len(failed) == 1
+    assert failed[0]["attempt"] == 1
+    assert "Sure! Here is what I found" in failed[0]["raw_excerpt"]
+    assert "memory extraction FAILED for session sess-fail" in caplog.text
+    # The lock is released: a later sweep mines the session successfully.
+    assert detector._already_processed("sess-fail") is False
+    _scripted(detector, [_ONE])
+    assert detector.detect_and_stage("sess-fail", _GATE_OK, []) == 1
+    assert detector._already_processed("sess-fail") is True
+
+
+def test_gives_up_after_max_attempts(detector):
+    from grove.memory.dispositions import DEFAULT_MAX_EXTRACTION_ATTEMPTS
+
+    _scripted(detector, ["nope"])
+    for _ in range(DEFAULT_MAX_EXTRACTION_ATTEMPTS):
+        assert detector._already_processed("sess-giveup") is False
+        detector.detect_and_stage("sess-giveup", _GATE_OK, [])
+    assert detector._already_processed("sess-giveup") is True   # bounded
+    calls = _scripted(detector, [_ONE])
+    assert detector.detect_and_stage("sess-giveup", _GATE_OK, []) == 0
+    assert calls == []                                          # no more asks
+
+
+def test_valid_empty_extraction_stays_processed(detector):
+    # A real "nothing worth remembering" answer is NOT a failure: the bare
+    # lock still marks the session processed and it is never re-mined.
+    calls = _scripted(detector, [{"proposals": []}])
+    assert detector.detect_and_stage("sess-none", _GATE_OK, []) == 0
+    assert len(calls) == 1
+    assert detector._already_processed("sess-none") is True
+    assert not [r for r in _proposal_records(detector)
+                if r.get("status") == "failed"]
+
+
+def test_json_wrapped_in_prose_is_found(detector):
+    wrapped = ("Here are the proposals you asked for:\n\n"
+               + json.dumps(_ONE) + "\n\nLet me know if you need more.")
+    calls = _scripted(detector, [wrapped])
+    assert detector.detect_and_stage("sess-prose", _GATE_OK, []) == 1
+    assert len(calls) == 1
+
+
+def test_wrong_shape_json_is_a_failure_not_an_empty_result(detector):
+    calls = _scripted(detector, [{"result": "ok"}])
+    assert detector.detect_and_stage("sess-shape", _GATE_OK, []) == 0
+    assert len(calls) == 2
+    assert detector._already_processed("sess-shape") is False

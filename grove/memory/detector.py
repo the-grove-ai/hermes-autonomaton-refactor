@@ -21,8 +21,12 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
+from grove.memory.dispositions import (
+    DEFAULT_MAX_EXTRACTION_ATTEMPTS,
+    EXTRACTION_FAILED_STATUS,
+)
 from grove.memory.store import MemoryStore
 from grove.memory.transcript_filter import filter_transcript_for_extraction
 
@@ -120,6 +124,46 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# memory-extraction-retry-v1 — how many times the model is asked within ONE
+# sweep before the attempt is recorded as failed (a malformed reply is usually
+# transient; an immediate second ask is cheap next to losing the session).
+_CALLS_PER_ATTEMPT = 2
+# Diagnostic excerpt of an unusable reply kept on the failure record + log.
+_RAW_EXCERPT_CHARS = 300
+
+
+def _decode_response(raw: Any) -> Optional[Dict[str, Any]]:
+    """The model reply as ``{"proposals": [...]}``, or None when unusable.
+
+    Tolerant of the wrappers models actually produce around the JSON: a
+    markdown fence, a sentence of preamble, trailing commentary. Tries the
+    whole (fence-stripped) text first, then the first JSON object in it that
+    carries a ``proposals`` list. Never guesses content — only locates it."""
+    if not isinstance(raw, str):
+        return None
+    text = _strip_code_fences(raw)
+    candidates: List[Any] = []
+    try:
+        candidates.append(json.loads(text))
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        start = text.find("{")
+        while start != -1:
+            try:
+                obj, _end = decoder.raw_decode(text, start)
+            except json.JSONDecodeError:
+                pass
+            else:
+                candidates.append(obj)
+                if isinstance(obj, dict) and isinstance(obj.get("proposals"), list):
+                    break
+            start = text.find("{", start + 1)
+    for obj in candidates:
+        if isinstance(obj, dict) and isinstance(obj.get("proposals"), list):
+            return obj
+    return None
+
+
 def _strip_code_fences(text: str) -> str:
     """Strip a leading/trailing markdown code fence, if present."""
     stripped = text.strip()
@@ -202,10 +246,50 @@ class ContextPersistenceDetector:
         # 7. Recently-rejected proposals (Fix 2 — rejection memory).
         recently_rejected = self._recently_rejected()
 
-        # 8. T1 Haiku call (mockable seam).
-        raw = self._call_detector(
-            filtered, active_summary, dock_summary, recently_rejected,
-        )
+        # 8. T1 Haiku call (mockable seam). memory-extraction-retry-v1: an
+        #    unusable reply is asked again once; if it is still unusable the
+        #    attempt is RECORDED as failed — which releases the processing lock
+        #    so a later sweep can mine this session — and surfaced loud with an
+        #    excerpt of what the model actually said. Before this, one bad
+        #    reply left the lock in place and the session was lost for good.
+        raw = None
+        for call in range(1, _CALLS_PER_ATTEMPT + 1):
+            raw = self._call_detector(
+                filtered, active_summary, dock_summary, recently_rejected,
+            )
+            if _decode_response(raw) is not None:
+                break
+            logger.warning(
+                "[grove.memory.detector] session %s: unusable model reply "
+                "(call %d of %d) — %s",
+                session_id, call, _CALLS_PER_ATTEMPT, self._excerpt(raw),
+            )
+        if _decode_response(raw) is None:
+            attempts = 1 + sum(
+                1 for r in self._read_records()
+                if r.get("session_id") == session_id
+                and r.get("status") == EXTRACTION_FAILED_STATUS
+            )
+            self._append_record({
+                "session_id": session_id,
+                "status": EXTRACTION_FAILED_STATUS,
+                "timestamp": _now_iso(),
+                "reason": "unusable_model_reply",
+                "attempt": attempts,
+                "raw_excerpt": self._excerpt(raw),
+            })
+            gave_up = attempts >= DEFAULT_MAX_EXTRACTION_ATTEMPTS
+            logger.error(
+                "[grove.memory.detector] memory extraction FAILED for session "
+                "%s (attempt %d of %d): the model reply was not usable JSON. "
+                "%s Check the Telemetry tier's model on the portal Models page.",
+                session_id, attempts, DEFAULT_MAX_EXTRACTION_ATTEMPTS,
+                "Giving up on this session — nothing from it will be "
+                "remembered." if gave_up else
+                "The session stays eligible and will be retried on a later "
+                "sweep.",
+            )
+            return 0
 
         # 9. Parse (markdown-fence tolerant; malformed → 0). The active-goal
         #    dicts already in memory are threaded so the parse site can gate
@@ -438,6 +522,16 @@ class ContextPersistenceDetector:
 
     # ── parse ────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _excerpt(raw: Any) -> str:
+        """A one-line head of an unusable reply, for the log + failure record."""
+        if not isinstance(raw, str):
+            return f"non-text reply ({type(raw).__name__})"
+        if not raw.strip():
+            return "empty reply"
+        head = " ".join(raw.split())[:_RAW_EXCERPT_CHARS]
+        return f"reply began: {head!r}"
+
     def _parse_proposals(
         self,
         raw: str,
@@ -448,18 +542,10 @@ class ContextPersistenceDetector:
                 "[grove.memory.detector] T1 returned non-text; staging 0"
             )
             return []
-        text = _strip_code_fences(raw)
-        try:
-            data = json.loads(text)
-        except json.JSONDecodeError:
+        data = _decode_response(raw)
+        if data is None:
             logger.warning(
                 "[grove.memory.detector] malformed T1 JSON; staging 0 proposals"
-            )
-            return []
-        if not isinstance(data, dict) or not isinstance(data.get("proposals"), list):
-            logger.warning(
-                "[grove.memory.detector] T1 response missing proposals array; "
-                "staging 0"
             )
             return []
         proposals = data["proposals"]
