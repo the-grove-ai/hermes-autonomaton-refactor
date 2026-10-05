@@ -13022,6 +13022,24 @@ class AIAgent:
                 exc, function_name,
             )
 
+    def _offered_tool_names(self) -> set:
+        """Names on the surface OFFERED to the model this turn — the per-turn
+        surface when one is set (it carries the JIT pull tools and any schema a
+        pull spliced in), else the construction surface."""
+        from grove.context_budget import _name_of
+
+        surface = getattr(self, "_tools_for_turn", None)
+        if surface is None:
+            return set(getattr(self, "valid_tool_names", None) or ())
+        return {n for n in (_name_of(t) for t in surface if isinstance(t, dict)) if n}
+
+    def _callable_tool_names(self) -> set:
+        """Every name that is a REAL tool for this turn's name validation: the
+        construction surface plus whatever is offered this turn. Whether a real
+        tool may actually run is the admission gate's call, not this check's —
+        this only separates real names from hallucinated ones."""
+        return set(getattr(self, "valid_tool_names", None) or ()) | self._offered_tool_names()
+
     def _seam5_admission_refusal(self, function_name: str) -> Optional[str]:
         """PRIMARY (C-SEAM5, D1 universal): refuse a tool the model named that was
         NOT offered this turn — checked against the per-turn ADMITTED set (the
@@ -17263,22 +17281,34 @@ class AIAgent:
                     
                     # Validate tool call names - detect model hallucinations
                     # Repair mismatched tool names before validating
+                    #
+                    # pull-tool-name-validation-v1 — validate against what the
+                    # model can ACTUALLY call this turn: the construction
+                    # surface PLUS the per-turn offered surface. The JIT pull
+                    # tools (read_tool_schema / read_goal_context) exist only on
+                    # the per-turn surface, so checking the construction surface
+                    # alone told the model an OFFERED tool "does not exist"
+                    # before the pull interception below could ever run.
+                    _callable_names = self._callable_tool_names()
                     for tc in assistant_message.tool_calls:
-                        if tc.function.name not in self.valid_tool_names:
+                        if tc.function.name not in _callable_names:
                             repaired = self._repair_tool_call(tc.function.name)
                             if repaired:
                                 print(f"{self.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
                                 tc.function.name = repaired
                     invalid_tool_calls = [
                         tc.function.name for tc in assistant_message.tool_calls
-                        if tc.function.name not in self.valid_tool_names
+                        if tc.function.name not in _callable_names
                     ]
                     if invalid_tool_calls:
                         # Track retries for invalid tool calls
                         self._invalid_tool_retries += 1
 
-                        # Return helpful error to model — model can self-correct next turn
-                        available = ", ".join(sorted(self.valid_tool_names))
+                        # Return helpful error to model — model can self-correct next turn.
+                        # List what was OFFERED this turn, not the whole
+                        # construction surface: naming tools the model was not
+                        # offered invites a call the admission gate then refuses.
+                        available = ", ".join(sorted(self._offered_tool_names()))
                         invalid_name = invalid_tool_calls[0]
                         invalid_preview = invalid_name[:80] + "..." if len(invalid_name) > 80 else invalid_name
                         self._vprint(f"{self.log_prefix}⚠️  Unknown tool '{invalid_preview}' — sending error to model for self-correction ({self._invalid_tool_retries}/3)")
@@ -17299,7 +17329,7 @@ class AIAgent:
                         assistant_msg = self._build_assistant_message(assistant_message, finish_reason)
                         messages.append(assistant_msg)
                         for tc in assistant_message.tool_calls:
-                            if tc.function.name not in self.valid_tool_names:
+                            if tc.function.name not in _callable_names:
                                 content = f"Tool '{tc.function.name}' does not exist. Available tools: {available}"
                             else:
                                 content = "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
