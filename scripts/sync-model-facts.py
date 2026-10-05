@@ -55,19 +55,37 @@ def main() -> int:
         return 1
 
     missing = [slug for slug in template_facts if slug not in live_facts]
+    # Fields the template declares that an EXISTING live entry lacks (e.g. a
+    # fact added to the template after the entry was first synced). Still
+    # additive: a field the operator already set is never changed.
+    missing_fields = {
+        slug: [k for k in tf if k not in live_facts[slug]]
+        for slug, tf in template_facts.items()
+        if slug in live_facts and isinstance(tf, dict)
+        and isinstance(live_facts[slug], dict)
+    }
+    missing_fields = {s: ks for s, ks in missing_fields.items() if ks}
+    n_fields = sum(len(ks) for ks in missing_fields.values())
+
     print(f"live config : {live_path}")
     print(f"template    : {template_path}")
     print(f"already declared live ({len(live_facts)}): {', '.join(live_facts) or '-'}")
-    if not missing:
-        print("nothing to add — every template entry is already declared live.")
+    if not missing and not missing_fields:
+        print("nothing to add — every template entry and field is already declared live.")
         return 0
-    print(f"missing live ({len(missing)}):")
-    for slug in missing:
-        f = template_facts[slug]
-        print(
-            f"  + {slug}  context_window={f.get('context_window')} "
-            f"cost={f.get('cost_per_mtok_input')}/{f.get('cost_per_mtok_output')}"
-        )
+    if missing:
+        print(f"missing live ({len(missing)}):")
+        for slug in missing:
+            f = template_facts[slug]
+            print(
+                f"  + {slug}  context_window={f.get('context_window')} "
+                f"cost={f.get('cost_per_mtok_input')}/{f.get('cost_per_mtok_output')}"
+            )
+    if missing_fields:
+        print(f"missing fields on existing entries ({n_fields}):")
+        for slug, keys in missing_fields.items():
+            for k in keys:
+                print(f"  + {slug}  {k}={template_facts[slug][k]}")
     if not args.apply:
         print("dry run — nothing written. Re-run with --apply to add them.")
         return 0
@@ -80,12 +98,16 @@ def main() -> int:
         for slug in missing:
             if slug not in facts:  # additive only
                 facts[slug] = dict(template_facts[slug])
+        for slug, keys in missing_fields.items():
+            for k in keys:
+                if k not in facts[slug]:  # additive only
+                    facts[slug][k] = template_facts[slug][k]
 
     routing_writer.get_writer().apply_mutation(
-        mutate, label=f"sync model_facts (+{len(missing)})"
+        mutate, label=f"sync model_facts (+{len(missing)} entries, +{n_fields} fields)"
     )
-    print(f"✓ added {len(missing)} model_facts entr{'y' if len(missing) == 1 else 'ies'}; "
-          f"backup at {live_path}.bak")
+    print(f"✓ added {len(missing)} model_facts entr{'y' if len(missing) == 1 else 'ies'} "
+          f"and {n_fields} field(s); backup at {live_path}.bak")
     return 0
 
 

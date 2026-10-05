@@ -204,6 +204,10 @@ model_facts:
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
+      # Honours Anthropic-style cache_control markers; without this
+      # declaration no markers are sent and every call re-bills the
+      # full prompt (run_agent._anthropic_prompt_cache_policy).
+    prompt_cache_style: anthropic
       # list price, live OpenRouter 2026-10-04
     cost_per_mtok_input: 2
     cost_per_mtok_output: 10
@@ -228,6 +232,10 @@ model_facts:
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
+      # Honours Anthropic-style cache_control markers; without this
+      # declaration no markers are sent and every call re-bills the
+      # full prompt (run_agent._anthropic_prompt_cache_policy).
+    prompt_cache_style: anthropic
       # list price, live OpenRouter 2026-10-04
     cost_per_mtok_input: 4
     cost_per_mtok_output: 20
@@ -239,6 +247,10 @@ model_facts:
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
+      # Honours Anthropic-style cache_control markers; without this
+      # declaration no markers are sent and every call re-bills the
+      # full prompt (run_agent._anthropic_prompt_cache_policy).
+    prompt_cache_style: anthropic
       # list price, live OpenRouter 2026-10-04
     cost_per_mtok_input: 1
     cost_per_mtok_output: 5
@@ -247,6 +259,10 @@ model_facts:
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
+      # Honours Anthropic-style cache_control markers; without this
+      # declaration no markers are sent and every call re-bills the
+      # full prompt (run_agent._anthropic_prompt_cache_policy).
+    prompt_cache_style: anthropic
       # list price, live OpenRouter 2026-10-04
     cost_per_mtok_input: 3
     cost_per_mtok_output: 15
@@ -255,6 +271,10 @@ model_facts:
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
+      # Honours Anthropic-style cache_control markers; without this
+      # declaration no markers are sent and every call re-bills the
+      # full prompt (run_agent._anthropic_prompt_cache_policy).
+    prompt_cache_style: anthropic
       # list price, live OpenRouter 2026-10-04
     cost_per_mtok_input: 2
     cost_per_mtok_output: 10
@@ -263,6 +283,10 @@ model_facts:
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
+      # Honours Anthropic-style cache_control markers; without this
+      # declaration no markers are sent and every call re-bills the
+      # full prompt (run_agent._anthropic_prompt_cache_policy).
+    prompt_cache_style: anthropic
       # list price, live OpenRouter 2026-10-04
     cost_per_mtok_input: 5
     cost_per_mtok_output: 25
@@ -271,6 +295,10 @@ model_facts:
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
+      # Honours Anthropic-style cache_control markers; without this
+      # declaration no markers are sent and every call re-bills the
+      # full prompt (run_agent._anthropic_prompt_cache_policy).
+    prompt_cache_style: anthropic
       # list price, live OpenRouter 2026-10-04
     cost_per_mtok_input: 5
     cost_per_mtok_output: 25
@@ -367,6 +395,10 @@ model_facts:
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
+      # Honours Anthropic-style cache_control markers; without this
+      # declaration no markers are sent and every call re-bills the
+      # full prompt (run_agent._anthropic_prompt_cache_policy).
+    prompt_cache_style: anthropic
       # list price, live OpenRouter 2026-10-04
     cost_per_mtok_input: 1.475
     cost_per_mtok_output: 4.425
@@ -375,6 +407,10 @@ model_facts:
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
+      # Honours Anthropic-style cache_control markers; without this
+      # declaration no markers are sent and every call re-bills the
+      # full prompt (run_agent._anthropic_prompt_cache_policy).
+    prompt_cache_style: anthropic
       # list price, live OpenRouter 2026-10-04
     cost_per_mtok_input: 0.1875
     cost_per_mtok_output: 1.125
