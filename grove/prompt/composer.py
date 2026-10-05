@@ -655,6 +655,7 @@ def _tool_guidance_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     """
     from agent.prompt_builder import (
         MEMORY_GUIDANCE,
+        MEMORY_NO_TOOL_GUIDANCE,
         SESSION_SEARCH_GUIDANCE,
         SKILLS_GUIDANCE,
         ESCALATION_GUIDANCE,
@@ -676,6 +677,10 @@ def _tool_guidance_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
         parts.append(FILE_WRITING_GUIDANCE)
     if "memory" in valid:
         parts.append(MEMORY_GUIDANCE)
+    else:
+        # No memory-writing tool on this surface — say how memory really gets
+        # written, so the model never claims a save it cannot perform.
+        parts.append(MEMORY_NO_TOOL_GUIDANCE)
     if "session_search" in valid:
         parts.append(SESSION_SEARCH_GUIDANCE)
     if "skill_manage" in valid:

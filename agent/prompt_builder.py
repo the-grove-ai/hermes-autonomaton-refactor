@@ -190,7 +190,7 @@ SYSTEM_SELF_AWARENESS = (
     "Your built-in capabilities:\n"
     "- Memory: you crystallize domain knowledge, preferences, and project state "
     "from sessions. These persist and are injected into your context automatically. "
-    "Use the memory tool to stage proposals; the operator approves what enters memory.\n"
+    "The operator approves what enters memory.\n"
     "- Dock: the operator's declared strategic priorities. Your memory retrieval is "
     "weighted by active Dock goals.\n"
     "- Flywheel: you observe patterns and propose optimizations — routing adjustments, "
@@ -271,6 +271,28 @@ FILE_WRITING_GUIDANCE = (
     "is always available and zone-governed. Use it.\n"
 )
 
+
+# memory-write-honesty-v1 — the governed-memory build has NO memory-writing
+# tool on the model's surface: durable facts are extracted from the transcript
+# after a session goes quiet and staged as memory cards the operator approves.
+# The always-on self-awareness text used to say "Use the memory tool to stage
+# proposals" regardless, so the model — told to use a tool it did not have —
+# answered "noted and corrected" having written nothing. This section is added
+# only when no memory tool is offered, and tells the model what is actually true.
+MEMORY_NO_TOOL_GUIDANCE = (
+    "How your memory is written: you have NO tool that saves, updates or "
+    "corrects memory, and nothing you do in this turn changes it. After a "
+    "conversation goes quiet, the system reads the transcript, extracts durable "
+    "facts and corrections, and stages them as memory cards that the operator "
+    "approves or rejects (they appear in review_proposals and on the portal). "
+    "So when the operator tells you a fact, a preference, or corrects something "
+    "you got wrong: use it for the rest of this conversation, and say plainly "
+    "that it will be proposed as a memory card for their approval. NEVER say "
+    "you saved, noted, recorded, updated or corrected your records or memory — "
+    "that has not happened. If the wrong fact came from an external source such "
+    "as a calendar event or a contact, say which, since that source stays wrong "
+    "until it is fixed there."
+)
 
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "

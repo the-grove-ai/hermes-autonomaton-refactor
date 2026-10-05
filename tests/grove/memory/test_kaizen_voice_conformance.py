@@ -166,3 +166,33 @@ def test_routing_push_frame_preserved():
         eval_hash="", created_at="2026-06-01T00:00:00+00:00", source_patterns=("c1",))
     push = flywheel_cli.compose_offering(p, is_push=True)
     assert "I noticed I could" in push              # routing frame unchanged
+
+
+# ── memory-write-honesty-v1 — never point the model at a tool it lacks ───────
+
+
+def test_no_memory_tool_gets_the_honest_memory_section():
+    from agent.prompt_builder import MEMORY_GUIDANCE, MEMORY_NO_TOOL_GUIDANCE
+    from grove.prompt.composer import _tool_guidance_provider
+
+    text = _tool_guidance_provider({"valid_tool_names": {"write_file"}}).text
+    assert MEMORY_NO_TOOL_GUIDANCE in text
+    assert MEMORY_GUIDANCE not in text
+    assert "NO tool that saves" in text
+    assert "NEVER say you saved, noted, recorded, updated or corrected" in text
+
+
+def test_memory_tool_present_keeps_the_tool_guidance():
+    from agent.prompt_builder import MEMORY_GUIDANCE, MEMORY_NO_TOOL_GUIDANCE
+    from grove.prompt.composer import _tool_guidance_provider
+
+    text = _tool_guidance_provider({"valid_tool_names": {"memory"}}).text
+    assert MEMORY_GUIDANCE in text
+    assert MEMORY_NO_TOOL_GUIDANCE not in text
+
+
+def test_self_awareness_no_longer_names_a_memory_tool():
+    from agent.prompt_builder import SYSTEM_SELF_AWARENESS
+
+    assert "Use the memory tool" not in SYSTEM_SELF_AWARENESS
+    assert "The operator approves what enters memory." in SYSTEM_SELF_AWARENESS
