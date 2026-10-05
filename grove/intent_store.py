@@ -256,6 +256,16 @@ class IntentRecord:
     failure_kind: Optional[str] = None
     failure_summary: Optional[str] = None
 
+    # stage-summary-v1 — one block per turn summarizing all five pipeline
+    # stages: {"telemetry", "recognition", "compilation", "approval",
+    # "execution"}. Present on EVERY turn written after this field existed —
+    # a cached T0 answer and a failed turn included — so "why did it do that?"
+    # is answered from one record. It SUMMARIZES; the tool-call feed and the
+    # Kaizen ledger remain the detail, linked by ``turn_uid``. The turn's
+    # outcome and failure are NOT repeated inside it (they live above, and a
+    # finalization record copies this block unchanged).
+    stages: Optional[Dict[str, Any]] = None
+
 
 class IntentStore:
     """Append-only JSON Lines store for IntentRecords.

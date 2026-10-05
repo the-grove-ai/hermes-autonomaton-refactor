@@ -395,6 +395,20 @@ class KaizenLedger:
         with self._lock:
             with open(self._path, "a", encoding="utf-8") as fh:
                 fh.write(line)
+        # stage-summary-v1 — after the event is durably written, let the owner
+        # (the Dispatcher) see it, so the turn's stage summary can count this
+        # turn's halts, dispositions and grant uses without re-reading the
+        # file. Observation only: the ledger stays the source of truth, and an
+        # observer fault never fails the write.
+        observer = getattr(self, "observer", None)
+        if observer is not None:
+            try:
+                observer(event)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[grove.kaizen_ledger] event observer failed for %s: %r",
+                    event_type, exc,
+                )
         return event
 
     def events(self) -> Iterator[Dict[str, Any]]:

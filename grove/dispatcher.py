@@ -862,6 +862,11 @@ class Dispatcher:
         # turn its identity; lets the outer guard tell a failure INSIDE a turn
         # from one that happened before the turn had an id.
         self._turn_identity_assigned: bool = False
+        # stage-summary-v1 — per-turn inputs to the five-stage summary block.
+        self._current_turn_started_at: Optional[str] = None
+        self._current_turn_ledger_events: List[Dict[str, Any]] = []
+        self._current_turn_zone_verdicts: List[Dict[str, Any]] = []
+        self._current_turn_token_base: Tuple[int, int, int] = (0, 0, 0)
         self._current_turn_classification: Optional[Any] = None
         # Sprint 53.2 — turn-scoped quarantine-execution flag. Set in
         # ``_handle_andon_halt`` when an "allow once" disposition lets a
@@ -1855,8 +1860,10 @@ class Dispatcher:
                 self._turn_counter = seq if seq is not None else self._turn_counter + 1
                 self._current_turn_id = f"{session_id or 'unknown'}#{self._turn_counter}"
                 self._current_turn_uid = new_turn_uid()
+                self._begin_stage_capture(agent)
                 self._current_turn_classification = None
                 self._current_turn_classification_failure = None
+                self._current_turn_routing_decision = None
                 self._current_turn_api_call_count = 0
                 self._current_turn_start = _time.monotonic()
                 self._current_turn_tools_yielded = []
@@ -1997,6 +2004,7 @@ class Dispatcher:
         # turn-identity-v1 — minted once, here, before any record is written.
         self._current_turn_uid = new_turn_uid()
         self._turn_identity_assigned = True
+        self._begin_stage_capture(agent)
         self._current_turn_classification = None
         self._current_turn_classification_failure = None
         self._current_turn_routing_decision = None
@@ -2742,6 +2750,159 @@ class Dispatcher:
 
     # ── Sprint 28 Phase 4 helper (Explicit Success Finalization) ────────
 
+    # ── stage-summary-v1 ────────────────────────────────────────────────────
+
+    #: Ledger events that describe the Approval stage of a turn.
+    _APPROVAL_EVENTS = frozenset({
+        "andon_halt", "andon_disposition", "grant_execution",
+        "red_resolution", "session_cache_hit",
+    })
+    #: Cap on per-call detail kept in the summary (the feed holds the rest).
+    _STAGE_DETAIL_CAP = 25
+
+    @staticmethod
+    def _agent_token_snapshot(agent: Any) -> "Tuple[int, int, int]":
+        """(input, output, cache_read) session counters on the agent — the
+        per-turn usage is the difference between two snapshots."""
+        return (
+            int(getattr(agent, "session_input_tokens", 0) or 0),
+            int(getattr(agent, "session_output_tokens", 0) or 0),
+            int(getattr(agent, "session_cache_read_tokens", 0) or 0),
+        )
+
+    def _begin_stage_capture(self, agent: Any) -> None:
+        """Reset the per-turn inputs to the stage summary at turn start."""
+        self._current_turn_started_at = datetime.now(timezone.utc).isoformat()
+        self._current_turn_ledger_events = []
+        self._current_turn_zone_verdicts = []
+        self._current_turn_token_base = self._agent_token_snapshot(agent)
+        try:
+            agent._turn_retries = 0
+        except Exception:  # a frozen / exotic agent stand-in — nothing to reset
+            pass
+
+    def _observe_ledger_event(self, event: Dict[str, Any]) -> None:
+        """Ledger observer — remember this turn's Approval/fallback events."""
+        etype = event.get("event_type")
+        if etype in self._APPROVAL_EVENTS or etype in ("tier_fallback", "escalation_decision"):
+            self._current_turn_ledger_events.append(event)
+
+    def _build_stage_summary(
+        self,
+        agent: Any,
+        *,
+        classification: Any,
+        classification_status: str,
+        classification_failure: Optional[str],
+        intent_class: str,
+        complexity_signal: str,
+        confidence: float,
+        tier: Optional[str],
+        model_used: Optional[str],
+        api_calls: int,
+    ) -> Dict[str, Any]:
+        """The five-stage block for this turn's intent record.
+
+        Built from state the turn already holds — nothing is re-read from disk
+        and no stage is skipped: a turn that classified nothing, offered no
+        tools or wrote nothing says so explicitly instead of leaving a gap."""
+        import hashlib as _hashlib
+
+        selection = getattr(agent, "_last_tool_selection", None) or {}
+        offered = sorted(str(n) for n in (selection.get("selected_names") or ()))
+        decision = self._current_turn_routing_decision
+        events = list(self._current_turn_ledger_events)
+        verdicts = list(self._current_turn_zone_verdicts)
+
+        by_zone: Dict[str, int] = {}
+        for v in verdicts:
+            z = str(v.get("zone") or "unknown")
+            by_zone[z] = by_zone.get(z, 0) + 1
+        halts = [e for e in events if e.get("event_type") == "andon_halt"]
+        dispositions = [
+            {"tool": e.get("triggering_tool"), "zone": e.get("zone"),
+             "disposition": e.get("disposition")}
+            for e in events if e.get("event_type") == "andon_disposition"
+        ]
+        grants = [
+            {"grant_id": e.get("grant_id"), "scope": e.get("scope"),
+             "auth_type": e.get("auth_type")}
+            for e in events if e.get("event_type") == "grant_execution"
+        ]
+        red = [e.get("resolution") for e in events if e.get("event_type") == "red_resolution"]
+        if not verdicts:
+            approval_verdict = "green_pass_no_tool_calls"
+        elif halts or red:
+            approval_verdict = "operator_decision_required"
+        else:
+            approval_verdict = "all_green"
+
+        base_in, base_out, base_cache = self._current_turn_token_base
+        now_in, now_out, now_cache = self._agent_token_snapshot(agent)
+        tools_run = list(self._current_turn_tools_yielded)
+
+        cap = self._STAGE_DETAIL_CAP
+        return {
+            "telemetry": {
+                "turn_uid": self._current_turn_uid,
+                "ordinal": self._current_turn_id,
+                "surface": getattr(agent, "platform", None) or self._platform,
+                "started_at": self._current_turn_started_at,
+            },
+            "recognition": {
+                "status": classification_status,
+                "failure": classification_failure,
+                "intent_class": intent_class,
+                "complexity": complexity_signal,
+                "confidence": confidence,
+            },
+            "compilation": {
+                "tier": tier,
+                "routing_reason": getattr(decision, "reason", None),
+                "pattern_cache_hit": bool(getattr(decision, "pattern_cache_hit", False))
+                                     or tier == "T0",
+                "model": model_used,
+                "tools_offered": {
+                    "count": len(offered),
+                    "sha12": _hashlib.sha256(
+                        "\n".join(offered).encode("utf-8")
+                    ).hexdigest()[:12] if offered else None,
+                },
+                "capability_records": list(
+                    getattr(agent, "_capability_records_applied", None) or ()
+                ),
+            },
+            "approval": {
+                "verdict": approval_verdict,
+                "tool_calls_by_zone": by_zone,
+                "verdicts": verdicts[:cap],
+                "halts": len(halts),
+                "dispositions": dispositions[:cap],
+                "grants": grants[:cap],
+                "red_resolutions": red[:cap],
+            },
+            "execution": {
+                "mode": "tools" if tools_run else "response_only",
+                "model_calls": int(api_calls),
+                "retries": int(getattr(agent, "_turn_retries", 0) or 0),
+                "fallbacks": [
+                    {k: e.get(k) for k in ("event_type", "from_tier", "to_tier", "reason")
+                     if e.get(k) is not None}
+                    for e in events
+                    if e.get("event_type") in ("tier_fallback", "escalation_decision")
+                ][:cap],
+                "provider_fallback_at_start": bool(
+                    getattr(agent, "_fallback_activated", False)
+                ),
+                "tokens": {
+                    "input": max(0, now_in - base_in),
+                    "output": max(0, now_out - base_out),
+                    "cache_read": max(0, now_cache - base_cache),
+                },
+                "tools_run": len(tools_run),
+            },
+        }
+
     def _issue_turn_sequence(
         self, session_id: Optional[str]
     ) -> "Tuple[Optional[int], Optional[str]]":
@@ -3350,6 +3511,18 @@ class Dispatcher:
                     session_id, clarify_deferral=clarify_deferral,
                 ),
                 turn_uid=self._current_turn_uid,
+                stages=self._build_stage_summary(
+                    agent,
+                    classification=classification,
+                    classification_status=_classification_status,
+                    classification_failure=_classification_failure,
+                    intent_class=intent_class,
+                    complexity_signal=complexity_signal,
+                    confidence=confidence,
+                    tier=(tier_override or _current_tier()),
+                    model_used=model_used,
+                    api_calls=api_calls,
+                ),
                 classification_status=_classification_status,
                 classification_failure=_classification_failure,
                 failure_kind=failure_kind,
@@ -3409,6 +3582,7 @@ class Dispatcher:
                 session_id=session_id,
                 ledger_dir=self._kaizen_ledger_dir,
             )
+            ledger.observer = self._observe_ledger_event
             self._kaizen_ledgers[session_id] = ledger
         return ledger
 
@@ -3464,6 +3638,7 @@ class Dispatcher:
                 session_id=session_id,
                 ledger_dir=self._kaizen_ledger_dir,
             )
+            ledger.observer = self._observe_ledger_event
             self._kaizen_ledgers[session_id] = ledger
         ledger.record(
             "tier_override",
@@ -5226,6 +5401,14 @@ class Dispatcher:
         for intent in intents:
             zone_result = self._classify_one_intent(intent, _grove_dispatch)
             zone_results.append(zone_result)
+            # stage-summary-v1 — keep the ACTUAL verdict and the rule that
+            # produced it for this turn's Approval stage.
+            self._current_turn_zone_verdicts.append({
+                "tool": getattr(intent, "tool_name", None),
+                "zone": getattr(zone_result, "zone", None),
+                "rule": getattr(zone_result, "matched_rule", None),
+                "source": getattr(zone_result, "source", None),
+            })
             # First Yellow or Red halts the batch. Green continues.
             if zone_result.zone in ("yellow", "red"):
                 # Continue classifying remaining intents for visibility,

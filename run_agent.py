@@ -15462,6 +15462,8 @@ class AIAgent:
                         # Invalid response — could be rate limiting, provider timeout,
                         # upstream server error, or malformed response.
                         retry_count += 1
+                        # stage-summary-v1 — surfaced on the turn's intent record.
+                        self._turn_retries = getattr(self, "_turn_retries", 0) + 1
                         # GRV-010 C2d-2 — the silent model swap on an
                         # empty/malformed response is removed; retry the same
                         # model with backoff (the retry loop continues below).
@@ -16416,6 +16418,8 @@ class AIAgent:
                         )
 
                     retry_count += 1
+                    # stage-summary-v1 — surfaced on the turn's intent record.
+                    self._turn_retries = getattr(self, "_turn_retries", 0) + 1
                     elapsed_time = time.time() - api_start_time
                     self._touch_activity(
                         f"API error recovery (attempt {retry_count}/{max_retries})"
@@ -17077,6 +17081,8 @@ class AIAgent:
                 # infinite loops when compression reduces messages but not enough
                 # to fit the context window.
                 retry_count += 1
+                # stage-summary-v1 — surfaced on the turn's intent record.
+                self._turn_retries = getattr(self, "_turn_retries", 0) + 1
                 restart_with_compressed_messages = False
                 continue
 

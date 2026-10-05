@@ -1069,3 +1069,163 @@ class TestClosureNeverOverwritesAFailure:
         ))
         assert tmp_store.sweep_stale_pending() == 0
         assert [r.outcome for r in tmp_store.records()] == [outcome]
+
+
+# ── stage-summary-v1 — every turn carries all five stages ────────────────────
+
+_STAGES = ("telemetry", "recognition", "compilation", "approval", "execution")
+
+
+class TestStageSummary:
+    def test_plain_answer_turn_has_all_five_stages(self, monkeypatch, tmp_store):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch, intent_class="conversation",
+                                    complexity_signal="simple", confidence=0.95)
+        agent = _bare_agent_with_exec([])
+        agent.platform = "telegram"
+        _run_turn(Dispatcher(intent_store=tmp_store), agent, "hello")
+
+        rec = _records(tmp_store)[-1]
+        st = rec.stages
+        # Records are serialized with sorted keys (stable for hashing), so the
+        # five stages are asserted as a set, not in pipeline order.
+        assert set(st) == set(_STAGES)
+        assert st["telemetry"]["turn_uid"] == rec.turn_uid
+        assert st["telemetry"]["ordinal"] == rec.turn_id
+        assert st["telemetry"]["surface"] == "telegram"
+        assert st["recognition"] == {
+            "status": "ok", "failure": None, "intent_class": "conversation",
+            "complexity": "simple", "confidence": 0.95,
+        }
+        # No tool calls: the Approval stage says so instead of being absent.
+        assert st["approval"]["verdict"] == "green_pass_no_tool_calls"
+        assert st["approval"]["tool_calls_by_zone"] == {}
+        assert st["execution"]["mode"] == "response_only"
+        assert st["execution"]["tools_run"] == 0
+        # outcome/failure are NOT duplicated inside the block
+        assert "outcome" not in st["execution"] and "failure_kind" not in st["execution"]
+
+    def test_tool_turn_records_the_actual_zone_verdict_and_rule(
+        self, monkeypatch, tmp_store,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        agent._run_turn_generator = lambda **kw: _synthetic_generator(
+            [ToolIntent(tool_name="read_file", arguments={}, call_id="c1"),
+             ToolIntent(tool_name="web_search", arguments={}, call_id="c2")],
+            {"final_response": "done"}, final_text="done",
+        )
+        Dispatcher(intent_store=tmp_store).dispatch_turn(agent, user_message="look")
+
+        st = _records(tmp_store)[-1].stages
+        assert st["approval"]["verdict"] == "all_green"
+        assert st["approval"]["tool_calls_by_zone"] == {"green": 2}
+        assert [v["tool"] for v in st["approval"]["verdicts"]] == ["read_file", "web_search"]
+        assert all(v["zone"] == "green" and v["source"] == "test_force_green"
+                   for v in st["approval"]["verdicts"])
+        assert st["execution"]["mode"] == "tools" and st["execution"]["tools_run"] == 2
+        assert st["execution"]["model_calls"] == 3
+
+    def test_token_usage_is_the_turns_delta_not_the_session_total(
+        self, monkeypatch, tmp_store,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        agent.session_input_tokens = 1000        # carried in from earlier turns
+        agent.session_output_tokens = 50
+        agent.session_cache_read_tokens = 900
+
+        def _gen(**kw):
+            def gen():
+                agent.session_input_tokens += 120
+                agent.session_output_tokens += 30
+                agent.session_cache_read_tokens += 100
+                agent._turn_retries = getattr(agent, "_turn_retries", 0) + 2
+                yield FinalResponse(content="ok")
+                return {"final_response": "ok"}
+            return gen()
+
+        agent._run_turn_generator = _gen
+        Dispatcher(intent_store=tmp_store).dispatch_turn(agent, user_message="q")
+        ex = _records(tmp_store)[-1].stages["execution"]
+        assert ex["tokens"] == {"input": 120, "output": 30, "cache_read": 100}
+        assert ex["retries"] == 2
+
+    def test_failed_turn_still_carries_all_five_stages(self, monkeypatch, tmp_store):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        agent._run_turn_generator = lambda **kw: _early_exit_generator(
+            {"completed": False, "error": "Invalid API response after 3 retries"}
+        )
+        Dispatcher(intent_store=tmp_store).dispatch_turn(agent, user_message="go")
+        rec = _records(tmp_store)[-1]
+        assert rec.outcome == "error"
+        assert set(rec.stages) == set(_STAGES)
+
+    def test_failed_classification_shows_in_the_recognition_stage(
+        self, monkeypatch, tmp_store,
+    ):
+        from grove import classify as _classify_mod
+        from grove import providers as _providers
+
+        _patch_classifier_green(monkeypatch)
+        monkeypatch.setattr(_providers, "_last_classification", None, raising=False)
+        monkeypatch.setattr(_classify_mod, "last_classification_failure",
+                            lambda: ("timeout", "APITimeoutError"))
+        _run_turn(Dispatcher(intent_store=tmp_store), _bare_agent_with_exec([]), "hi")
+        rg = _records(tmp_store)[-1].stages["recognition"]
+        assert rg["status"] == "failed" and rg["failure"] == "timeout: APITimeoutError"
+
+    def test_summary_is_copied_unchanged_onto_the_finalization_record(
+        self, monkeypatch, tmp_store, session_db,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        _run_turn(Dispatcher(intent_store=tmp_store, session_db=session_db), agent, "one")
+        _run_turn(Dispatcher(intent_store=tmp_store, session_db=session_db), agent, "two")
+        first = [r for r in _records(tmp_store) if r.turn_id == "test-session#1"]
+        assert [r.outcome for r in first] == ["pending", "success"]
+        assert first[0].stages == first[1].stages
+
+    def test_ledger_observer_feeds_the_approval_stage(self, monkeypatch, tmp_store, tmp_path):
+        from grove.kaizen_ledger import KaizenLedger
+
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        d = Dispatcher(intent_store=tmp_store)
+        agent = _bare_agent_with_exec([])
+
+        def _gen(**kw):
+            def gen():
+                ledger = d._get_or_create_ledger(agent)
+                ledger.record("grant_execution", grant_id="grant-abc", scope="calendar_create",
+                              auth_type="standing_capability")
+                yield FinalResponse(content="ok")
+                return {"final_response": "ok"}
+            return gen()
+
+        agent._run_turn_generator = _gen
+        d.dispatch_turn(agent, user_message="q")
+        ap = _records(tmp_store)[-1].stages["approval"]
+        assert ap["grants"] == [{"grant_id": "grant-abc", "scope": "calendar_create",
+                                 "auth_type": "standing_capability"}]
+
+    def test_observer_fault_never_fails_the_ledger_write(self, tmp_path, caplog):
+        import logging
+
+        from grove.kaizen_ledger import KaizenLedger
+
+        ledger = KaizenLedger(session_id="s", ledger_dir=tmp_path)
+
+        def _bad(event):
+            raise RuntimeError("observer down")
+
+        ledger.observer = _bad
+        with caplog.at_level(logging.WARNING, logger="grove.kaizen_ledger"):
+            ledger.record("final_response", content_length=1, metadata={})
+        assert len(list(ledger.events())) == 1
+        assert "event observer failed" in caplog.text
