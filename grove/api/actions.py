@@ -1435,13 +1435,13 @@ def _fresh_binding_row_html(skill: str, catalog, error: str | None = None) -> st
 
 async def _binding_action(request: web.Request, *, action: str,
                           binding_for) -> web.Response:
-    """Shared pin/unpin mechanics — FILE a MODEL_BINDING proposal (portal-action-
-    checkpoint-parity). The portal press proposes; the operator's ``flywheel
-    approve`` applies via the ONE sanctioned writer (set_model_binding). File-time
-    validation: skill present, catalog membership (pin only). ``proposed_binding``
-    is a model dict for pin and ``None`` for unpin — _approve_model_binding
-    requires the key present and treats None as 'clear'. NO writer is called
-    on this request."""
+    """Shared pin/unpin mechanics (the tier-swap template): form parse →
+    catalog membership (pin only) → the ONE sanctioned writer → re-render the
+    row from a fresh read. Failure ladder: client input → 400; writer refusal
+    (BindingWriteError) → 422; anything unexpected → the loud failure path
+    (broadcast + Kaizen filing + banner) at 500."""
+    from grove.capability_registry import BindingWriteError, set_model_binding
+
     data = await request.post()
     skill = str(data.get("skill") or "").strip()
     model_slug = str(data.get("model_slug") or "").strip()
@@ -1470,15 +1470,28 @@ async def _binding_action(request: web.Request, *, action: str,
             status=400,
         )
 
-    pid, _ = file_agentless(
-        type=PROPOSAL_TYPE_MODEL_BINDING,
-        payload={"skill": skill, "proposed_binding": binding},
-        evidence=(skill,),
-        proposer="portal_operator",
-    )
-    logger.info("[portal.actions] binding %s FILED %s: %s -> %r", action, pid,
-                skill, binding)
-    return _filed_card(pid, action, f"{skill}: {binding!r}")
+    try:
+        set_model_binding(skill, binding, surface="portal")
+    except BindingWriteError as exc:
+        return await _loud_action_failure(
+            _fresh_binding_row_html(skill, catalog, error=str(exc)),
+            failure_class="binding_write_refused",
+            action=action,
+            message=str(exc),
+            status=422,
+        )
+    except Exception as exc:  # noqa: BLE001 — unexpected → loud, never a 500 blank
+        return await _loud_action_failure(
+            _fresh_binding_row_html(skill, catalog, error=str(exc)),
+            failure_class="binding_unexpected",
+            action=action,
+            message=f"Unexpected failure: {exc}",
+            status=500,
+        )
+
+    logger.info("[portal.actions] binding %s: %s -> %r", action, skill,
+                binding)
+    return _html_fragment(_fresh_binding_row_html(skill, catalog))
 
 
 async def handle_binding_pin(request: web.Request) -> web.Response:

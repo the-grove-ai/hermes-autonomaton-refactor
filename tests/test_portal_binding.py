@@ -181,10 +181,9 @@ async def test_binding_panel_renders_groups(client, caps_env):
 # ── actions: happy + 400 + 422 ───────────────────────────────────────────────
 
 
-async def test_pin_happy_path_files_proposal(client, caps_env):
-    # portal-action-checkpoint-parity — pin FILES a model_binding proposal; the
-    # portal writes NOTHING. The binding lands only when the operator runs
-    # `flywheel approve` (the RED CLI apply → set_model_binding).
+async def test_pin_happy_path_rerenders_fresh(client, caps_env):
+    # demo-readiness — the operator's own fleet pin is a DIRECT write through
+    # the sole binding writer (no proposal, no grant token).
     path = _mint(caps_env, _fleet_cap("skill.fleet.bindui-alpha"))
     r = await client.post(
         "/portal/actions/binding/pin",
@@ -192,19 +191,19 @@ async def test_pin_happy_path_files_proposal(client, caps_env):
     )
     assert r.status == 200
     body = await r.text()
-    assert "proposed" in body                           # pending, not applied
-    assert "flywheel approve" in body                   # the operator apply command
-    assert "bindui-alpha" in body
+    assert "pinned: z-ai/glm-5.2" in body               # fresh post-write read
+    assert "Unpin" in body                              # unpin now offered
     assert 'id="alert-banner"' not in body              # no failure banner
-    # The portal wrote nothing — the binding is unchanged until approve.
+    # fleet-hygiene-sweep P2 — the pin lands in the state overlay; the composed
+    # load renders it, the bundled definition stays clean.
     from grove.capability_registry import load_capabilities
 
-    assert load_capabilities()["skill.fleet.bindui-alpha"].model_binding is None
+    assert load_capabilities()["skill.fleet.bindui-alpha"].model_binding.model == (
+        "z-ai/glm-5.2"
+    )
 
 
 async def test_unpin_happy_path(client, caps_env):
-    # portal-action-checkpoint-parity — unpin FILES a model_binding proposal with
-    # proposed_binding=None (the writer clears on approve). Portal writes nothing.
     path = _mint(caps_env, _fleet_cap(
         "skill.fleet.bindui-beta",
         model_binding=ModelBinding(type="model", model="z-ai/glm-5.2"),
@@ -214,15 +213,11 @@ async def test_unpin_happy_path(client, caps_env):
     )
     assert r.status == 200
     body = await r.text()
-    assert "proposed" in body
-    assert "flywheel approve" in body
-    assert "bindui-beta" in body
-    # Portal wrote nothing — the seed pin is still in place until approve.
+    assert "inherits T2" in body
+    # P2 — definition keeps its seed pin (read-only); composed load reflects clear
     from grove.capability_registry import load_capabilities
 
-    assert load_capabilities()["skill.fleet.bindui-beta"].model_binding.model == (
-        "z-ai/glm-5.2"
-    )
+    assert load_capabilities()["skill.fleet.bindui-beta"].model_binding is None
 
 
 async def test_pin_off_catalog_model_400(client, caps_env, monkeypatch):
@@ -247,12 +242,7 @@ async def test_pin_off_catalog_model_400(client, caps_env, monkeypatch):
     assert len(sent) == 1 and "binding_pin" in sent[0]
 
 
-async def test_pin_unresolvable_skill_files_proposal(client, caps_env, monkeypatch):
-    # portal-action-checkpoint-parity — file-time validation is skill-PRESENCE +
-    # catalog membership; skill RESOLVABILITY is enforced at apply time by the
-    # writer (set_model_binding raises → the flywheel approve surfaces it, and the
-    # proposal stays queued). So a cataloged model + a non-empty skill name FILES a
-    # proposal; the portal writes nothing.
+async def test_pin_unresolvable_skill_422(client, caps_env, monkeypatch):
     async def _noop(content, **kw):
         return {"logged": True}
 
@@ -262,7 +252,7 @@ async def test_pin_unresolvable_skill_files_proposal(client, caps_env, monkeypat
         "/portal/actions/binding/pin",
         data={"skill": "bindui-nonexistent", "model_slug": "z-ai/glm-5.2"},
     )
-    assert r.status == 200
+    assert r.status == 422
     body = await r.text()
-    assert "proposed" in body
-    assert "flywheel approve" in body
+    assert 'id="alert-banner"' in body
+    assert "no capability record" in body.lower()
