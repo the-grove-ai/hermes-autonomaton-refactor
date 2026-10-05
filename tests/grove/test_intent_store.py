@@ -429,3 +429,153 @@ class TestSubstrateCitationFields:
         assert rec.cellar_retrieval_hits == 0
         assert rec.cellar_citations_rendered == 0
         assert rec.cellar_retrieval_config_sig is None
+
+
+# ── provenance-chain-v1 — per-session hash chain ─────────────────────────────
+
+
+def _rec(session="s1", turn="s1#1", outcome="pending", ts=None, **kw):
+    from datetime import datetime, timezone
+
+    base = dict(
+        timestamp=ts or datetime.now(timezone.utc).isoformat(),
+        session_id=session, turn_id=turn, user_message_stem="hello",
+        pattern_hash="h", intent_class="conversation", register_class="casual",
+        complexity_signal="simple", confidence=0.9, outcome=outcome,
+    )
+    base.update(kw)
+    return IntentRecord(**base)
+
+
+def _lines(store):
+    return store.path.read_text(encoding="utf-8").splitlines()
+
+
+class TestProvenanceChain:
+    def test_records_chain_within_a_session(self, tmp_path):
+        from grove.intent_store import record_digest, verify_chain
+
+        store = IntentStore(store_path=tmp_path / "r.jsonl")
+        a = store.append(_rec(turn="s1#1"))
+        b = store.append(_rec(turn="s1#2"))
+        c = store.append(_rec(turn="s1#2", outcome="success"))   # a finalization
+        assert a["prev_hash"] is None
+        assert b["prev_hash"] == a["record_hash"]
+        assert c["prev_hash"] == b["record_hash"]
+        assert a["record_hash"] == record_digest(a)
+        report = verify_chain(iter(_lines(store)))
+        assert report["chained"] == 3 and report["problems"] == []
+
+    def test_sessions_have_independent_chains(self, tmp_path):
+        store = IntentStore(store_path=tmp_path / "r.jsonl")
+        a1 = store.append(_rec(session="a", turn="a#1"))
+        b1 = store.append(_rec(session="b", turn="b#1"))
+        a2 = store.append(_rec(session="a", turn="a#2"))
+        assert b1["prev_hash"] is None
+        assert a2["prev_hash"] == a1["record_hash"]
+
+    def test_chain_survives_a_new_store_instance(self, tmp_path):
+        # A new process (new IntentStore) must continue the chain from the file.
+        path = tmp_path / "r.jsonl"
+        first = IntentStore(store_path=path).append(_rec(turn="s1#1"))
+        second = IntentStore(store_path=path).append(_rec(turn="s1#2"))
+        assert second["prev_hash"] == first["record_hash"]
+
+    def test_another_writer_appending_is_picked_up(self, tmp_path):
+        path = tmp_path / "r.jsonl"
+        a = IntentStore(store_path=path)
+        b = IntentStore(store_path=path)
+        r1 = a.append(_rec(turn="s1#1"))
+        r2 = b.append(_rec(turn="s1#2"))            # b extends a's head
+        r3 = a.append(_rec(turn="s1#3"))            # a must see b's record
+        assert r2["prev_hash"] == r1["record_hash"]
+        assert r3["prev_hash"] == r2["record_hash"]
+
+    def test_edited_record_is_detected(self, tmp_path):
+        from grove.intent_store import verify_chain
+
+        store = IntentStore(store_path=tmp_path / "r.jsonl")
+        for i in range(3):
+            store.append(_rec(turn=f"s1#{i+1}"))
+        lines = _lines(store)
+        doc = json.loads(lines[1]); doc["intent_class"] = "planning"
+        lines[1] = json.dumps(doc, sort_keys=True)
+        problems = verify_chain(iter(lines))["problems"]
+        assert any("altered" in p["problem"] and p["line"] == 2 for p in problems)
+
+    def test_deleted_record_is_detected(self, tmp_path):
+        from grove.intent_store import verify_chain
+
+        store = IntentStore(store_path=tmp_path / "r.jsonl")
+        for i in range(3):
+            store.append(_rec(turn=f"s1#{i+1}"))
+        lines = _lines(store)
+        del lines[1]                                 # remove the middle record
+        problems = verify_chain(iter(lines))["problems"]
+        assert any("removed, inserted or reordered" in p["problem"] for p in problems)
+
+    def test_reordered_records_are_detected(self, tmp_path):
+        from grove.intent_store import verify_chain
+
+        store = IntentStore(store_path=tmp_path / "r.jsonl")
+        for i in range(3):
+            store.append(_rec(turn=f"s1#{i+1}"))
+        lines = _lines(store)
+        lines[1], lines[2] = lines[2], lines[1]
+        assert verify_chain(iter(lines))["problems"]
+
+    def test_retention_purge_does_not_break_the_chain(self, tmp_path):
+        from datetime import datetime, timedelta, timezone
+
+        from grove.intent_store import verify_chain
+
+        store = IntentStore(store_path=tmp_path / "r.jsonl")
+        old = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+        store.append(_rec(turn="s1#1", ts=old, response_content="secret answer",
+                          tool_invocation='{"tool": "x", "args": {}}'))
+        store.append(_rec(turn="s1#2"))
+        assert store.purge_expired_content(within_days=30) == 1
+        report = verify_chain(iter(_lines(store)))
+        assert report["problems"] == []
+        # ...and the chain keeps extending correctly after the rewrite
+        third = store.append(_rec(turn="s1#3"))
+        assert verify_chain(iter(_lines(store)))["problems"] == []
+        assert third["prev_hash"] is not None
+
+    def test_edit_to_unpurged_content_is_detected(self, tmp_path):
+        from grove.intent_store import verify_chain
+
+        store = IntentStore(store_path=tmp_path / "r.jsonl")
+        store.append(_rec(turn="s1#1", response_content="the real answer"))
+        lines = _lines(store)
+        doc = json.loads(lines[0]); doc["response_content"] = "a different answer"
+        lines[0] = json.dumps(doc, sort_keys=True)
+        problems = verify_chain(iter(lines))["problems"]
+        assert any("does not match its digest" in p["problem"] for p in problems)
+
+    def test_pre_chain_records_are_counted_not_flagged(self, tmp_path):
+        from grove.intent_store import verify_chain
+
+        path = tmp_path / "r.jsonl"
+        legacy = {"timestamp": "2026-06-01T00:00:00+00:00", "session_id": "old",
+                  "turn_id": "old#1", "user_message_stem": "x", "pattern_hash": "h",
+                  "intent_class": "conversation", "register_class": "casual",
+                  "complexity_signal": "simple", "confidence": 0.9, "outcome": "success"}
+        path.write_text(json.dumps(legacy) + "\n", encoding="utf-8")
+        store = IntentStore(store_path=path)
+        store.append(_rec(session="new", turn="new#1"))
+        report = verify_chain(iter(_lines(store)))
+        assert report["unchained"] == 1 and report["chained"] == 1
+        assert report["problems"] == []
+        # legacy rows still load through the normal reader
+        assert [r.turn_id for r in store.records()] == ["old#1", "new#1"]
+
+    def test_chain_covers_the_unique_turn_id(self, tmp_path):
+        from grove.intent_store import verify_chain
+
+        store = IntentStore(store_path=tmp_path / "r.jsonl")
+        store.append(_rec(turn="s1#1", turn_uid="01a10ded-1fe1-7000-8000-000000000001"))
+        lines = _lines(store)
+        doc = json.loads(lines[0]); doc["turn_uid"] = "01a10ded-1fe1-7000-8000-00000000ffff"
+        lines[0] = json.dumps(doc, sort_keys=True)
+        assert verify_chain(iter(lines))["problems"]
