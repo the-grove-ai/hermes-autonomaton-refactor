@@ -3936,9 +3936,17 @@ class AIAgent:
         # re-billed the full prompt (live: Sonnet 5 on T1, ~80-120k uncached
         # input tokens per call). The policy is a pure read of provider /
         # endpoint / api_mode / model facts — no client rebuild.
-        self._use_prompt_caching, self._use_native_cache_layout = (
-            self._anthropic_prompt_cache_policy()
-        )
+        #
+        # The connection facts are passed explicitly (read with defaults) and
+        # the policy is looked up, not assumed: apply_tier is also driven on
+        # lightweight agent stand-ins that carry only a model and a budget.
+        _cache_policy = getattr(self, "_anthropic_prompt_cache_policy", None)
+        if callable(_cache_policy):
+            self._use_prompt_caching, self._use_native_cache_layout = _cache_policy(
+                provider=getattr(self, "provider", None) or "",
+                base_url=getattr(self, "base_url", None) or "",
+                api_mode=getattr(self, "api_mode", None) or "",
+            )
 
     def switch_model(self, new_model, new_provider, api_key='', base_url='', api_mode='', model_facts=None):
         """Switch the model/provider in-place for a live agent.

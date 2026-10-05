@@ -26,7 +26,7 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -2432,6 +2432,49 @@ class SessionDB:
         if row is None:
             return None
         return row["value"] if isinstance(row, sqlite3.Row) else row[0]
+
+    @staticmethod
+    def turn_seq_key(session_id: str) -> str:
+        """state_meta key holding a session's last-issued turn sequence."""
+        return f"turn_seq:{session_id}"
+
+    def advance_turn(self, session_id: str, *, seed: int = 0) -> Tuple[int, Optional[int]]:
+        """turn-identity-v1 — atomically issue the next turn sequence for a session.
+
+        Returns ``(sequence, previous_sequence)``. ``previous_sequence`` is the
+        last sequence issued for this session, or None when this is its first.
+        The read-increment-write runs inside ONE write transaction, so two
+        Dispatchers (or two processes) can never be issued the same number.
+
+        The counter lives HERE, not on the Dispatcher: the gateway rebuilds
+        the Dispatcher between messages, and an in-memory counter restarted at
+        1 each time — every turn of a session carried the id ``<session>#1``.
+
+        ``seed`` is the number of turns ALREADY recorded for this session by
+        the pre-fix scheme; it is applied only when the session has no stored
+        sequence, so a session that spans the upgrade continues after its
+        existing records instead of colliding with them.
+        """
+        key = self.turn_seq_key(session_id)
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT value FROM state_meta WHERE key = ?", (key,)
+            ).fetchone()
+            if row is None:
+                previous = int(seed) if seed and seed > 0 else None
+            else:
+                raw = row["value"] if isinstance(row, sqlite3.Row) else row[0]
+                previous = int(raw)
+            sequence = (previous or 0) + 1
+            conn.execute(
+                "INSERT INTO state_meta (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (key, str(sequence)),
+            )
+            return sequence, previous
+
+        return self._execute_write(_do)
 
     def set_meta(self, key: str, value: str) -> None:
         """Write a value to the state_meta key/value store."""

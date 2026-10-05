@@ -696,3 +696,136 @@ class TestSubstrateCitationTelemetry:
         assert rec.cellar_retrieval_hits == 0
         assert rec.cellar_citations_rendered == 0
         assert rec.cellar_retrieval_config_sig is None
+
+
+# ── turn-identity-v1 — ids are unique per SESSION, not per Dispatcher ────────
+
+
+def _run_turn(dispatcher, agent, text):
+    agent._run_turn_generator = (
+        lambda **kw: _synthetic_generator(
+            None, {"final_response": "x"}, final_text="x",
+        )
+    )
+    dispatcher.dispatch_turn(agent, user_message=text)
+
+
+@pytest.fixture
+def session_db(tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    yield db
+    db.close()
+
+
+class TestTurnIdentityAcrossDispatcherRebuilds:
+    def test_rebuilt_dispatcher_continues_the_sequence(
+        self, monkeypatch, tmp_store, session_db,
+    ):
+        # The live defect: the gateway builds a NEW Dispatcher per message, the
+        # in-memory counter restarted, and every turn was "<session>#1".
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        for i in range(3):
+            d = Dispatcher(intent_store=tmp_store, session_db=session_db)
+            _run_turn(d, agent, f"turn {i}")
+
+        pending = [r.turn_id for r in tmp_store.records() if r.outcome == "pending"]
+        assert pending == ["test-session#1", "test-session#2", "test-session#3"]
+
+    def test_previous_turn_is_closed_across_a_rebuild(
+        self, monkeypatch, tmp_store, session_db,
+    ):
+        # Closure used the previous id held in Dispatcher memory, so a rebuild
+        # left the earlier turn "pending" forever.
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        for i in range(3):
+            d = Dispatcher(intent_store=tmp_store, session_db=session_db)
+            _run_turn(d, agent, f"turn {i}")
+
+        latest = {r.turn_id: r.outcome for r in tmp_store.latest_by_turn()}
+        assert latest == {
+            "test-session#1": "success",
+            "test-session#2": "success",
+            "test-session#3": "pending",      # the live turn; closes on the next
+        }
+
+    def test_sessions_keep_separate_sequences(
+        self, monkeypatch, tmp_store, session_db,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        a = _bare_agent_with_exec([])
+        b = _bare_agent_with_exec([])
+        b.session_id = "other-session"
+        _run_turn(Dispatcher(intent_store=tmp_store, session_db=session_db), a, "a1")
+        _run_turn(Dispatcher(intent_store=tmp_store, session_db=session_db), b, "b1")
+        _run_turn(Dispatcher(intent_store=tmp_store, session_db=session_db), a, "a2")
+        ids = [r.turn_id for r in tmp_store.records() if r.outcome == "pending"]
+        assert ids == ["test-session#1", "other-session#1", "test-session#2"]
+
+    def test_legacy_session_is_seeded_past_its_existing_records(
+        self, monkeypatch, tmp_store, session_db,
+    ):
+        # A session with turns recorded under the old scheme (all "#1") and no
+        # stored sequence must not hand out "#1" again.
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        for i in range(3):                      # old scheme: no session DB
+            _run_turn(Dispatcher(intent_store=tmp_store), agent, f"old {i}")
+        old_ids = [r.turn_id for r in tmp_store.records() if r.outcome == "pending"]
+        assert old_ids == ["test-session#1"] * 3
+
+        _run_turn(Dispatcher(intent_store=tmp_store, session_db=session_db), agent, "new")
+        newest = [r.turn_id for r in tmp_store.records() if r.outcome == "pending"][-1]
+        assert newest == "test-session#4"
+
+    def test_no_session_db_keeps_the_in_memory_counter(
+        self, monkeypatch, tmp_store,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        d = Dispatcher(intent_store=tmp_store)
+        _run_turn(d, agent, "one")
+        _run_turn(d, agent, "two")
+        ids = [r.turn_id for r in tmp_store.records() if r.outcome == "pending"]
+        assert ids == ["test-session#1", "test-session#2"]
+
+    def test_database_fault_is_loud_and_falls_back(
+        self, monkeypatch, tmp_store, session_db, caplog,
+    ):
+        import logging
+
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+
+        def _boom(session_id, *, seed=0):
+            raise RuntimeError("disk full")
+
+        monkeypatch.setattr(session_db, "advance_turn", _boom)
+        agent = _bare_agent_with_exec([])
+        d = Dispatcher(intent_store=tmp_store, session_db=session_db)
+        with caplog.at_level(logging.ERROR, logger="grove.dispatcher"):
+            _run_turn(d, agent, "one")
+        assert "could not issue a persistent turn sequence" in caplog.text
+        assert [r.turn_id for r in tmp_store.records()] == ["test-session#1"]
+
+
+def test_advance_turn_is_atomic_and_sequential(tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        assert db.advance_turn("s") == (1, None)
+        assert db.advance_turn("s") == (2, 1)
+        assert db.advance_turn("t") == (1, None)
+        assert db.advance_turn("u", seed=5) == (6, 5)     # seeded legacy session
+        assert db.advance_turn("u", seed=99) == (7, 6)    # seed ignored once stored
+    finally:
+        db.close()

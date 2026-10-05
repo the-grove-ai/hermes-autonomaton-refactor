@@ -1854,6 +1854,14 @@ class Dispatcher:
         # record (if any) as success. The first turn for this Dispatcher
         # has no previous (``_current_turn_id`` is None) — skip then.
         previous_turn_id = self._current_turn_id
+        # turn-identity-v1 — issue this turn's sequence from the session
+        # database when there is one. It also returns the PREVIOUS turn's
+        # sequence, so the previous turn can be closed even though this
+        # Dispatcher instance may never have seen it (the gateway rebuilds the
+        # Dispatcher between messages; ``_current_turn_id`` is then None).
+        _issued_seq, _persisted_previous_id = self._issue_turn_sequence(session_id)
+        if _persisted_previous_id is not None:
+            previous_turn_id = _persisted_previous_id
         # Sprint 49 Phase 2 — capture whether the PREVIOUS turn resolved via
         # T0 before the reset below clears the flag. The correction-driven
         # auto-demotion check consumes it after this turn classifies.
@@ -1863,7 +1871,10 @@ class Dispatcher:
         # (FinalResponse / Drop / exception) have a stable identity to
         # write under.
         import time as _time
-        self._turn_counter += 1
+        if _issued_seq is not None:
+            self._turn_counter = _issued_seq
+        else:
+            self._turn_counter += 1
         self._current_turn_id = f"{session_id or 'unknown'}#{self._turn_counter}"
         self._current_turn_classification = None
         self._current_turn_routing_decision = None
@@ -2576,6 +2587,66 @@ class Dispatcher:
             return stop.value
 
     # ── Sprint 28 Phase 4 helper (Explicit Success Finalization) ────────
+
+    def _issue_turn_sequence(
+        self, session_id: Optional[str]
+    ) -> "Tuple[Optional[int], Optional[str]]":
+        """turn-identity-v1 — ``(sequence, previous_turn_id)`` from the session
+        database, or ``(None, None)`` when no persistent counter is available.
+
+        Turn ids must be unique and sequential per SESSION, not per Dispatcher
+        instance. With a session database the sequence is issued atomically
+        there and survives a Dispatcher rebuild. Without one (tests, bare CLI
+        runs) the caller falls back to the in-memory counter — correct for a
+        Dispatcher that lives as long as its session.
+
+        A session that predates this change has turns recorded under the old
+        scheme and no stored sequence; the first issue is SEEDED with the count
+        of turns the intent store already holds for it, so new ids continue
+        after the old ones instead of colliding with them.
+
+        A database fault is logged at ERROR and falls back to the in-memory
+        counter: the turn must still run, but the fallback can repeat an id, so
+        it is never silent."""
+        advance = getattr(self.session, "advance_turn", None) if self.session is not None else None
+        if not session_id or not callable(advance):
+            return None, None
+        sid = str(session_id)
+        try:
+            seed = 0
+            get_meta = getattr(self.session, "get_meta", None)
+            key_fn = getattr(self.session, "turn_seq_key", None)
+            if callable(get_meta) and callable(key_fn) and get_meta(key_fn(sid)) is None:
+                seed = self._recorded_turn_count(sid)
+            sequence, previous = advance(sid, seed=seed)
+        except Exception as exc:
+            logger.error(
+                "[grove.dispatcher] could not issue a persistent turn sequence "
+                "for session %s (%r) — falling back to the in-memory counter; "
+                "turn ids for this session may repeat until this is fixed. "
+                "Check the session database.", sid, exc,
+            )
+            return None, None
+        previous_id = f"{sid}#{previous}" if previous else None
+        return int(sequence), previous_id
+
+    def _recorded_turn_count(self, session_id: str) -> int:
+        """How many turns the intent store already holds for ``session_id``.
+
+        A turn writes exactly one non-finalization record (pending, error,
+        governance_terminated, awaiting_operator); ``success`` / ``correction``
+        rows are finalizations of an earlier turn. Counting the former gives
+        the number of turns regardless of how their ids were assigned."""
+        store = self._intent_store
+        if store is None:
+            return 0
+        count = 0
+        for record in store.records():
+            if record.session_id == session_id and record.outcome not in (
+                "success", "correction",
+            ):
+                count += 1
+        return count
 
     def _finalize_previous_turn_pending(self, previous_turn_id: str) -> None:
         """Finalize the previous turn's pending record.
