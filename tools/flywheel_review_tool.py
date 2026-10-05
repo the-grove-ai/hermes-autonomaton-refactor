@@ -64,11 +64,16 @@ _SCOPE_DEFINING_REFUSED_TYPES = frozenset({
 REVIEW_PROPOSALS_SCHEMA = {
     "name": "review_proposals",
     "description": (
-        "List the Autonomaton's pending self-improvement proposals (the Flywheel "
-        "queue) for the operator to review — routing changes, zone/skill "
-        "promotions, drafted skills, pattern promotions/demotions. Read-only. "
-        "Use this when the operator asks what the system wants to change, what's "
-        "pending, or before approving or rejecting a proposal."
+        "List EVERYTHING currently awaiting the operator's approval — the same "
+        "pending cards the portal's proposals page shows. Covers proposed Dock "
+        "goals, memory cards (things the system wants to remember), goal "
+        "attachments, model and routing changes, skill promotions and drafted "
+        "skills, and pattern promotions/demotions. Read-only. This is the ONLY "
+        "source of truth for what is pending: the Dock holds goals that are "
+        "already approved, not proposals. Use it whenever the operator asks "
+        "what is pending or waiting, whether a new proposal, goal card or "
+        "memory card appeared, what the system wants to change, or before "
+        "approving or rejecting anything."
     ),
     "parameters": {"type": "object", "properties": {}},
 }

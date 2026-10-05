@@ -370,7 +370,7 @@ def resolve_goal_record(
     if not record:
         declared = list(getattr(goal, "context_sources", None) or ())
         payload["record_note"] = (
-            "This goal declares no context_sources in dock.yaml, so there is no "
+            "This goal declares no context_sources in the Dock, so there is no "
             "long-form record to load. The fields above are everything the Dock "
             "holds for it."
             if not declared else
