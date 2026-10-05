@@ -829,3 +829,243 @@ def test_advance_turn_is_atomic_and_sequential(tmp_path):
         assert db.advance_turn("u", seed=99) == (7, 6)    # seed ignored once stored
     finally:
         db.close()
+
+
+# ── turn-identity-v1 (unique id) · classifier-failure-reason-v1 ·
+#    failed-turn-records-v1 ───────────────────────────────────────────────────
+
+
+def _early_exit_generator(result):
+    """An agent loop that returns a result WITHOUT yielding FinalResponse —
+    the shape of every early failure exit in run_agent."""
+    def gen():
+        return result
+        yield  # pragma: no cover — makes this a generator
+    return gen()
+
+
+def _records(store):
+    return list(store.records())
+
+
+class TestUniqueTurnId:
+    def test_every_record_carries_a_uuid7_that_survives_finalization(
+        self, monkeypatch, tmp_store, session_db,
+    ):
+        import uuid
+
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        for i in range(2):
+            _run_turn(Dispatcher(intent_store=tmp_store, session_db=session_db), agent, f"t{i}")
+
+        recs = _records(tmp_store)
+        by_turn = {}
+        for r in recs:
+            by_turn.setdefault(r.turn_id, set()).add(r.turn_uid)
+        # one uid per turn, identical on its pending AND its success record
+        assert all(len(uids) == 1 for uids in by_turn.values())
+        uids = [next(iter(v)) for v in by_turn.values()]
+        assert len(set(uids)) == 2
+        assert all(uuid.UUID(u).version == 7 for u in uids)
+
+    def test_tool_call_rows_carry_the_turn_uid(self):
+        import inspect
+
+        import run_agent
+        from grove import capability_feed
+
+        assert "turn_uid" in capability_feed.FIELDS
+        src = inspect.getsource(run_agent.AIAgent._emit_capability_feed_record)
+        assert '"turn_uid": getattr(_disp, "_current_turn_uid", None)' in src
+
+
+class TestClassifierFailureReason:
+    def test_failed_classification_is_recorded_with_a_clean_reason(
+        self, monkeypatch, tmp_store,
+    ):
+        from grove import classify as _classify_mod
+        from grove import providers as _providers
+
+        _patch_classifier_green(monkeypatch)
+        monkeypatch.setattr(_providers, "_last_classification", None, raising=False)
+        monkeypatch.setattr(
+            _classify_mod, "last_classification_failure",
+            lambda: ("no_tool_call", "RuntimeError"),
+        )
+        d = Dispatcher(intent_store=tmp_store)
+        _run_turn(d, _bare_agent_with_exec([]), "hello")
+
+        rec = _records(tmp_store)[-1]
+        assert rec.intent_class == "unknown" and rec.confidence == 0.0
+        assert rec.classification_status == "failed"
+        assert rec.classification_failure == "no_tool_call: RuntimeError"
+
+    def test_successful_classification_is_ok(self, monkeypatch, tmp_store):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        _run_turn(Dispatcher(intent_store=tmp_store), _bare_agent_with_exec([]), "hi")
+        rec = _records(tmp_store)[-1]
+        assert rec.classification_status == "ok"
+        assert rec.classification_failure is None
+
+    def test_real_low_confidence_unknown_is_not_a_failure(self, monkeypatch, tmp_store):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(
+            monkeypatch, intent_class="unknown", confidence=0.3,
+        )
+        _run_turn(Dispatcher(intent_store=tmp_store), _bare_agent_with_exec([]), "hmm")
+        rec = _records(tmp_store)[-1]
+        assert rec.intent_class == "unknown"
+        assert rec.classification_status == "ok"
+
+    def test_classify_captures_a_cleaned_failure_not_the_raw_text(self, monkeypatch):
+        from grove import classify as _classify_mod
+
+        class _Leaky(Exception):
+            status_code = 401
+
+        def _boom():
+            raise _Leaky("Authorization: Bearer sk-live-SECRET-123 rejected")
+
+        monkeypatch.setattr(_classify_mod, "_telemetry_tier_runtime", _boom)
+        assert _classify_mod.classify_for_routing("anything") is None
+        kind, summary = _classify_mod.last_classification_failure()
+        assert kind == "auth_error"
+        assert summary == "_Leaky (HTTP 401)"
+        assert "SECRET" not in summary and "Bearer" not in summary
+        # ...and it resets on the next successful-path call
+        monkeypatch.setattr(_classify_mod, "_telemetry_tier_runtime", lambda: (_ for _ in ()).throw(ValueError("x")))
+        _classify_mod.classify_for_routing("")          # empty message: skipped
+        assert _classify_mod.last_classification_failure() is None
+
+
+class TestFailedTurnsAreRecorded:
+    def test_early_exit_result_writes_an_error_record(self, monkeypatch, tmp_store):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        agent._run_turn_generator = lambda **kw: _early_exit_generator({
+            "messages": [], "completed": False, "api_calls": 3,
+            "error": "Invalid API response after 3 retries: token=sk-SECRET",
+        })
+        Dispatcher(intent_store=tmp_store).dispatch_turn(agent, user_message="go")
+
+        recs = _records(tmp_store)
+        assert len(recs) == 1
+        assert recs[0].outcome == "error"
+        assert recs[0].failure_kind == "retries_exhausted"
+        assert "SECRET" not in (recs[0].failure_summary or "")
+
+    def test_interrupted_result_is_recorded_as_interrupted(self, monkeypatch, tmp_store):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        agent._run_turn_generator = lambda **kw: _early_exit_generator(
+            {"interrupted": True, "completed": False}
+        )
+        Dispatcher(intent_store=tmp_store).dispatch_turn(agent, user_message="go")
+        rec = _records(tmp_store)[-1]
+        assert rec.outcome == "interrupted" and rec.failure_kind == "interrupted"
+
+    def test_loop_that_raises_still_writes_a_record(self, monkeypatch, tmp_store):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+
+        class _ApiDown(Exception):
+            status_code = 503
+
+        def _raising():
+            def gen():
+                raise _ApiDown("upstream said: X-Api-Key=abc123 invalid")
+                yield  # pragma: no cover
+            return gen()
+
+        agent = _bare_agent_with_exec([])
+        agent._run_turn_generator = lambda **kw: _raising()
+        with pytest.raises(_ApiDown):
+            Dispatcher(intent_store=tmp_store).dispatch_turn(agent, user_message="go")
+        recs = _records(tmp_store)
+        assert len(recs) == 1
+        assert recs[0].outcome == "error"
+        assert recs[0].failure_kind == "provider_error"
+        assert recs[0].failure_summary == "_ApiDown (HTTP 503)"
+
+    def test_failure_before_the_turn_has_an_identity_is_recorded(
+        self, monkeypatch, tmp_store, session_db,
+    ):
+        # Anything raised BEFORE the inner try (here: the session broadcast at
+        # the very top of the turn) used to leave no record at all.
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        d = Dispatcher(intent_store=tmp_store, session_db=session_db)
+        _run_turn(d, agent, "first")                       # turn #1, fine
+
+        def _boom(*a, **kw):
+            raise RuntimeError("session broadcast failed")
+
+        monkeypatch.setattr(d, "broadcast_session_id", _boom)
+        with pytest.raises(RuntimeError):
+            d.dispatch_turn(agent, user_message="second")
+
+        errors = [r for r in _records(tmp_store) if r.outcome == "error"]
+        assert len(errors) == 1
+        assert errors[0].turn_id == "test-session#2"       # its OWN id, not #1
+        assert errors[0].failure_kind == "exception"
+        assert errors[0].user_message_stem == "second"
+
+    def test_empty_response_is_an_error_not_a_pending_success(self, monkeypatch, tmp_store):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        agent._run_turn_generator = lambda **kw: _synthetic_generator(
+            None, {"final_response": "(empty)"}, final_text="(empty)",
+        )
+        Dispatcher(intent_store=tmp_store).dispatch_turn(agent, user_message="go")
+        rec = _records(tmp_store)[-1]
+        assert rec.outcome == "error" and rec.failure_kind == "empty_response"
+
+    def test_normal_turn_writes_exactly_one_record_and_no_failure_fields(
+        self, monkeypatch, tmp_store,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        _run_turn(Dispatcher(intent_store=tmp_store), _bare_agent_with_exec([]), "hi")
+        recs = _records(tmp_store)
+        assert [r.outcome for r in recs] == ["pending"]
+        assert recs[0].failure_kind is None and recs[0].failure_summary is None
+
+
+class TestClosureNeverOverwritesAFailure:
+    def test_next_turn_does_not_turn_an_error_into_success(
+        self, monkeypatch, tmp_store, session_db,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        agent._run_turn_generator = lambda **kw: _early_exit_generator(
+            {"completed": False, "error": "Invalid API response after 3 retries"}
+        )
+        Dispatcher(intent_store=tmp_store, session_db=session_db).dispatch_turn(
+            agent, user_message="fails",
+        )
+        # a brand-new Dispatcher handles the next message and closes the previous turn
+        _run_turn(Dispatcher(intent_store=tmp_store, session_db=session_db), agent, "next")
+
+        latest = {r.turn_id: r.outcome for r in tmp_store.latest_by_turn()}
+        assert latest["test-session#1"] == "error"         # untouched
+        assert latest["test-session#2"] == "pending"
+        assert [r.outcome for r in _records(tmp_store) if r.turn_id == "test-session#1"] == ["error"]
+
+    @pytest.mark.parametrize("outcome", ["error", "interrupted", "governance_terminated"])
+    def test_stale_sweep_leaves_failures_alone(self, tmp_store, outcome):
+        old = (datetime.now(timezone.utc) - timedelta(hours=5)).isoformat()
+        tmp_store.append(IntentRecord(
+            timestamp=old, session_id="s", turn_id="s#1", user_message_stem="x",
+            pattern_hash="h", intent_class="conversation", register_class="casual",
+            complexity_signal="simple", confidence=0.9, outcome=outcome,
+        ))
+        assert tmp_store.sweep_stale_pending() == 0
+        assert [r.outcome for r in tmp_store.records()] == [outcome]

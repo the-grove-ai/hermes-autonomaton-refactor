@@ -112,6 +112,10 @@ VALID_OUTCOMES: frozenset[str] = frozenset({
     "correction",
     "governance_terminated",
     "awaiting_operator",
+    # failed-turn-records-v1 — the turn was stopped before it completed (an
+    # operator interrupt, or the gateway's inactivity timeout). Neither a
+    # success nor a fault. Terminal: never swept to success.
+    "interrupted",
 })
 
 
@@ -227,6 +231,30 @@ class IntentRecord:
     # process memory, so a gateway restart re-arms the flag: the narrowest
     # honest version).
     first_clarification: bool = False
+
+    # turn-identity-v1 — the turn's globally unique, time-ordered id (UUIDv7),
+    # assigned once at turn start and copied unchanged onto every record for
+    # the turn. ``turn_id`` (session#N) stays as the human-readable ordinal.
+    # None on records written before this field existed.
+    turn_uid: Optional[str] = None
+
+    # classifier-failure-reason-v1 — what the Recognition stage did this turn:
+    #   "ok"      the classifier returned a result (a genuine low-confidence
+    #             "unknown" is still "ok")
+    #   "failed"  the classifier call or its parse failed; the turn was routed
+    #             without a classification
+    #   "skipped" no classification was attempted (e.g. a T0 cached answer)
+    # ``classification_failure`` is "<kind>: <safe summary>" for a failure —
+    # see grove.failure_summary; never raw exception text.
+    classification_status: Optional[str] = None
+    classification_failure: Optional[str] = None
+
+    # failed-turn-records-v1 — why the TURN itself failed, for outcomes
+    # ``error`` and ``interrupted``. ``failure_kind`` is from
+    # grove.failure_summary.FAILURE_KINDS; ``failure_summary`` is a short safe
+    # description. Both None on a turn that did not fail.
+    failure_kind: Optional[str] = None
+    failure_summary: Optional[str] = None
 
 
 class IntentStore:

@@ -25,6 +25,7 @@ tracker follows the binding automatically.
 
 from __future__ import annotations
 
+import threading
 import hashlib
 import json
 import logging
@@ -442,6 +443,7 @@ def classify_for_routing(message: str) -> Optional[ClassificationResult]:
     response. None is the commanded graceful-degradation signal (D4):
     the caller routes on default-tier behaviour and the agent still runs.
     """
+    _FAILURE.value = None
     if not isinstance(message, str) or not message.strip():
         logger.debug("[classify] no text message; skipping classification")
         return None
@@ -463,7 +465,24 @@ def classify_for_routing(message: str) -> Optional[ClassificationResult]:
         logger.error(
             "[classify] classification failed; routing without it: %r", exc
         )
+        # classifier-failure-reason-v1 — keep WHY, in safe form, for the
+        # caller to put on the turn's record. The log line above keeps the
+        # full exception; the record gets a kind + a cleaned summary only.
+        from grove.failure_summary import summarize_exception
+
+        _FAILURE.value = summarize_exception(exc)
         return None
+
+
+# Per-thread: classification and the Dispatcher's read of its failure happen
+# on the same thread, back to back.
+_FAILURE = threading.local()
+
+
+def last_classification_failure():
+    """``(kind, summary)`` if the most recent ``classify_for_routing`` call on
+    THIS thread failed, else None. Reset at the start of every call."""
+    return getattr(_FAILURE, "value", None)
 
 
 # ----- internals --------------------------------------------------------------

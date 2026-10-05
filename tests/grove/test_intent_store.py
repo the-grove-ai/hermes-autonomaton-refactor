@@ -190,9 +190,11 @@ class TestOutcomeEnforcement:
         # surfaces in test failure rather than a runtime ValueError.
         # + awaiting_operator (retrieval-ambient-class-v1 P5 — the Sprint 67
         # deferral outcome the store rejected until now; the GATE-A defect).
+        # + interrupted (failed-turn-records-v1 — a turn stopped before it
+        # completed; terminal, never swept to success).
         assert VALID_OUTCOMES == frozenset({
             "pending", "success", "drop", "error", "correction",
-            "governance_terminated", "awaiting_operator",
+            "governance_terminated", "awaiting_operator", "interrupted",
         })
 
     @pytest.mark.parametrize("outcome", sorted(VALID_OUTCOMES))

@@ -273,6 +273,7 @@ from grove.sovereign_prompt_handlers import (
 )
 from grove.operator_input import OperatorInputRequired
 from grove.governance_halt import TerminalGovernanceHalt
+from grove.turn_ids import new_turn_uid
 from grove.errors import TierUnavailableError
 from grove.skills import ANDON_DIRNAME
 
@@ -566,6 +567,43 @@ def _run_guarded_producer(
         _file_producer_failure(producer, exc)
 
 
+def _guarantee_turn_record(dispatch_turn):
+    """failed-turn-records-v1 — guarantee every turn leaves an intent record.
+
+    Wraps :meth:`Dispatcher.dispatch_turn`. A turn used to be able to end with
+    NO record: the agent loop has many early exits (retries exhausted, a
+    non-retryable API error, truncation, compression exhausted, an interrupt)
+    that return a result without ever yielding the final response where the
+    record was written, and anything raised before the turn's inner try block
+    skipped the error write as well.
+
+    Whatever happens — a normal return, an early-exit result, or ANY exception
+    — if the turn has not written its record by the time control leaves
+    ``dispatch_turn``, one is written with a real failure outcome and a cleaned
+    reason (:meth:`Dispatcher._record_unwritten_exit`). Deferrals and governed
+    halts write their own records inside the turn and pass through untouched.
+
+    A decorator rather than an inner method so ``dispatch_turn`` remains the
+    one place the turn's stage order is written down.
+    """
+    import functools
+
+    @functools.wraps(dispatch_turn)
+    def _guarded(self, agent, user_message, **kwargs):
+        self._turn_identity_assigned = False
+        try:
+            result = dispatch_turn(self, agent, user_message, **kwargs)
+        except (OperatorInputRequired, TerminalGovernanceHalt):
+            raise
+        except BaseException as exc:
+            self._record_unwritten_exit(agent, user_message, exc=exc)
+            raise
+        self._record_unwritten_exit(agent, user_message, result=result)
+        return result
+
+    return _guarded
+
+
 class Dispatcher:
     """Grove Autonomaton runtime entry point per GRV-005 § II.
 
@@ -815,6 +853,15 @@ class Dispatcher:
         # only one turn is in flight per Dispatcher at a time, so this
         # instance-attribute carrier is race-free in practice.
         self._current_turn_id: Optional[str] = None
+        # turn-identity-v1 — the current turn's globally unique id (UUIDv7).
+        self._current_turn_uid: Optional[str] = None
+        # classifier-failure-reason-v1 — (kind, summary) when this turn's
+        # classification failed; None otherwise.
+        self._current_turn_classification_failure: Optional[Tuple[str, str]] = None
+        # failed-turn-records-v1 — True once dispatch_turn has assigned this
+        # turn its identity; lets the outer guard tell a failure INSIDE a turn
+        # from one that happened before the turn had an id.
+        self._turn_identity_assigned: bool = False
         self._current_turn_classification: Optional[Any] = None
         # Sprint 53.2 — turn-scoped quarantine-execution flag. Set in
         # ``_handle_andon_halt`` when an "allow once" disposition lets a
@@ -1780,6 +1827,77 @@ class Dispatcher:
 
     # ── Sprint 26 Phase 3 — generator-shaped turn dispatch ──────────────
 
+    def _record_unwritten_exit(
+        self,
+        agent: Any,
+        user_message: Any,
+        *,
+        result: Any = None,
+        exc: Optional[BaseException] = None,
+    ) -> None:
+        """Write the failure record for a turn that ended without one.
+
+        No-op when the turn already wrote its record (the normal case). Never
+        raises: this runs on the way out of a turn that may already be failing.
+        """
+        try:
+            from grove.failure_summary import (
+                summarize_exception, summarize_turn_result,
+            )
+
+            if not self._turn_identity_assigned:
+                # The failure happened before the turn had an identity. Give it
+                # one now so the record is not filed under the PREVIOUS turn.
+                import time as _time
+
+                session_id = self.session_id or getattr(agent, "session_id", None)
+                seq, _prev = self._issue_turn_sequence(session_id)
+                self._turn_counter = seq if seq is not None else self._turn_counter + 1
+                self._current_turn_id = f"{session_id or 'unknown'}#{self._turn_counter}"
+                self._current_turn_uid = new_turn_uid()
+                self._current_turn_classification = None
+                self._current_turn_classification_failure = None
+                self._current_turn_api_call_count = 0
+                self._current_turn_start = _time.monotonic()
+                self._current_turn_tools_yielded = []
+                self._current_turn_tool_invocations = []
+                self._current_turn_escalations = 0
+                self._current_turn_user_message = (
+                    user_message if isinstance(user_message, str) else ""
+                )
+                self._current_turn_outcome_written = False
+                self._turn_identity_assigned = True
+            if self._current_turn_outcome_written:
+                return
+            if exc is not None:
+                kind, summary = summarize_exception(exc)
+                outcome = "interrupted" if kind == "interrupted" else "error"
+            else:
+                verdict = summarize_turn_result(result)
+                if verdict is None:
+                    # A result that looks complete, yet no record was written:
+                    # the turn skipped its own terminal write. Record that
+                    # fact — it is a defect in the turn path, not a success.
+                    verdict = (
+                        "error", "unrecorded_exit",
+                        "turn completed without writing its record",
+                    )
+                outcome, kind, summary = verdict
+            logger.error(
+                "[grove.dispatcher] turn %s ended without an intent record — "
+                "recording outcome=%s failure_kind=%s (%s)",
+                self._current_turn_id, outcome, kind, summary,
+            )
+            self._write_intent_record(
+                agent, outcome=outcome, failure_kind=kind, failure_summary=summary,
+            )
+        except Exception as guard_exc:  # the guard must never mask the turn's own error
+            logger.error(
+                "[grove.dispatcher] could not record the unwritten exit of turn "
+                "%s: %r", self._current_turn_id, guard_exc,
+            )
+
+    @_guarantee_turn_record
     def dispatch_turn(
         self,
         agent: Any,
@@ -1876,7 +1994,11 @@ class Dispatcher:
         else:
             self._turn_counter += 1
         self._current_turn_id = f"{session_id or 'unknown'}#{self._turn_counter}"
+        # turn-identity-v1 — minted once, here, before any record is written.
+        self._current_turn_uid = new_turn_uid()
+        self._turn_identity_assigned = True
         self._current_turn_classification = None
+        self._current_turn_classification_failure = None
         self._current_turn_routing_decision = None
         self._current_turn_t0_pattern_id = None
         self._current_turn_api_call_count = 0
@@ -1971,6 +2093,15 @@ class Dispatcher:
                 return _t0_result
         if not already_routed and isinstance(user_message, str):
             self._classify_and_bind_turn(agent, user_message, ledger)
+            # classifier-failure-reason-v1 — if Recognition failed, keep the
+            # cleaned reason for this turn's record (read on the classifying
+            # thread, immediately after the call).
+            if self._current_turn_classification is None:
+                from grove.classify import last_classification_failure
+
+                self._current_turn_classification_failure = (
+                    last_classification_failure()
+                )
         else:
             from grove.providers import (
                 current_classification as _current_classification,
@@ -2061,14 +2192,25 @@ class Dispatcher:
                 )
                 _tier_fallbacks_used.add(_fb_tier)
                 continue  # re-enter the turn at the fallback tier
-            except BaseException:
+            except BaseException as _turn_exc:
                 # Sprint 28 Phase 3 — error terminal. Any exception escaping
                 # the drive loop (generator raise, internal error, KeyboardInterrupt)
                 # writes an IntentRecord with outcome="error" before
                 # propagating. ``_write_intent_record`` is idempotent per
                 # turn via the outcome_written flag, so an exception after a
                 # FinalResponse already wrote "pending" does NOT double-write.
-                self._write_intent_record(agent, outcome="error")
+                # failed-turn-records-v1 — the record carries a failure kind
+                # and a cleaned summary (class name + HTTP status), never the
+                # raw exception text.
+                from grove.failure_summary import summarize_exception as _summ
+
+                _fk, _fs = _summ(_turn_exc)
+                self._write_intent_record(
+                    agent,
+                    outcome="interrupted" if _fk == "interrupted" else "error",
+                    failure_kind=_fk,
+                    failure_summary=_fs,
+                )
                 raise
             finally:
                 # Ensure the generator is closed even if _drive_generator
@@ -2564,12 +2706,24 @@ class Dispatcher:
                     # If the operator walks away, the Implicit Success
                     # Sweep on a future Dispatcher init finalizes the
                     # orphaned pending as success.
-                    self._write_intent_record(
-                        agent,
-                        outcome="pending",
-                        final_response_chars=len(yielded.content or ""),
-                        response_content=yielded.content or "",
-                    )
+                    # failed-turn-records-v1 — "(empty)" is the agent loop's
+                    # sentinel for "no content after every retry". It used to
+                    # be written pending and later swept to success.
+                    if (yielded.content or "").strip() == "(empty)":
+                        self._write_intent_record(
+                            agent,
+                            outcome="error",
+                            final_response_chars=0,
+                            failure_kind="empty_response",
+                            failure_summary="model returned no content after retries",
+                        )
+                    else:
+                        self._write_intent_record(
+                            agent,
+                            outcome="pending",
+                            final_response_chars=len(yielded.content or ""),
+                            response_content=yielded.content or "",
+                        )
                     # Sprint 53.2 — the operator has now seen the skill's
                     # output (FinalResponse is recorded). If a quarantined
                     # skill ran this turn under "allow once", fire the
@@ -3022,6 +3176,8 @@ class Dispatcher:
         intent_class_override: Optional[str] = None,
         tier_override: Optional[str] = None,
         clarify_deferral: bool = False,
+        failure_kind: Optional[str] = None,
+        failure_summary: Optional[str] = None,
     ) -> None:
         """Write an IntentRecord for the current turn if the store is wired.
 
@@ -3084,6 +3240,20 @@ class Dispatcher:
                 complexity_signal = classification.complexity_signal
                 confidence = classification.confidence
                 goal_alignment = classification.goal_alignment
+
+            # classifier-failure-reason-v1 — what Recognition did this turn.
+            # A genuine low-confidence "unknown" from the classifier is "ok";
+            # only a failed call is "failed"; a turn that never classifies (a
+            # T0 cached answer, a vanilla install) is "skipped".
+            _cls_fail = self._current_turn_classification_failure
+            _classification_failure: Optional[str] = None
+            if classification is not None:
+                _classification_status = "ok"
+            elif _cls_fail is not None:
+                _classification_status = "failed"
+                _classification_failure = f"{_cls_fail[0]}: {_cls_fail[1]}"
+            else:
+                _classification_status = "skipped"
 
             duration_ms = 0.0
             if self._current_turn_start is not None:
@@ -3179,6 +3349,11 @@ class Dispatcher:
                 first_clarification=self._mark_first_clarification(
                     session_id, clarify_deferral=clarify_deferral,
                 ),
+                turn_uid=self._current_turn_uid,
+                classification_status=_classification_status,
+                classification_failure=_classification_failure,
+                failure_kind=failure_kind,
+                failure_summary=failure_summary,
             )
             self._intent_store.append(record)
             self._current_turn_outcome_written = True

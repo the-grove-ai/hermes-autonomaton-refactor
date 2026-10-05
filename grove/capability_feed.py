@@ -64,11 +64,14 @@ __all__ = [
     "utc_now_iso",
 ]
 
-# The thirteen locked fields, in canonical order.
+# The locked fields, in canonical order. ``turn_uid`` (turn-identity-v1) is the
+# link key to the turn's intent record: globally unique, unlike ``turn_id``
+# (session#N), which is kept for readability.
 FIELDS = (
     "ts",
     "session_id",
     "turn_id",
+    "turn_uid",        # nullable — null on rows written before the field existed
     "capability_id",   # nullable — null = non-capability invocation
     "tool_name",
     "intent_class",

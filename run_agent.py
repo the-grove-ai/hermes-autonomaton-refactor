@@ -13131,13 +13131,13 @@ class AIAgent:
             zone = _zone_classify(tool_name).zone
         except Exception:
             zone = None
-        turn_id = getattr(
-            getattr(self, "_dispatcher_singleton", None), "_current_turn_id", None
-        ) or self.session_id
+        _disp = getattr(self, "_dispatcher_singleton", None)
+        turn_id = getattr(_disp, "_current_turn_id", None) or self.session_id
         capfeed.enqueue({
             "ts": capfeed.utc_now_iso(),
             "session_id": self.session_id,
             "turn_id": turn_id,
+            "turn_uid": getattr(_disp, "_current_turn_uid", None),
             "capability_id": self._capability_id_for_invocation(tool_name, zone),
             "tool_name": tool_name,
             "intent_class": cls.intent_class if cls else None,
