@@ -4941,6 +4941,198 @@ def _audit_economics_html(report, scale: int, chain=None) -> str:
     return f'<div id="audit-economics">{"".join(blocks)}</div>'
 
 
+def _clock(value) -> str:
+    """A record's time as the operator's wall clock (the machine's zone)."""
+    from datetime import datetime
+    try:
+        return datetime.fromisoformat(str(value)).astimezone().strftime("%-I:%M:%S %p")
+    except (TypeError, ValueError):
+        return "—"
+
+
+def _trace_turn_line(step) -> str:
+    """One step's turn, as the audit trail names it."""
+    if not step.get("on_record"):
+        return '<span class="sc-event">no turn on record</span>'
+    bits = [str(step.get("turn_id") or "")]
+    if step.get("tier"):
+        bits.append(str(step["tier"]))
+    calls = step.get("model_calls") or 0
+    bits.append("no model call" if not calls else f"{calls} model call{'' if calls == 1 else 's'}")
+    if step.get("seconds") is not None:
+        bits.append(_sc_seconds(step["seconds"]))
+    if step.get("record_hash"):
+        bits.append("record " + str(step["record_hash"])[:12])
+    return _esc(" · ".join(b for b in bits if b))
+
+
+def _trace_html(report) -> str:
+    """The decision trace: every decision of the run with its inputs, who
+    decided and why, the operator's ruling and what the loop did — each step
+    naming the turn that carries it. Built from records; nothing is
+    summarized. One collapsed row per item; a revised item and one the model
+    asked about open on their own."""
+    if not report["goals"]:
+        return ('<div id="trace-page"><div class="card"><h4>Decision trace</h4>'
+                '<p>No decision work has run yet.</p></div></div>')
+    blocks = []
+    for g in report["goals"]:
+        one, many = g["item_name"]
+        items = g["items"]
+        decided = [i for i in items if i["rulings"]]
+        by_keg = sum(1 for i in decided if i["keg"])
+        revised = sum(1 for i in decided if i["revised"])
+        unreviewed = sum(1 for i in decided if i["verdict"] == "not reviewed")
+        asked = sum(1 for i in items if i["question"])
+        header = (
+            f'<header class="sc-header"><div class="sc-eyebrow sc-event">DECISION TRACE · '
+            f'{_esc(str(g["title"]).upper())} · RUN {_esc(g["run_number"])} · {len(items)} '
+            f'{_esc(many.upper())}</div>'
+            f'<h1>{len(decided)} decisions on record. <span class="sc-event">Each with its '
+            f'inputs, its reasoning and your ruling.</span></h1>'
+            f'<p>Read straight from the decision log, the turn records and the ledger; '
+            f'nothing here is summarized by a model. {by_keg} decided by the keg, '
+            f'{len(decided) - by_keg} by a model; {revised} revised, {unreviewed} not '
+            f'reviewed, {asked} where the model asked first.</p>'
+            f'<div class="sc-check-line"><a class="sc-run sc-download" '
+            f'href="/portal/fragments/trace/export?goal={_esc(g["goal"])}" '
+            f'download="{_esc(g["goal"])}-run-{_esc(g["run_number"])}.jsonl">'
+            f'Download as JSONL ({len(decided)} lines)</a>'
+            f'<span class="sc-quiet">One decision per line: inputs, proposed answer, '
+            f'reasoning, who decided, your final answer and verdict.</span></div></header>')
+
+        rows = ""
+        for it in items:
+            who_cls = "sc-keg" if it["keg"] else "sc-model"
+            verdict_cls = " sc-event" if it["revised"] else ""
+            verdict = it["verdict"]
+            if it["revised"]:
+                verdict += f' · was {_keg_value(it["proposed"])}'
+            elif any(ev["kind"] == "proposed" for ev in it["loop"]):
+                verdict += " · keg proposed"
+            summary = (
+                f'<summary><span class="sc-n">{it["order"]}</span>'
+                f'<span class="sc-trace-label">{_esc(it["label"] or it["item_id"])}</span>'
+                f'<span class="sc-mono">{_esc(it["final_text"] or it["proposed_text"])}</span>'
+                f'<span class="sc-chip {who_cls}">{_esc(it["decided_by"].upper())}</span>'
+                f'<span class="sc-trace-verdict{verdict_cls}">{_esc(verdict)}</span></summary>')
+
+            def _step(label, body, turn=None, mine=False):
+                return (
+                    f'<div class="sc-tstep"><div class="sc-eyebrow'
+                    f'{" sc-event" if mine else ""}">{_esc(label)}</div>'
+                    f'<div class="sc-tbody">{body}'
+                    + (f'<div class="sc-tturn">{turn}</div>' if turn else "")
+                    + '</div></div>')
+
+            inputs = "".join(
+                f'<div><span class="sc-quiet">{_esc(k)}</span> {_esc(v)}</div>'
+                for k, v in it["inputs"].items())
+            steps = _step("ARRIVED", f'<div class="sc-mono">{_esc(it["item_id"])}</div>{inputs}')
+            if it["question"]:
+                steps += _step(
+                    "THE MODEL ASKED · " + _clock(it["question"]["at"]),
+                    f'<div>{_esc(it["question"]["text"])}</div>'
+                    f'<div class="sc-quiet">Nothing was decided on this turn.</div>',
+                    _trace_turn_line(it["question"]))
+            steps += _step(
+                "DECIDED · " + _clock(it["at"]),
+                f'<div><strong>{_esc(it["proposed_text"])}</strong></div>'
+                f'<div>{_esc(it["why"])}</div>',
+                _trace_turn_line(it["turn"])
+                + (f' · one of {it["turn"]["shared_with"]} decided in this turn'
+                   if it["turn"].get("shared_with") else ""))
+            for r in it["rulings"]:
+                if r["decision"] == "accepted":
+                    body = (f'<div>Decided by the keg under its signed authority. '
+                            f'<strong>Not reviewed.</strong></div>')
+                    label = "ACCEPTED · " + _clock(r["at"])
+                elif r["decision"] == "correct":
+                    body = (f'<div>You revised it to <strong>'
+                            f'{_esc(it["final_text"] if r is it["rulings"][-1] else "")}'
+                            f'</strong>'
+                            + (f' after it was {_esc({"confirm": "confirmed", "accepted": "accepted", "correct": "revised"}.get(r["after"], r["after"]))}.'
+                               if r.get("after") else ".") + '</div>')
+                    label = "YOU REVISED · " + _clock(r["at"])
+                else:
+                    how = {"button": "by button", "exact": "by typing"}.get(r.get("how"), "")
+                    body = f'<div>You confirmed it{" " + how if how else ""}.</div>'
+                    label = "YOU CONFIRMED · " + _clock(r["at"])
+                steps += _step(label, body, _trace_turn_line(r),
+                               mine=r["decision"] == "correct")
+            for ev in it["loop"]:
+                if ev["kind"] == "flagged":
+                    halted = (" The keg was halted." if ev["halted"] else "")
+                    if ev["flag"] == "anomaly":
+                        said = (f"A miss: {it['decided_by']} answered "
+                                f"{_keg_value(it['proposed'])} and you revised it")
+                    else:
+                        said = ("A tier-down pattern: enough confirmed decisions matched "
+                                "the reference table to make this standard work")
+                    steps += _step(
+                        "JIDOKA FLAGGED · " + _clock(ev["at"]),
+                        f'<div>{_esc(said)}.{_esc(halted)}</div>'
+                        f'<div class="sc-tturn">andon {_esc(str(ev["andon_id"])[:12])}</div>',
+                        mine=True)
+                elif ev["kind"] == "proposed":
+                    steps += _step(
+                        "KAIZEN PROPOSED · " + _clock(ev["at"]),
+                        f'<div>Keg v{_esc(ev["version"])}, replayed on {_esc(ev["replayed"])} '
+                        f'{_esc(many)}; {_esc(ev["would_change"])} would change.</div>',
+                        mine=True)
+                else:
+                    steps += _step(
+                        "SIGNED · " + _clock(ev["at"]),
+                        f'<div>Keg v{_esc(ev["version"])} signed by the '
+                        f'{_esc(ev["by"] or "operator")}; it is standard work from here.</div>',
+                        mine=True)
+            example = json.dumps(it["example"], ensure_ascii=False, sort_keys=True)
+            opened = " open" if (it["revised"] or it["question"]) else ""
+            rows += (
+                f'<details class="sc-trace{" sc-trace-revised" if it["revised"] else ""}"{opened}>'
+                f'{summary}<div class="sc-tsteps">{steps}</div>'
+                f'<div class="sc-eyebrow">AS ONE TRAINING EXAMPLE</div>'
+                f'<code class="sc-rule">{_esc(example)}</code></details>')
+        legend = (
+            '<div class="sc-legend"><span><i class="sc-swatch sc-model"></i>Decided by a model'
+            '</span><span><i class="sc-swatch sc-keg"></i>Decided by the keg</span>'
+            '<span class="sc-quiet">Open a row for its full trace. Revised items and '
+            'questions are open already.</span></div>')
+        footer = (
+            f'<footer class="sc-footer">Every step names the turn that carries it; the audit '
+            f'check on the Audit page verifies those turn records are unaltered. The export '
+            f'holds only decided {_esc(many)}. An item marked not reviewed was decided by the '
+            f'keg under its signed authority and is flagged as such in the export '
+            f'(reviewed_by_operator: false), so it is never mistaken for your judgment.'
+            f'</footer>')
+        blocks.append(f'<div class="sc sc-tracepage">{header}<section class="sc-panel">'
+                      f'{legend}<div class="sc-traces">{rows}</div></section>{footer}</div>')
+    return f'<div id="trace-page">{"".join(blocks)}</div>'
+
+
+async def handle_trace(request: web.Request) -> web.Response:
+    """The decision trace for the current run. Read-only."""
+    from grove import audit as audit_mod
+    try:
+        return _html_fragment(_trace_html(audit_mod.trace()))
+    except Exception as exc:  # noqa: BLE001 — visible error fragment, never a blank panel
+        logger.error("[portal] decision trace failed: %r", exc)
+        return _html_fragment(
+            f'<div id="trace-page"><div class="error-card"><h3>Trace unavailable</h3>'
+            f'<p>{_esc(type(exc).__name__)}: {_esc(exc)}</p></div></div>')
+
+
+async def handle_trace_export(request: web.Request) -> web.Response:
+    """The run's decisions as JSON Lines, one per line. Read-only."""
+    from grove import audit as audit_mod
+    goal = request.query.get("goal") or None
+    body = audit_mod.trace_export(goal=goal)
+    return web.Response(
+        text=body, content_type="application/x-ndjson", charset="utf-8",
+        headers={"Content-Disposition":
+                 f'attachment; filename="{(goal or "decisions")}-trace.jsonl"'})
+
+
 SCALES_DEFAULT = 1_000_000      # the volume the page opens on
 
 
@@ -5085,6 +5277,8 @@ def register_fragment_routes(app: web.Application) -> None:
     app.router.add_get("/portal/fragments/audit/", handle_audit)
     app.router.add_get("/portal/fragments/audit/check", handle_audit_check)
     app.router.add_get("/portal/fragments/audit/economics", handle_audit_economics)
+    app.router.add_get("/portal/fragments/trace/", handle_trace)
+    app.router.add_get("/portal/fragments/trace/export", handle_trace_export)
     # goal-spine-v1 P4 — the in-shell goal detail (attached artifacts +
     # detach controls); the shell's generic hash router maps
     # #fragments/goal/<id> onto this path with no JS change.

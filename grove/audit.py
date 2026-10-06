@@ -616,6 +616,203 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
             "included": list(INCLUDED_COMPONENTS), "not_included": dict(NOT_INCLUDED)}
 
 
+def trace(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dict[str, Any]:
+    """Every decision of a goal's current run as one readable trace, in order.
+
+    For each item: what arrived (its inputs), any question the model declared
+    it was asking, who decided and why (the keg version and the rule that
+    fired, or the model, its tier and its one-line reasoning), every ruling
+    the operator made on it, and what the improvement loop did about it — each
+    step with the turn that carries it. Read off the decision log, the intent
+    records and the Kaizen ledger; nothing here is summarized by a model.
+
+    ``example`` on each item is that decision as one training example: inputs,
+    proposed answer, reasoning, who decided, the operator's final answer and
+    verdict. Returns ``{"goals": [...]}`` like :func:`economics`."""
+    from grove.decision_work import (
+        DECISION_ACCEPTED, DECISION_CONFIRM, DECISION_CORRECT, KIND_DECIDED,
+        KIND_PROPOSED, DecisionLog, DecisionWork, config_for_goal,
+    )
+
+    base = _home(home)
+    rows = _jsonl(base / "intent_records.jsonl")
+    intents: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        if row.get("turn_uid"):
+            intents[row["turn_uid"]] = row
+    asked = sorted(
+        (r for r in intents.values()
+         if ((r.get("stages") or {}).get("execution") or {}).get("asked")),
+        key=lambda r: r.get("timestamp") or "")
+    events: List[Dict[str, Any]] = []
+    ledger = _ledger_dir(base)
+    if ledger.is_dir():
+        for path in ledger.glob("*.jsonl"):
+            events += _jsonl(path)
+    events.sort(key=lambda e: e.get("timestamp") or "")
+    proposals = {e["andon_id"]: e for e in events
+                 if e.get("event_type") == "kaizen_proposal" and e.get("andon_id")}
+    signed = {e["proposal_id"]: e for e in events
+              if e.get("event_type") == "new_standard_work" and e.get("proposal_id")}
+
+    def _step_turn(uid: Any) -> Dict[str, Any]:
+        row = intents.get(uid) or {}
+        stages = row.get("stages") or {}
+        execution = stages.get("execution") or {}
+        match = (stages.get("recognition") or {}).get("phrase_match") or {}
+        return {
+            "turn_id": row.get("turn_id"), "turn_uid": uid,
+            "tier": row.get("tier_selected"), "model": row.get("model_used"),
+            "model_calls": int(execution.get("model_calls", row.get("api_calls") or 0) or 0),
+            "seconds": (row.get("duration_ms") or 0) / 1000.0 if row else None,
+            "record_hash": row.get("record_hash"), "on_record": bool(row),
+            "how": match.get("match"),
+        }
+
+    verdict_word = {DECISION_CONFIRM: "confirmed", DECISION_CORRECT: "revised",
+                    DECISION_ACCEPTED: "not reviewed"}
+    out: List[Dict[str, Any]] = []
+    directory = base / "decisions"
+    for log_path in sorted(directory.glob("*.jsonl")) if directory.is_dir() else []:
+        if goal and log_path.stem != goal:
+            continue
+        log = DecisionLog(log_path.stem, directory=directory)
+        run = log.current_run()
+        if run is None:
+            continue
+        records = log.run_records()
+        shown = _presentation(log_path.stem)
+        try:
+            work = DecisionWork(config_for_goal(log_path.stem))
+        except ValueError:
+            work = None
+        proposed = [r for r in records if r.get("kind") == KIND_PROPOSED]
+        rulings: Dict[str, List[Dict[str, Any]]] = {}
+        for r in records:
+            if r.get("kind") == KIND_DECIDED:
+                rulings.setdefault(r["ref"], []).append(r)
+        by_decided = {d["id"]: p for p in proposed for d in rulings.get(p["id"], [])}
+        shared: Dict[Any, int] = {}
+        for p in proposed:
+            if p.get("turn_uid"):
+                shared[p["turn_uid"]] = shared.get(p["turn_uid"], 0) + 1
+
+        loop: Dict[str, List[Dict[str, Any]]] = {}
+        started = run.get("ts") or ""
+        for e in events:
+            if e.get("event_type") != "andon_event" or e.get("goal") != log_path.stem:
+                continue
+            if (e.get("timestamp") or "") < started:
+                continue
+            details = e.get("details") or {}
+            item_id = details.get("item_id")
+            if not item_id:
+                # A tier-down flag names the decisions it rests on; it belongs
+                # to the last of them — the confirmation that met the rule.
+                ids = [p.get("decided_id") for p in (e.get("provenance") or [])]
+                owner = by_decided.get(ids[-1]) if ids else None
+                item_id = owner["item_id"] if owner else None
+            if not item_id:
+                continue
+            step = {"kind": "flagged", "at": e.get("timestamp"), "flag": e.get("flag"),
+                    "detector": e.get("detector"), "andon_id": e.get("andon_id"),
+                    "summary": e.get("summary"), "halted": list(e.get("halted") or [])}
+            loop.setdefault(item_id, []).append(step)
+            proposal = proposals.get(e.get("andon_id"))
+            if proposal:
+                loop[item_id].append({
+                    "kind": "proposed", "at": proposal.get("timestamp"),
+                    "version": proposal.get("version"),
+                    "proposal_id": proposal.get("proposal_id"),
+                    "replayed": proposal.get("replayed"),
+                    "would_change": proposal.get("would_change")})
+                sign = signed.get(proposal.get("proposal_id"))
+                if sign:
+                    loop[item_id].append({
+                        "kind": "signed", "at": sign.get("timestamp"),
+                        "version": sign.get("version"), "by": sign.get("signed_by")})
+
+        items: List[Dict[str, Any]] = []
+        previous_at = started
+        for order, p in enumerate(proposed, 1):
+            turn = _step_turn(p.get("turn_uid"))
+            split = shared.get(p.get("turn_uid"), 1)
+            if split > 1 and turn["seconds"] is not None:
+                turn["seconds"] /= split
+                turn["shared_with"] = split
+            keg = p.get("keg") or None
+            ruled = [{
+                "decision": d.get("decision"), "word": verdict_word.get(d.get("decision"), "?"),
+                "output": dict(d.get("output") or {}), "at": d.get("ts"),
+                "after": d.get("after"), "by": d.get("by"),
+                **_step_turn(d.get("turn_uid")),
+            } for d in rulings.get(p["id"], [])]
+            final = ruled[-1] if ruled else None
+            # A declared question belongs to the item proposed next after it,
+            # in the same session.
+            question = None
+            for row in asked:
+                at = row.get("timestamp") or ""
+                if (previous_at <= at <= (p.get("ts") or "")
+                        and row.get("session_id") == p.get("session_id")):
+                    question = {"text": row["stages"]["execution"].get("question"),
+                                "at": at, **_step_turn(row.get("turn_uid"))}
+            previous_at = p.get("ts") or previous_at
+            why = work.why(p) if work is not None else (p.get("reasoning") or "")
+            value = (work.value_text if work is not None else
+                     (lambda o: ", ".join(f"{k} {v}" for k, v in o.items())))
+            items.append({
+                "order": order, "item_id": p["item_id"],
+                "label": str((p.get("inputs") or {}).get(shown["label_key"], ""))
+                         if shown["label_key"] else "",
+                "inputs": dict(p.get("inputs") or {}),
+                "proposed": dict(p.get("output") or {}),
+                "proposed_text": value(p.get("output") or {}),
+                "final_text": value(final["output"]) if final else None,
+                "decided_by": (f"keg v{keg.get('version')}" if keg
+                               else f"model ({p.get('tier') or turn['tier'] or '?'})"),
+                "keg": keg, "tier": p.get("tier") or turn["tier"],
+                "reasoning": (p.get("reasoning") or "").strip(), "why": why,
+                "at": p.get("ts"), "batch": p.get("batch"), "turn": turn,
+                "question": question, "rulings": ruled,
+                "verdict": final["word"] if final else "awaiting the operator",
+                "revised": bool(final and final["decision"] == DECISION_CORRECT),
+                "loop": loop.get(p["item_id"], []),
+                "example": {
+                    "goal": log_path.stem, "run": run.get("run_number"),
+                    "item_id": p["item_id"], "inputs": dict(p.get("inputs") or {}),
+                    "proposed": dict(p.get("output") or {}),
+                    "reasoning": (p.get("reasoning") or "").strip(),
+                    "decided_by": "keg" if keg else "model",
+                    "keg_version": keg.get("version") if keg else None,
+                    "tier": p.get("tier") or turn["tier"], "model": turn["model"],
+                    "question_asked": question["text"] if question else None,
+                    "final": dict(final["output"]) if final else None,
+                    "verdict": final["word"] if final else None,
+                    "reviewed_by_operator": bool(
+                        final and final["decision"] != DECISION_ACCEPTED),
+                    "turn_uid": p.get("turn_uid"), "record_hash": turn["record_hash"],
+                },
+            })
+        out.append({
+            "goal": log_path.stem, "title": shown["title"] or log_path.stem,
+            "item_name": shown["item_name"], "run_number": run.get("run_number"),
+            "label": run.get("label") or "", "items": items,
+        })
+    return {"goals": out}
+
+
+def trace_export(home: Optional[Path] = None, *, goal: Optional[str] = None) -> str:
+    """The trace as JSON Lines: one decision per line, in order. Only decided
+    items are exported — an item still waiting has no answer to learn from."""
+    lines = [
+        json.dumps(item["example"], sort_keys=True, ensure_ascii=False)
+        for g in trace(home, goal=goal)["goals"] for item in g["items"]
+        if item["example"]["final"] is not None
+    ]
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
 def _periods(units: List[Dict[str, Any]], shown: Mapping[str, Any]) -> List[Dict[str, Any]]:
     """The run before its batch and the batch itself, side by side: how much
     the keg decided, what each item cost in model calls and time, and how the

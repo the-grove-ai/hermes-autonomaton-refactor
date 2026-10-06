@@ -274,6 +274,7 @@ def _loop_home(tmp_path, monkeypatch, *, sign_v2=True):
          "dock_goal": GOAL, "version": 1, "signed_by": "operator",
          "timestamp": "2026-01-01T10:05:00+00:00"},
         {"event_type": "andon_event", "goal": GOAL, "detector": "correction",
+         "andon_id": "a2", "flag": "anomaly",
          "halted": ["keg:mt:v1"], "timestamp": "2026-01-01T10:11:30+00:00",
          "details": {"item_id": "m4", "served": {"tag": "finance"}, "corrected": {"tag": "ops"}}},
     ]
@@ -283,6 +284,7 @@ def _loop_home(tmp_path, monkeypatch, *, sign_v2=True):
               [{"if": "channel == 'chan-m4'", "defer": True}, always], feedback=["narrower"])
         events += [
             {"event_type": "kaizen_proposal", "proposal_id": "p2", "pattern_id": "keg:mt:v2",
+             "andon_id": "a2", "version": 2, "replayed": 4, "would_change": 1,
              "timestamp": "2026-01-01T10:14:00+00:00"},
             {"event_type": "new_standard_work", "proposal_id": "p2", "pattern_id": "keg:mt:v2",
              "dock_goal": GOAL, "version": 2, "signed_by": "operator",
@@ -477,3 +479,71 @@ def test_a_batch_shares_its_turn_and_splits_the_scorecard_three_ways(tmp_path, m
     # A run with no batch has one period, and says nothing about periods.
     assert "against" not in fragments._scorecard_html(
         {**g, "periods": []}, 10_000, "0").split("Who decided")[0]
+
+
+# ── the decision trace ────────────────────────────────────────────────
+
+
+def test_the_trace_reads_each_decision_step_by_step_from_records(tmp_path, monkeypatch):
+    from grove.api import fragments
+
+    home = _loop_home(tmp_path, monkeypatch)
+    [g] = audit.trace(home)["goals"]
+    assert (g["title"], g["run_number"], len(g["items"])) == ("Message tagging", 3, 6)
+    m4 = g["items"][3]
+    assert (m4["label"], m4["decided_by"], m4["verdict"], m4["revised"]) == (
+        "chan-m4", "keg v1", "revised", True)
+    assert m4["inputs"] == {"channel": "chan-m4"} and m4["turn"]["on_record"] is True
+    assert [r["word"] for r in m4["rulings"]] == ["revised"]
+    # The loop's steps hang on the item that caused them, in order.
+    assert [(e["kind"], e.get("version")) for e in m4["loop"]] == [
+        ("flagged", None), ("proposed", 2), ("signed", 2)]
+    assert m4["loop"][0]["halted"] == ["keg:mt:v1"]
+    # One decision as one training example: nothing but what is on record.
+    assert m4["example"] == {
+        "goal": GOAL, "run": 3, "item_id": "m4", "inputs": {"channel": "chan-m4"},
+        "proposed": {"tag": "finance"}, "reasoning": "", "decided_by": "keg",
+        "keg_version": 1, "tier": "T0", "model": "pattern_cache", "question_asked": None,
+        "final": {"tag": "ops"}, "verdict": "revised", "reviewed_by_operator": True,
+        "turn_uid": "u-m4", "record_hash": m4["turn"]["record_hash"]}
+    lines = audit.trace_export(home).splitlines()
+    assert len(lines) == 6 and json.loads(lines[3]) == m4["example"]
+
+    html = fragments._trace_html(audit.trace(home))
+    for text in ("DECISION TRACE · MESSAGE TAGGING · RUN 3 · 6 MESSAGES",
+                 "6 decisions on record.", "Download as JSONL (6 lines)",
+                 f"/portal/fragments/trace/export?goal={GOAL}",
+                 "revised · was finance", "YOU REVISED", "JIDOKA FLAGGED",
+                 "A miss: keg v1 answered finance and you revised it. The keg was halted.",
+                 "KAIZEN PROPOSED", "AS ONE TRAINING EXAMPLE", "no model call"):
+        assert text in html, text
+    assert html.count('<details class="sc-trace') == 6
+    assert html.count('sc-trace-revised" open') == 1          # the revised item is open
+    assert "Trace</a>" in (REPO / "gateway" / "assets" / "portal" / "index.html").read_text()
+
+
+def test_an_unreviewed_keg_decision_is_never_exported_as_the_operators_judgment(
+        tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    monkeypatch.setattr(pc, "default_pattern_cache_path", lambda: tmp_path / "pattern_cache.db")
+    log = DecisionLog(GOAL, directory=tmp_path / "decisions")
+    log.append({"kind": "run_started", "run_id": "r", "run_number": 1, "label": ""})
+    _intent(tmp_path, "u-b", tier="T0", model="session_rule", calls=0,
+            tokens={"input": 0, "output": 0, "cache_read": 0}, ms=200.0)
+    waiting = None
+    for name, decision in (("a", "accepted"), ("b", "accepted"), ("c", None)):
+        p = log.append({"kind": "proposed", "run_id": "r", "item_id": name,
+                        "inputs": {"channel": name}, "output": {"tag": "finance"}, "tier": "T0",
+                        "keg": {"name": "k", "version": 2, "pattern_id": "keg:k:v2"},
+                        "turn_uid": "u-b", "batch": "B"})
+        if decision:
+            log.append({"kind": "decided", "run_id": "r", "ref": p["id"], "item_id": name,
+                        "decision": decision, "output": {"tag": "finance"}, "by": "keg_authority",
+                        "turn_uid": "u-b"})
+    [g] = audit.trace(tmp_path)["goals"]
+    a = g["items"][0]
+    assert (a["verdict"], a["example"]["reviewed_by_operator"]) == ("not reviewed", False)
+    assert a["turn"]["shared_with"] == 3 and a["turn"]["seconds"] == pytest.approx(0.2 / 3)
+    # An item still waiting has no answer, so it is not a training example.
+    assert g["items"][2]["verdict"] == "awaiting the operator"
+    assert len(audit.trace_export(tmp_path).splitlines()) == 2
