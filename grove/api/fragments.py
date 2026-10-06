@@ -4172,6 +4172,61 @@ def _hours(value) -> str:
     return f"{value / 24:,.0f} days"
 
 
+def _audit_time_chart_svg(units, width: int = 760, height: int = 250) -> str:
+    """Seconds to decide each item, in order. A keg's bar is a fraction of a
+    second against a model's ten or more, so it would vanish at true scale:
+    every keg-decided item gets a green stub tall enough to see, with its real
+    time above it and a "keg" tag beneath. A corrected item is tagged too —
+    that is where the line stopped. Inline SVG, no script."""
+    if not units:
+        return ""
+    pad_l, pad_r, top, base = 16, 16, 34, height - 46
+    span = (width - pad_l - pad_r) / len(units)
+    bar_w = max(6.0, span * 0.62)
+    tallest = max((u["deciding"]["seconds"] or 0.0) for u in units) or 1.0
+    colors = {"T1": "#58a6ff", "T2": "#d29922", "T3": "#f85149"}
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
+        f'width="100%" role="img" aria-label="Seconds to decide each item, in order">',
+        f'<rect width="{width}" height="{height}" fill="#161b22" rx="4"/>',
+        f'<text x="{pad_l}" y="18" fill="#e6edf3" font-size="12" font-weight="600">'
+        f'Seconds to decide each item, in order</text>',
+        f'<rect x="{width - 290}" y="9" width="10" height="10" fill="#3fb950"/>'
+        f'<text x="{width - 275}" y="18" fill="#8b949e" font-size="11">keg, no model call</text>'
+        f'<rect x="{width - 150}" y="9" width="10" height="10" fill="#58a6ff"/>'
+        f'<text x="{width - 135}" y="18" fill="#8b949e" font-size="11">decided by a model</text>',
+        f'<line x1="{pad_l}" y1="{base}" x2="{width - pad_r}" y2="{base}" stroke="#30363d"/>',
+    ]
+    for i, u in enumerate(units):
+        seconds = u["deciding"]["seconds"] or 0.0
+        x = pad_l + i * span + (span - bar_w) / 2
+        cx = x + bar_w / 2
+        if u["keg"]:
+            bar_h, color = 7.0, "#3fb950"     # a visible stub; the label carries the truth
+        else:
+            bar_h = max(2.0, (base - top) * seconds / tallest)
+            color = colors.get(u["tier"] or "", "#8b949e")
+        label = f"{seconds:.1f}" if seconds < 100 else f"{seconds:.0f}"
+        parts.append(
+            f'<rect x="{x:.1f}" y="{base - bar_h:.1f}" width="{bar_w:.1f}" '
+            f'height="{bar_h:.1f}" fill="{color}" rx="1"/>'
+            f'<text x="{cx:.1f}" y="{base - bar_h - 4:.1f}" fill="#e6edf3" font-size="10" '
+            f'text-anchor="middle">{label}</text>'
+            f'<text x="{cx:.1f}" y="{base + 14}" fill="#8b949e" font-size="10" '
+            f'text-anchor="middle">{u["order"]}</text>'
+        )
+        if u["keg"]:
+            parts.append(
+                f'<text x="{cx:.1f}" y="{base + 27}" fill="#3fb950" font-size="10" '
+                f'font-weight="600" text-anchor="middle">keg</text>')
+        if u["corrected"]:
+            parts.append(
+                f'<text x="{cx:.1f}" y="{base + 40}" fill="#f85149" font-size="10" '
+                f'font-weight="600" text-anchor="middle">corrected</text>')
+    parts.append("</svg>")
+    return "".join(parts)
+
+
 def _audit_integrity_html(report) -> str:
     """The chain check as a card: the same figures the terminal prints."""
     from grove.audit import RESULT_TEXT
@@ -4230,7 +4285,6 @@ def _audit_integrity_idle_html() -> str:
 def _audit_economics_html(report, scale: int) -> str:
     """What the work cost, by tier, and what it comes to at a monthly volume."""
     from grove import audit as audit_mod
-    from grove.api import svg_charts
 
     if not report["goals"]:
         return ('<div id="audit-economics"><div class="card"><h4>What did the work cost?</h4>'
@@ -4238,13 +4292,7 @@ def _audit_economics_html(report, scale: int) -> str:
     blocks = []
     for g in report["goals"]:
         units = g["units"]
-        tier_color = {"T0": "#3fb950", "T1": "#58a6ff", "T2": "#d29922", "T3": "#f85149"}
-        chart = svg_charts.bar_chart_svg(
-            [{"label": str(u["order"]), "value": round(u["deciding"]["seconds"] or 0.0, 2),
-              "color": tier_color.get(u["tier"] or "", "#8b949e")} for u in units],
-            "Seconds to decide each item, in order (green = no model call)",
-            width=760, height=230,
-        )
+        chart = _audit_time_chart_svg(units)
         tier_rows = "".join(
             f"<tr><td>{_esc(tier)}</td><td>{t['units']}</td>"
             f"<td>{_count(t['model_calls'])}</td><td>{_seconds(t['seconds'])}</td>"

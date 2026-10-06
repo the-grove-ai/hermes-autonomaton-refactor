@@ -221,3 +221,14 @@ def test_audit_page_reads_and_never_writes(home):
     after = {p: p.stat().st_mtime_ns for p in home.rglob("*") if p.is_file()}
     assert set(after) - set(before) <= {home / "pattern_cache.db"}   # opening creates an empty cache
     assert all(after[p] == before[p] for p in before)
+
+
+def test_chart_marks_what_the_keg_decided_and_where_the_line_stopped(home):
+    from grove.api import fragments
+    [g] = audit.economics(home)["goals"]
+    svg = fragments._audit_time_chart_svg(g["units"])
+    assert svg.count(">keg</text>") == 2          # m3 and m4, each tagged
+    assert svg.count(">corrected</text>") == 1    # m4: where the operator corrected
+    assert "keg, no model call" in svg and "decided by a model" in svg
+    assert svg.count('fill="#3fb950" rx="1"') == 2 and ">0.1</text>" in svg   # real time shown
+    assert fragments._audit_time_chart_svg([]) == ""
