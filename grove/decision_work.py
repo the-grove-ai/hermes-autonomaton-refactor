@@ -1386,11 +1386,15 @@ class DecisionWork:
         corrected_output: Optional[Mapping[str, Any]] = None,
         provenance: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """The operator's ruling on an item the keg ACCEPTED without review:
-        a confirmation (it becomes confirmed) or a revision (a miss — Jidoka
-        sees it exactly as it sees any correction, and the keg halts). Only an
-        accepted item can be ruled on this way; a decision the operator
-        already made stands."""
+        """The operator's LATER ruling on an item that is already decided.
+
+        The operator can always change a call. An item the keg accepted
+        without review can be confirmed (it becomes confirmed) or revised; an
+        item the operator already confirmed or revised can be revised again.
+        The earlier records stay; the new one is appended and is the item's
+        standing decision. A revision is seen by Jidoka exactly as any
+        correction is — when a keg produced the answer, that is a miss and
+        the keg halts."""
         if decision not in (DECISION_CONFIRM, DECISION_CORRECT):
             raise DecisionRefused(
                 "unknown_decision", "The decision must be 'confirm' or 'correct'.")
@@ -1399,26 +1403,29 @@ class DecisionWork:
         verdict = decided.get(record["id"]) if record else None
         if record is None or verdict is None:
             raise DecisionRefused("not_decided", f"{item_id} has not been decided.")
-        if verdict.get("decision") != DECISION_ACCEPTED:
-            raise DecisionRefused(
-                "already_ruled", f"You have already ruled on {item_id}.")
-        if decision == DECISION_CORRECT:
+        standing = dict(verdict.get("output") or record["output"])
+        if decision == DECISION_CONFIRM:
+            if verdict.get("decision") != DECISION_ACCEPTED:
+                raise DecisionRefused(
+                    "already_ruled",
+                    f"{item_id} is already decided as {self.value_text(standing)}. "
+                    f"To change it, give the value it should be.")
+            final = dict(record["output"])
+        else:
             if not corrected_output:
                 raise DecisionRefused(
                     "missing_correction", "A revision needs the revised value.")
             self.check_output(corrected_output, provenance)
             final = {k: str(v).strip() for k, v in corrected_output.items()}
-            if final == record["output"]:
+            if final == standing:
                 raise DecisionRefused(
                     "correction_matches",
-                    "The revised value is the same as the keg's; that is a confirmation.")
-        else:
-            final = dict(record["output"])
+                    f"{item_id} is already decided as {self.value_text(standing)}.")
         prov = dict(provenance or {})
         ruled = self.log.append({
             "kind": KIND_DECIDED, "run_id": record["run_id"], "ref": record["id"],
             "item_id": item_id, "decision": decision, "output": final,
-            "after": DECISION_ACCEPTED, "session_id": prov.get("session_id"),
+            "after": verdict.get("decision"), "session_id": prov.get("session_id"),
             "turn_id": prov.get("turn_id"), "turn_uid": prov.get("turn_uid"),
         })
         self._observe(record, ruled)

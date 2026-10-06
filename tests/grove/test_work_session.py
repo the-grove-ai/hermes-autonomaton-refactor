@@ -544,10 +544,9 @@ def test_ruling_on_an_accepted_item_confirms_it_or_is_a_miss(env):
     [event] = work.last_observations
     assert event["detector"] == "correction" and event["halted"] == ["keg:mt:v2"]
     assert PatternCacheStore().get("keg:mt:v2").status == STATUS_HALTED
-    # The operator's own ruling stands; it cannot be ruled on again this way.
+    # Confirming what is already confirmed changes nothing, and says so.
     with pytest.raises(DecisionRefused) as again:
-        work.rule_on("m01", decision="correct", corrected_output={"tag": "ops"},
-                     provenance=env.prov())
+        work.rule_on("m01", decision="confirm", provenance=env.prov())
     assert again.value.reason == "already_ruled"
 
 
@@ -859,3 +858,43 @@ def test_after_the_backlog_arrives_the_next_request_runs_the_keg_pass_first(env,
     dw.release_backlog(cfg) if dw.withhold_backlog(cfg) else None
     dw.reset_work(cfg, "again")
     assert reissue.goal_note(GOAL) is None
+
+
+def test_the_operator_can_always_revise_a_call_already_made(env):
+    # Live, run 8 (2026-10-06): the operator confirmed an item by button, then
+    # asked to revise it, and was told a ruled item could not be reopened.
+    from grove.pattern_cache import PatternCacheStore, STATUS_HALTED
+
+    work = env.work()
+    spec = _serve_keg()
+    env.add("billing", "outage")
+    work.apply_keg(spec, item_id="m01", inputs={"channel": "billing"},
+                   keg_ref={"name": "Message tagging", "version": 2, "pattern_id": "keg:mt:v2"},
+                   provenance=env.prov(tier="T0"))
+    work.session_step({"action": "confirm"}, env.prov(tier="T0"))      # confirmed by button
+    reissue.take("sess")
+    env.propose(work, tag="ops")                                       # m02 is now waiting
+    later = env.prov()
+    revised = work.rule_on("m01", decision="correct", corrected_output={"tag": "other"},
+                           provenance=later)
+    assert (revised["decision"], revised["after"], revised["output"]) == (
+        "correct", "confirm", {"tag": "other"})
+    # The earlier confirmation is still on record; the revision is what stands.
+    kinds = [r["decision"] for r in work.log.run_records()
+             if r["kind"] == "decided" and r["item_id"] == "m01"]
+    assert kinds == ["confirm", "correct"] and work.tally()["revised"] == 1
+    # A keg produced that answer, so this is a miss: flagged, and the keg halts.
+    [event] = work.last_observations
+    assert event["detector"] == "correction" and event["halted"] == ["keg:mt:v2"]
+    assert PatternCacheStore().get("keg:mt:v2").status == STATUS_HALTED
+    # The item that was waiting still waits, and nothing was armed.
+    assert work.pending()["item_id"] == "m02" and reissue.take("sess") is None
+    # The reply comes from the record.
+    assert work.decided_reply(later["turn_uid"]).splitlines()[0] == (
+        "Revised: finance Money in or out → other Everything else.")
+    # And it can be revised again; revising to what it already is says so.
+    work.rule_on("m01", decision="correct", corrected_output={"tag": "ops"}, provenance=env.prov())
+    with pytest.raises(DecisionRefused) as same:
+        work.rule_on("m01", decision="correct", corrected_output={"tag": "ops"},
+                     provenance=env.prov())
+    assert same.value.reason == "correction_matches"

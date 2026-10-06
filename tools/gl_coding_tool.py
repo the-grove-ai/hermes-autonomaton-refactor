@@ -231,8 +231,9 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
     named = str(args.get("item_id") or "").strip()
     revised_to = {"gl_code": corrected} if decision == DECISION_CORRECT and corrected else None
     if named and (waiting is None or named != waiting["item_id"]):
-        # The operator is ruling on an invoice the keg coded in a batch and
-        # nobody reviewed: a confirmation, or a revision — which is a miss.
+        # The operator is ruling on an invoice that is ALREADY decided — one
+        # they confirmed earlier, or one the keg coded in a batch. They can
+        # always change a call; a revision of a keg's answer is a miss.
         proposed, _ = work._state()
         waiting = proposed.get(named)
         record = work.rule_on(
@@ -507,7 +508,10 @@ GL_CODING_SCHEMA = {
         "again in the same turn. Never tell the operator to ask for the next "
         "invoice or to say the word: when a work session is on, the system "
         "presents it. If the operator's message is about something other "
-        "than invoices, call verb='pause' and nothing else. Use only what this tool "
+        "than invoices, call verb='pause' and nothing else. If the operator "
+        "wants to change an invoice already decided, call decide with "
+        "decision='correct', corrected_gl_code and that invoice's item_id. "
+        "Use only what this tool "
         "returns to choose a code. If the tool refuses, relay its `message` "
         "to the operator as written — it already says what happens next — "
         "and do not add instructions of your own (never tell the operator "
@@ -541,8 +545,11 @@ GL_CODING_SCHEMA = {
                 "type": "string",
                 "description": (
                     "decide only, and only when the operator names an invoice "
-                    "the keg already coded in a batch (not the one waiting): "
-                    "that invoice's id."
+                    "that is ALREADY decided (not the one waiting) — to revise "
+                    "a call they made earlier, or to rule on one the keg coded "
+                    "in a batch: that invoice's id, as the tool reported it. "
+                    "The operator can always revise an earlier call; never "
+                    "tell them it cannot be changed."
                 ),
             },
         },
