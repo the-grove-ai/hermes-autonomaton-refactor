@@ -5923,7 +5923,17 @@ class Dispatcher:
             # decision instead, the reply is that decision as recorded — the
             # next item is already on its way, so the model must not tell the
             # operator to ask for it.
-            return work.decided_reply(turn_uid)
+            said = work.decided_reply(turn_uid)
+            if said is not None:
+                return said
+            from grove import reissue
+            session_id = self.session_id or getattr(agent, "session_id", None)
+            armed = reissue.armed(session_id)
+            if (armed and armed.get("advance") and armed.get("turn_uid") == turn_uid
+                    and reissue.goal_note(work.config.goal_id) == "backlog_released"):
+                # The turn handed a just-released backlog to the keg pass.
+                return work.BACKLOG_FIRST_MESSAGE
+            return None
         data = self._run_session_step(
             agent, work.config.tool,
             {"action": "present", "item_id": waiting["item_id"]}, "review")

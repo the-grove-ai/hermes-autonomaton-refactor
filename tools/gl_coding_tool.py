@@ -146,6 +146,16 @@ def _refusal(exc: DecisionRefused) -> str:
 def _next(work: DecisionWork) -> Dict[str, Any]:
     work.check_turn(turn_provenance.current())
     work.check_one_step_per_turn(turn_provenance.current())
+    if work.backlog_first(turn_provenance.current()):
+        # A backlog was just released: the keg decides what it covers before
+        # any model is handed an invoice. The system runs that pass next.
+        return {
+            "success": True, "status": "backlog_first",
+            "message": (
+                "The backlog was just released. The system runs the keg over "
+                "it first and then brings the exceptions. Do not fetch or code "
+                "anything. Reply with exactly: " + work.BACKLOG_FIRST_MESSAGE),
+        }
     waiting = work.pending()
     if waiting is not None:
         return {

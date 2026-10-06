@@ -1524,6 +1524,25 @@ class DecisionWork:
         self.next_armed = True
         return True
 
+    BACKLOG_FIRST_MESSAGE = "Starting on the backlog. The keg goes first."
+
+    def backlog_first(self, provenance: Optional[Mapping[str, Any]]) -> bool:
+        """The backlog has just been released and a MODEL turn is about to
+        take its first item — the operator asked for it in words no declared
+        phrase matched. Standard work goes first: instead of handing the model
+        an item, arm the goal's own request, so the next turn is the keg pass.
+        Returns whether it did. However the operator words it, the floor is
+        laid before they meet an exception."""
+        prov = provenance or {}
+        if not self.config.work_session.enabled or self.pending() is not None:
+            return False
+        from grove import reissue
+        if reissue.goal_note(self.config.goal_id) != "backlog_released":
+            return False
+        if self.serving_keg() is None:
+            return False
+        return self.present_next_after({"id": "backlog"}, dict(prov))
+
     def session_action(self, message: Any) -> Optional[Dict[str, Any]]:
         """What a message in this goal's work session unambiguously IS, decided
         with no model — or None, which sends it to the model.

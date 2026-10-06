@@ -898,3 +898,26 @@ def test_the_operator_can_always_revise_a_call_already_made(env):
         work.rule_on("m01", decision="correct", corrected_output={"tag": "ops"},
                      provenance=env.prov())
     assert same.value.reason == "correction_matches"
+
+
+def test_however_the_operator_asks_the_keg_goes_first_on_a_new_backlog(env, tmp_path):
+    # Live, run 8 (2026-10-06): the operator said "let's dig into the backlog".
+    # No declared phrase matched, so a model coded the first invoice — one the
+    # keg covers — before the keg pass ran.
+    work, cfg = _with_backlog(env, tmp_path)
+    _serve_keg()
+    dw.release_backlog(cfg)
+    assert work.session_action("let's dig into the pile") is None      # the model's turn
+    asked = env.prov(request="let's dig into the pile")
+    assert work.backlog_first(asked) is True                           # ...but the keg goes first
+    armed = reissue.take("sess")
+    assert (armed["request"], armed["advance"]) == ("tag the next message", True)
+    assert work.log.run_records() == []                                # the model was handed nothing
+    # The re-issued request is the keg pass.
+    assert work.session_action("tag the next message") == {"action": "batch"}
+    work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    reissue.take("sess")
+    assert work.backlog_first(env.prov()) is False                     # once
+    # No released backlog, an item waiting, or the switch off: the model proceeds as usual.
+    plain = env.work()
+    assert plain.backlog_first(env.prov()) is False
