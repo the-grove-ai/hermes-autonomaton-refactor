@@ -1203,6 +1203,14 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
         f'({len(keg.get("conditions") or [])})</summary>{rules}</details>'
         f'<div class="meta">Answers the request: '
         + _esc(" · ".join(f"“{r}”" for r in keg_mod.trigger_requests(keg)))
+        + _esc(
+            f" — or wording that overlaps one by {(keg.get('trigger') or {}).get('match_threshold')}"
+            if (keg.get("trigger") or {}).get("match_threshold") else ""
+        )
+        + _esc(
+            f"; a shorter request using the same verb gets +{(keg.get('trigger') or {}).get('verb_bonus')}"
+            if (keg.get("trigger") or {}).get("verb_bonus") else ""
+        )
         + '</div>'
         f'<div class="meta">GRV-004 keg · scope {_esc(keg.get("scope"))} · '
         f'authority {_esc(keg.get("authority_level"))} · '

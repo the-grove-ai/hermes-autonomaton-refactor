@@ -145,6 +145,11 @@ class KegDeclaration:
     # to be the keg's (grove.intent_match). The examples are illustrations,
     # not an exhaustive list.
     match_threshold: float = 0.8
+    # Added to a request's score when it uses the example's verb and adds no
+    # word the example lacks (grove.intent_match.overlap). 0 turns it off. It
+    # governs what the KEG answers, so it is signed with the keg; it plays no
+    # part in what opens a session.
+    verb_bonus: float = 0.0
     scope: str = "reserved"
     authority_level: str = "green"
     revision_tiers: Tuple[str, ...] = ("T1", "T2")
@@ -181,6 +186,12 @@ def _resolve(root: Path, raw: Any) -> Path:
 def _threshold(value: Any, goal_id: str) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0.0 < float(value) <= 1.0:
         raise ValueError(f"goal {goal_id!r}: match_threshold must be a number in (0, 1]")
+    return float(value)
+
+
+def _bonus(value: Any, goal_id: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0.0 <= float(value) <= 1.0:
+        raise ValueError(f"goal {goal_id!r}: verb_bonus must be a number in [0, 1]")
     return float(value)
 
 
@@ -274,6 +285,7 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
             request=str(_need(keg_raw, "request", "keg")),
             requests=tuple(also),
             match_threshold=_threshold(keg_raw.get("match_threshold", 0.8), goal.id),
+            verb_bonus=_bonus(keg_raw.get("verb_bonus", 0.0), goal.id),
             scope=str(keg_raw.get("scope", "reserved")),
             authority_level=str(keg_raw.get("authority_level", "green")),
             revision_tiers=tuple(tiers),

@@ -724,3 +724,46 @@ def test_unknown_isolation_is_treated_as_isolated():
 
     d.session = _Broken()
     assert d._session_is_goal_isolated("coding") is True      # when in doubt, do not mine
+
+
+# ── verb bonus: missing words are forgivable, extra words are not ─────
+
+
+def test_verb_bonus_applies_only_when_the_message_adds_no_words():
+    from grove.intent_match import overlap, verb_of
+    example = "Code the next invoice"
+    assert verb_of(example) == "code" and verb_of("Please, the next one") == "next"
+    # A shorter way to say the same thing: lifted over the 0.8 bar.
+    assert overlap("code next", example) == pytest.approx(2 / 3)
+    assert overlap("code next", example, verb_bonus=0.2) == pytest.approx(2 / 3 + 0.2)
+    # Extra words — an instruction — get nothing, however alike the rest is.
+    assert overlap("code the next invoice as 6800", example, verb_bonus=0.2) == 0.6
+    # The verb alone is not the request.
+    assert overlap("code", example, verb_bonus=0.2) < 0.8
+    # No bonus without the example's verb, and none when it is switched off.
+    assert overlap("next invoice", example, verb_bonus=0.2) == pytest.approx(2 / 3)
+    assert overlap("code next", example, verb_bonus=0.0) == pytest.approx(2 / 3)
+    assert overlap("Code the next invoice", example, verb_bonus=0.2) == 1.0   # capped
+
+
+def test_keg_serves_a_shortened_request_only_when_it_declares_the_bonus(env):
+    plain = _keg(env)
+    env.store.set_status(plain.pattern_id, STATUS_ACTIVE)
+    find = env.store.get_active_for_message
+    assert find("tag next") is None
+    env.store.set_status(plain.pattern_id, STATUS_HALTED)
+    lifted = _keg(env, verb_bonus=0.2, evidence_turn_ids=("t2",))
+    spec = keg.keg_of(env.store.get(lifted.pattern_id))
+    assert spec["trigger"]["verb_bonus"] == 0.2          # signed with the keg
+    env.store.set_status(lifted.pattern_id, STATUS_ACTIVE)
+    assert find("tag next").pattern_id == lifted.pattern_id
+    assert find("tag the next message as urgent") is None
+
+
+def test_verb_bonus_plays_no_part_in_what_opens_a_session(env):
+    import dataclasses
+    goal = SimpleNamespace(id=GOAL, keywords=("message",))
+    cfg = dataclasses.replace(
+        env.work.config, keg=dataclasses.replace(env.work.config.keg, verb_bonus=0.2))
+    assert dw.opens_work("tag next", goal, cfg) is False
+    assert dw.session_rule_digest(cfg) == dw.session_rule_digest(env.work.config)

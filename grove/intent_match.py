@@ -52,26 +52,50 @@ def tokens(text: str) -> FrozenSet[str]:
     return frozenset(_stem(w) for w in words if w and w not in FILLER)
 
 
-def overlap(a: str, b: str) -> float:
-    """Jaccard overlap of two requests' content words, 0.0–1.0. Two requests
-    with no content words at all do not match (0.0): there is nothing to
-    agree on."""
+def verb_of(example: str) -> Optional[str]:
+    """An example request's verb: its first content word ("Code the next
+    invoice" → "code"). Read off the example itself, so nothing about any
+    domain's verbs is written down here."""
+    for word in t0_normalize(example or "").split():
+        if word and word not in FILLER:
+            return _stem(word)
+    return None
+
+
+def overlap(a: str, b: str, *, verb_bonus: float = 0.0) -> float:
+    """Jaccard overlap of a message ``a`` and an example ``b``, 0.0–1.0. Two
+    requests with no content words at all do not match (0.0): there is
+    nothing to agree on.
+
+    ``verb_bonus`` is added when the message uses the example's verb AND adds
+    no content word the example lacks — a shorter way of saying the same
+    thing ("code next" for "Code the next invoice"). Missing words are
+    forgivable; extra words are not: a message that adds anything ("…as
+    6800") gets no bonus, because the extra words may be an instruction the
+    matched path would never see."""
     ta, tb = tokens(a), tokens(b)
     if not ta or not tb:
         return 0.0
-    return len(ta & tb) / len(ta | tb)
+    score = len(ta & tb) / len(ta | tb)
+    if verb_bonus and ta <= tb and verb_of(b) in ta:
+        score = min(1.0, score + float(verb_bonus))
+    return score
 
 
-def best_match(message: str, examples: Iterable[str]) -> Tuple[float, Optional[str]]:
+def best_match(
+    message: str, examples: Iterable[str], *, verb_bonus: float = 0.0,
+) -> Tuple[float, Optional[str]]:
     """The highest-scoring example for ``message`` as ``(score, example)``."""
     best: Tuple[float, Optional[str]] = (0.0, None)
     for example in examples:
-        score = overlap(message, example)
+        score = overlap(message, example, verb_bonus=verb_bonus)
         if score > best[0]:
             best = (score, example)
     return best
 
 
-def matches(message: str, examples: Iterable[str], threshold: float) -> bool:
+def matches(
+    message: str, examples: Iterable[str], threshold: float, *, verb_bonus: float = 0.0,
+) -> bool:
     """Whether ``message`` matches any example at or above ``threshold``."""
-    return best_match(message, examples)[0] >= float(threshold)
+    return best_match(message, examples, verb_bonus=verb_bonus)[0] >= float(threshold)

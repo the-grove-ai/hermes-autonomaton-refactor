@@ -280,7 +280,7 @@ class PatternCacheStore:
             ).fetchall()
         best_score, best_row = 0.0, None
         for row in rows:
-            examples, threshold = [], None
+            examples, threshold, bonus = [], None, 0.0
             try:
                 if row["compiled_invocation"]:
                     keg = (json.loads(row["compiled_invocation"]).get("args") or {}).get("keg")
@@ -288,6 +288,7 @@ class PatternCacheStore:
                         trigger = keg.get("trigger") or {}
                         examples = [trigger.get("request")] + list(trigger.get("requests") or [])
                         threshold = trigger.get("match_threshold")
+                        bonus = trigger.get("verb_bonus") or 0.0
                 if threshold is None and row["promotion_evidence"]:
                     match = json.loads(row["promotion_evidence"]).get("match") or {}
                     examples = list(match.get("examples") or [])
@@ -297,7 +298,10 @@ class PatternCacheStore:
             examples = [e for e in examples if isinstance(e, str) and e.strip()]
             if not examples or not isinstance(threshold, (int, float)):
                 continue
-            score, _example = best_match(stem, examples)
+            score, _example = best_match(
+                stem, examples,
+                verb_bonus=float(bonus) if isinstance(bonus, (int, float)) else 0.0,
+            )
             if score >= float(threshold) and score > best_score:
                 best_score, best_row = score, row
         return self._row_to_pattern(best_row) if best_row is not None else None

@@ -291,6 +291,12 @@ def validate_spec(spec: Any) -> None:
         raise ValueError("keg trigger 'requests' must be a list of non-empty strings")
     if trigger.get("sessions") not in (None, "goal_isolated"):
         raise ValueError("keg trigger 'sessions' must be 'goal_isolated' when set")
+    bonus = trigger.get("verb_bonus")
+    if bonus is not None and (
+        isinstance(bonus, bool) or not isinstance(bonus, (int, float))
+        or not 0.0 <= float(bonus) <= 1.0
+    ):
+        raise ValueError("keg trigger 'verb_bonus' must be a number in [0, 1]")
     threshold = trigger.get("match_threshold")
     if threshold is not None and (
         isinstance(threshold, bool) or not isinstance(threshold, (int, float))

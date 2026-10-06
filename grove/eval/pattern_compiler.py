@@ -704,6 +704,7 @@ def propose_keg(
     request: str,
     requests: Any = (),
     match_threshold: Optional[float] = None,
+    verb_bonus: Optional[float] = None,
     sessions: Optional[str] = None,
     intent_class: str,
     tool_name: str,
@@ -798,6 +799,7 @@ def propose_keg(
             # Where the keg answers. "goal_isolated": only in a session
             # isolated to its Dock goal — elsewhere the request is simply not
             # the keg's. Absent: any session.
+            **({"verb_bonus": float(verb_bonus)} if verb_bonus else {}),
             **({"sessions": sessions} if sessions else {}),
             "intent_class": intent_class,
         },
