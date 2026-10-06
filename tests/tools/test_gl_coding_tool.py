@@ -146,7 +146,8 @@ def test_session_that_is_not_isolated_is_told_to_start_a_new_one(work):
     for verb in ("next", "record"):
         out = _call(verb=verb, gl_code="6110", reasoning="x")
         assert out["refused"] == "session_not_isolated"
-        assert "Start a new session with /new" in out["message"]
+        assert "its context is not clean" in out["message"]
+        assert "/new" not in out["message"]
     assert work.log.records() == []
 
 
@@ -242,7 +243,7 @@ def test_keg_refused_at_t0_stops_the_line_on_the_bus(work):
     raw = gl.gl_coding({"verb": "apply_keg", "keg": KEG})
     stop = _t0_refused(raw)
     assert stop["reason"] == "session_not_isolated"
-    assert "Start a new session with /new" in stop["message"]
+    assert "its context is not clean" in stop["message"] and "/new" not in stop["message"]
     assert _t0_declined(raw) is False                 # not a handback
     assert work.log.records() == []
 
@@ -287,3 +288,30 @@ def test_unreadable_invoice_at_t0_stops_the_line(work, tmp_path):
     _t0()
     stop = _t0_refused(gl.gl_coding({"verb": "apply_keg", "keg": KEG}))
     assert stop["reason"] == "item_unreadable" and stop["andon_id"]
+
+
+def test_refusal_message_carries_the_next_step_and_no_manual_instruction(work, monkeypatch):
+    # Live 2026-10-06: the clean-session remedy fired, but the reply told the
+    # operator to type /new. The tool now hands the model ONE message to relay.
+    import grove.grants as grants_mod
+    from grove.grant_recognition import GrantToken
+
+    monkeypatch.setattr(grants_mod, "_store", None)
+    cfg = work.config
+    object.__setattr__(cfg, "on_unclean", dw.ON_UNCLEAN_OPEN_CLEAN)
+    grants_mod.get_grant_store().add_standing_grant(GrantToken(
+        source="standing", scope=cfg.goal_id, disposition="always",
+        write_class=dw.SESSION_RULE_PREFIX + dw.session_rule_digest(cfg)))
+    turn_provenance.set_current({
+        "isolation_goal": None, "sections": ["cellar_knowledge"], "tools_yielded": [],
+        "cellar_hits": 2, "session_id": "chat-9", "turn_id": "chat-9#2", "turn_uid": "u2",
+        "tier": "T1", "model": "m", "request": "code the next invoice.",
+    })
+    out = _call(verb="next")
+    assert out["refused"] == "session_not_isolated"
+    assert out["message"].endswith("Opening a clean session and re-issuing the request there.")
+    assert "/new" not in json.dumps(out)
+    assert "Do not add steps of your own" in out["tell_the_operator"]
+    from grove import reissue
+    assert reissue.take("chat-9")["request"] == "code the next invoice."
+    assert "never tell the operator" in gl.GL_CODING_SCHEMA["description"]

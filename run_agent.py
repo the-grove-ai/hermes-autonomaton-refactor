@@ -18343,7 +18343,14 @@ class AIAgent:
                     surfaced_connectors=_rd_cad["surfaced_connectors"],
                     connector_active_map=_rd_cad["connector_active_map"],
                 )
-            if not _flywheel_ran_this_turn:
+            # A session isolated to a goal's work carries nothing unrelated:
+            # the standing "proposals await review" notice stays out of it. (A
+            # proposal the work itself raises is stated in the tool's result.)
+            _isolated_turn = bool(getattr(
+                getattr(self, "_dispatcher_singleton", None),
+                "_current_turn_isolation", None,
+            ))
+            if not _flywheel_ran_this_turn and not _isolated_turn:
                 final_response = self._append_pending_offer(final_response)
             # connector-failure-andon-v1 — surface a failed connector ALONGSIDE
             # the answer (fail-loud: a dead connector's tools are absent, never

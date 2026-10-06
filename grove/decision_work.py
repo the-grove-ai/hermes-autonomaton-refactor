@@ -686,8 +686,7 @@ class DecisionWork:
             raise self.abnormal(
                 "session_not_isolated",
                 f"This session includes turns outside the {self.config.goal_id} "
-                f"goal, so its context is not clean. Start a new session with "
-                f"/new, then ask again.",
+                f"goal, so its context is not clean and the work cannot run here.",
                 provenance,
             )
         sections = RECALL_SECTIONS & set(provenance.get("sections") or ())
@@ -699,8 +698,7 @@ class DecisionWork:
                 "contaminated_turn",
                 "This decision cannot be recorded: the turn drew on recalled "
                 f"context ({', '.join(found)}). Work for this goal uses its "
-                "declared sources only. Start a new session with /new, then "
-                "ask again.",
+                "declared sources only.",
                 provenance,
             )
 

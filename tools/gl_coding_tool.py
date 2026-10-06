@@ -127,10 +127,19 @@ def _refusal(exc: DecisionRefused) -> str:
     if exc.andon_id:
         # An abnormality: Jidoka flagged it, the andon cord is pulled, and
         # Kaizen has answered. Tell the operator the proposed next step.
+        step = _next_step(exc)
         out["andon_id"] = exc.andon_id
         out["stopped"] = True
-        out["proposed_next_step"] = _next_step(exc)
+        out["proposed_next_step"] = step
         out["answer"] = exc.answer
+        # One message to relay, whole: what was refused and what happens next.
+        # The operator is never left with only "no", and never told to do by
+        # hand what the system is already doing.
+        if step:
+            out["message"] = f"{exc} {step}"
+        out["tell_the_operator"] = (
+            "Relay `message` as written. Do not add steps of your own."
+        )
     return json.dumps(out, ensure_ascii=False)
 
 
@@ -395,8 +404,10 @@ GL_CODING_SCHEMA = {
         "the operator's answer: decision='confirm', or decision='correct' "
         "with corrected_gl_code. Always ask the operator to confirm or "
         "correct each coding before moving on. Use only what this tool "
-        "returns to choose a code. If the tool refuses, tell the operator "
-        "exactly what it said."
+        "returns to choose a code. If the tool refuses, relay its `message` "
+        "to the operator as written — it already says what happens next — "
+        "and do not add instructions of your own (never tell the operator "
+        "to start a new session; the system does that itself when needed)."
     ),
     "parameters": {
         "type": "object",

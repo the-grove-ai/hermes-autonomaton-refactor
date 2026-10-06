@@ -109,7 +109,8 @@ def answer(andon: Mapping[str, Any], context: Any = None) -> Answer:
         andon, signature={"class": "unclean_session", "goal": cfg.goal_id},
         description=(
             f"work for {cfg.goal_id} asked for in a session that is not clean; "
-            "its signed session rule declares no action for that"
+            "its signed session rule declares no action for that, so this work "
+            "needs a new session started by hand"
         ),
         promote_after=3,
     )

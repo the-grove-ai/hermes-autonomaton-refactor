@@ -241,7 +241,7 @@ def test_isolated_goal_refuses_a_turn_that_drew_on_recall(tmp_path, taint):
     err = _refusal(lambda: work.record(
         item_id="m01", inputs={}, output={"tag": "finance"}, reasoning="",
         provenance=_prov(**taint)))
-    assert err.reason == "contaminated_turn" and "/new" in str(err)
+    assert err.reason == "contaminated_turn" and "declared sources only" in str(err)
     assert work.log.records() == []
 
 
@@ -252,7 +252,7 @@ def test_isolated_goal_refuses_a_session_that_is_not_its_own(tmp_path):
             item_id="m01", inputs={}, output={"tag": "finance"}, reasoning="",
             provenance=prov))
         assert err.reason == "session_not_isolated"
-        assert "Start a new session with /new" in str(err)
+        assert "its context is not clean" in str(err)
     assert _refusal(lambda: work.record(
         item_id="m01", inputs={}, output={"tag": "finance"}, reasoning="",
         provenance=None)).reason == "no_provenance"

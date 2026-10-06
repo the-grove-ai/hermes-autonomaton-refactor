@@ -187,6 +187,11 @@ def test_case_1_unclean_session_gets_a_proposed_session_rule_then_a_clean_sessio
     assert (remedy["kind"], remedy["write_class"], remedy["channel"]) == (
         andon.KIND_REMEDY, "session_reset", andon.CHANNEL_CHAT)
     assert remedy["detail"]["standing_grant"] == grant.id
+    # Live 2026-10-06: the action worked, but the operator was still told to
+    # type /new. No message on this path may tell them to.
+    for refusal in (refused.value, again.value):
+        assert "/new" not in str(refusal), "the operator was told to start a session by hand"
+        assert "/new" not in (refusal.answer or {}).get("summary", "")
     # Authorized by the signed rule, so it is carried out without a further
     # accept: the re-issue is armed for the gateway and recorded on the bus.
     from grove import reissue
