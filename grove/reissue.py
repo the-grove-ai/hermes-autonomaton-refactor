@@ -183,16 +183,21 @@ def take_absorbed(session_id: Optional[str]) -> list:
     return kept if isinstance(kept, list) else []
 
 
-def note_pause(session_id: str, *, notice: bool) -> None:
-    """The session's NEXT turn leaves the goal's work session (a pause):
-    its message is answered outside it. ``notice`` says whether that turn's
+def note_pause(session_id: str, *, notice: bool, message: str) -> None:
+    """The turn that carries ``message`` leaves the goal's work session (a
+    pause): that message is answered outside it. Bound to the message, never
+    to "the next turn" — the next turn may be the item already on its way,
+    and that one must finish inside the session. ``notice`` says whether the
     reply should open with the one-line pause notice."""
     path = _dir() / ("pause-" + _path(str(session_id)).name)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"notice": bool(notice)}), encoding="utf-8")
+    path.write_text(json.dumps({"notice": bool(notice), "message": str(message)}),
+                    encoding="utf-8")
 
 
-def take_pause(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+def take_pause(session_id: Optional[str], message: Any) -> Optional[Dict[str, Any]]:
+    """Consume the pause noted for exactly this message, or None. A turn
+    carrying any other message leaves the note where it is."""
     if not session_id:
         return None
     path = _dir() / ("pause-" + _path(str(session_id)).name)
@@ -201,9 +206,58 @@ def take_pause(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
     try:
         pause = json.loads(path.read_text(encoding="utf-8"))
     except ValueError:
-        pause = {"notice": True}
+        path.unlink()
+        return None
+    if not isinstance(pause, dict) or str(pause.get("message", "")).strip() != str(
+            message or "").strip():
+        return None
     path.unlink()
-    return pause if isinstance(pause, dict) else {"notice": True}
+    return pause
+
+
+def note_goal(goal_id: str, note: str) -> None:
+    """Note one pending thing about a goal's work, for its next request (e.g.
+    its backlog was just released, so the next request for the work runs the
+    keg pass first). One note per goal; consumed once."""
+    path = _dir() / ("goal-" + _path(str(goal_id)).name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"note": note}), encoding="utf-8")
+
+
+def goal_note(goal_id: str, *, take: bool = False) -> Optional[str]:
+    path = _dir() / ("goal-" + _path(str(goal_id)).name)
+    if not path.exists():
+        return None
+    try:
+        note = json.loads(path.read_text(encoding="utf-8")).get("note")
+    except ValueError:
+        note = None
+    if take:
+        path.unlink()
+    return note
+
+
+def note_reissued(session_id: str, request: str) -> None:
+    """A request was just re-issued into a clean session. If that request
+    still cannot run there, it must NOT be re-issued again: one hop, then say
+    so. Read against the same request in that session's first turn."""
+    path = _dir() / ("hop-" + _path(str(session_id)).name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"request": str(request)}), encoding="utf-8")
+
+
+def take_reissued(session_id: Optional[str], message: Any) -> bool:
+    if not session_id:
+        return False
+    path = _dir() / ("hop-" + _path(str(session_id)).name)
+    if not path.exists():
+        return False
+    try:
+        hop = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        hop = {}
+    path.unlink()
+    return str(hop.get("request", "")).strip() == str(message or "").strip()
 
 
 def note_turn(session_id: str, turn_uid: Optional[str], note: str,

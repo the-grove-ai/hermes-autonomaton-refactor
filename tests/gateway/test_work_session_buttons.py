@@ -154,7 +154,7 @@ def test_next_or_ok_while_the_next_item_is_on_its_way_is_absorbed(monkeypatch, t
     assert queued == {}                                        # nothing queued: no second card
     kept = reissue.take_absorbed("sess")
     assert [k["text"] for k in kept] == ["next", "OK!", "confirm #m01"]
-    assert all(k["at"] for k in kept) and reissue.take_pause("sess") is None
+    assert all(k["at"] for k in kept) and reissue.take_pause("sess", "next") is None
 
 
 def test_a_change_of_subject_waits_for_the_item_then_pauses(monkeypatch, tmp_path):
@@ -163,7 +163,13 @@ def test_a_change_of_subject_waits_for_the_item_then_pauses(monkeypatch, tmp_pat
     say, queued = _runner(monkeypatch, tmp_path, advancing=True)
     assert say("what's on my calendar tomorrow?") is True      # handled: never an interrupt
     assert queued == {"chat": ["what's on my calendar tomorrow?"]}
-    assert reissue.take_pause("sess") == {"notice": True} and reissue.take_absorbed("sess") == []
+    # Live, 2026-10-06: the pause was taken by the NEXT turn — the item already
+    # on its way — which then lost its session and started an endless chain of
+    # clean sessions. The pause belongs to the message that caused it.
+    assert reissue.take_pause("sess", "Code the next invoice") is None      # not this turn
+    assert reissue.take_pause("sess", "what's on my calendar tomorrow?") == {
+        "notice": True, "message": "what's on my calendar tomorrow?"}
+    assert reissue.take_absorbed("sess") == []
 
 
 def test_another_turn_of_the_session_just_makes_the_message_wait(monkeypatch, tmp_path):
@@ -174,7 +180,7 @@ def test_another_turn_of_the_session_just_makes_the_message_wait(monkeypatch, tm
     say, queued = _runner(monkeypatch, tmp_path, advancing=False)
     assert say("ok") is True
     assert queued == {"chat": ["ok"]}
-    assert reissue.take_absorbed("sess") == [] and reissue.take_pause("sess") is None
+    assert reissue.take_absorbed("sess") == [] and reissue.take_pause("sess", "ok") is None
 
 
 def test_outside_a_work_session_the_gateway_behaves_as_before(monkeypatch, tmp_path):

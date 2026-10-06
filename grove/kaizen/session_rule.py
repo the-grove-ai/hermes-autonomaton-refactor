@@ -114,6 +114,23 @@ def answer(andon: Mapping[str, Any], context: Any = None) -> Answer:
             artifact=proposal_id,
             detail={"rule": dw.session_rule(cfg)},
         )
+    if (andon.get("details") or {}).get("reissued_clean"):
+        # This very request was just re-issued into a clean session and still
+        # does not open the goal's work there. Opening another clean session
+        # would only repeat that, forever. Stop: one hop, then say so.
+        start = cfg.work_session.start[0] if cfg.work_session.start else (
+            cfg.keg.request if cfg.keg is not None else "")
+        stopped = watch(
+            andon, signature={"class": "request_does_not_open_work", "goal": cfg.goal_id},
+            description=(
+                f"a request re-issued into a clean session that still does not "
+                f"open {cfg.goal_id}'s work"),
+            promote_after=3,
+        )
+        stopped.summary = (
+            "That request does not start this work, so it was not run again."
+            + (f" Say “{start}” to begin." if start else ""))
+        return stopped
     if cfg.on_unclean == dw.ON_UNCLEAN_OPEN_CLEAN:
         return Answer(
             kind=KIND_REMEDY,

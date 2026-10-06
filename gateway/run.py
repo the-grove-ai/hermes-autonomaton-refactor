@@ -2833,7 +2833,7 @@ class GatewayRunner:
             return True
         merge_pending_message_event(adapter._pending_messages, session_key, event)
         if advancing:
-            reissue.note_pause(session_id, notice=True)
+            reissue.note_pause(session_id, notice=True, message=text)
             logger.info("work session %s: change of subject; pausing after this item",
                         session_key)
         return True
@@ -10217,6 +10217,10 @@ class GatewayRunner:
             # the request is enqueued only after it.
             await self._handle_reset_command(event)
             entry = self.session_store.get_or_create_session(source)
+            # One hop only. If the request still cannot run in the clean
+            # session, it is refused there with a plain message — never
+            # re-issued into yet another one.
+            reissue.note_reissued(getattr(entry, "session_id", "") or "", str(request))
         if armed.get("tier"):
             reissue.arm_tier(
                 getattr(entry, "session_id", "") or "", str(armed["tier"]),
@@ -10228,7 +10232,8 @@ class GatewayRunner:
         if armed.get("leave_goal"):
             # A pause the model asked for: the operator's message is answered
             # outside the work session. The pause line was this turn's reply.
-            reissue.note_pause(getattr(entry, "session_id", "") or "", notice=False)
+            reissue.note_pause(getattr(entry, "session_id", "") or "", notice=False,
+                               message=str(request))
         elif armed.get("advance") or (was_advancing and armed.get("tier")):
             # The system is bringing the next item (or retrying it one tier
             # up). Until that turn ends, a typed "next" or "ok" is absorbed.

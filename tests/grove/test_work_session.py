@@ -838,3 +838,24 @@ def test_the_portals_demo_controls_exist_only_in_demo_mode(env, tmp_path, monkey
     response = asyncio.run(actions._demo_action(request, "reset"))
     assert response.status == 403 and refused[0]["failure_class"] == "demo_controls_off"
     assert work.log.records() == []                            # nothing was opened
+
+
+def test_after_the_backlog_arrives_the_next_request_runs_the_keg_pass_first(env, tmp_path):
+    # Operator, 2026-10-06: once the backlog is in, the keg's answers go
+    # through first, all at once; then the operator deals with the exceptions.
+    work, cfg = _with_backlog(env, tmp_path)
+    _serve_keg()
+    assert work.session_action("keep going") is None          # nothing queued: not a request yet
+    assert dw.release_backlog(cfg) == 2
+    # Any request for the work now runs the pass — not only the batch phrase.
+    assert work.session_action("next") == {"action": "batch"}
+    out = work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    assert out["reply"].startswith("Tagged 1 of 2 · 1 by the keg v2 · 0 model calls.")
+    reissue.take("sess")
+    # Once only: the next request brings the exception, not a second pass.
+    assert work.session_action("next") is None
+    assert reissue.goal_note(GOAL) is None
+    # A reset owes no pass.
+    dw.release_backlog(cfg) if dw.withhold_backlog(cfg) else None
+    dw.reset_work(cfg, "again")
+    assert reissue.goal_note(GOAL) is None

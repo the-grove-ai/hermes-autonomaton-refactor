@@ -614,6 +614,9 @@ def release_backlog(cfg: "DecisionWorkConfig") -> int:
         if path.is_file() and not path.name.startswith(".") and not target.exists():
             shutil.copy2(path, target)
             added += 1
+    if added and cfg.work_session.enabled:
+        from grove import reissue
+        reissue.note_goal(cfg.goal_id, "backlog_released")
     return added
 
 
@@ -685,6 +688,8 @@ def reset_work(cfg: "DecisionWorkConfig", label: str = "", *,
     for entry in kegs:
         store.set_status(entry.pattern_id, STATUS_DEMOTED)
     out["backlog_removed"] = withhold_backlog(cfg)
+    from grove import reissue
+    reissue.goal_note(cfg.goal_id, take=True)      # a fresh run owes no keg pass
     new = work.log.start_run(label or "demo reset")
     out["run"] = new["run_number"]
     out["label"] = new["label"]
@@ -987,7 +992,10 @@ class DecisionWork:
                          "request": prov.get("request"),
                          # Earlier tries at this same request, when this turn
                          # is itself a re-issue one tier up.
-                         "attempts": list(prov.get("attempts") or [])},
+                         "attempts": list(prov.get("attempts") or []),
+                         # True when this request was already re-issued into a
+                         # clean session: it is not re-issued a second time.
+                         "reissued_clean": bool(prov.get("reissued_clean"))},
                 observed_input={"reason": reason},
                 matched_skill=prov.get("t0_pattern"),
                 context={"work": self},
@@ -1602,8 +1610,16 @@ class DecisionWork:
             return None
         if routes(message, ws.batch, self.config):
             return {"action": "summary"} if self.next_item() is None else {"action": "batch"}
-        if asks_for_work(str(message or ""), self.config) and self.next_item() is None:
-            return {"action": "summary"}
+        if asks_for_work(str(message or ""), self.config):
+            if self.next_item() is None:
+                return {"action": "summary"}
+            from grove import reissue
+            if reissue.goal_note(self.config.goal_id) == "backlog_released":
+                # The backlog just arrived. The first request for the work
+                # after that runs the keg pass: everything standard work
+                # covers is decided at once, and the operator meets only the
+                # exceptions. Once only — the note is consumed by the pass.
+                return {"action": "batch"}
         return None
 
     def _exact_value(self, message: Any) -> Optional[Dict[str, str]]:
@@ -1773,6 +1789,8 @@ class DecisionWork:
         if inputs_for is None:
             raise DecisionRefused(
                 "no_reader", "This goal's tool did not say how to read its items.")
+        from grove import reissue
+        reissue.goal_note(self.config.goal_id, take=True)     # the pass runs once
         result = self.batch_pass(provenance, inputs_for)
         one, many = self.config.item_name
         total, coded, left = result["total"], result["coded"], result["left"]

@@ -1012,3 +1012,129 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 .sc-period { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 6px 0; }
 .sc-period > div { display: flex; flex-direction: column; gap: 4px; }
 .sc-period .sc-figure { font-size: 34px; }
+
+/* ── Portal theme (2026-10) ─────────────────────────────────────────────
+   One family for every page: the scorecard's type, shapes and labels applied
+   to the shell and the shared components. CSS only — no page's markup or
+   behavior changes. Placed last so it restyles the rules above without
+   editing them; remove this block to get the earlier look back. */
+:root {
+    --radius: 10px;
+    --font-sans: "Hanken Grotesk", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --text-2: #b7bfcb;
+    --line-strong: #414854;
+    --event: #E8915A;
+}
+html, body { font: 16px/1.55 var(--font-sans); }
+code, pre, .mono, .composition-card .tool-name { font-family: var(--font-mono); }
+
+/* Shell */
+.topbar { padding: 0.8rem 1.25rem; }
+.brand { font-weight: 800; letter-spacing: -0.01em; font-size: 1.05rem; }
+.brand-sub { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--event); margin-left: 0.7rem; }
+.search-wrap input[type="search"] { border-radius: 10px; padding: 0.55rem 0.85rem;
+    background: var(--bg); font: inherit; font-size: 0.95rem; }
+.left-panel { padding: 1.1rem 0.75rem; }
+.nav-list a, .nav-fleet a.nav-item { padding: 0.55rem 0.75rem; border-radius: 10px;
+    font-weight: 600; color: var(--text-2); }
+.nav-list a:hover, .nav-fleet a.nav-item:hover { background: var(--bg-elev); color: var(--text); }
+.center-panel { padding: 1.75rem 2rem 3rem; }
+.right-panel { font-size: 0.92rem; }
+
+/* Headings — :where() keeps these at the lowest specificity, so a page
+   with its own type (the scorecard, the audit check, a proposal) wins. */
+:where(.center-panel) h1 { font-size: 2.1rem; line-height: 1.1; font-weight: 800;
+    letter-spacing: -0.02em; margin: 0 0 1rem; }
+:where(.center-panel) h2 { font-size: 1.45rem; line-height: 1.2; font-weight: 700;
+    letter-spacing: -0.01em; margin: 1.75rem 0 0.75rem; }
+:where(.center-panel) h3 { font-size: 1.15rem; font-weight: 700; margin: 1.25rem 0 0.5rem; }
+:where(.center-panel) > h2:first-child, :where(.center-panel) > div > h2:first-child { margin-top: 0; }
+.group-header { border-bottom: 1px solid var(--border); font-family: var(--font-mono);
+    font-size: 0.75rem; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--text-dim); padding-bottom: 0.5rem; margin: 2rem 0 0.75rem; }
+
+/* Cards */
+.card { background: var(--bg-panel); border-radius: 14px; padding: 1.15rem 1.35rem;
+    margin-bottom: 0.85rem; }
+.card h4 { font-size: 1.1rem; font-weight: 700; margin: 0 0 0.5rem; line-height: 1.3; }
+.card p { margin: 0.4rem 0; color: var(--text-2); }
+.card .meta, .meta { color: var(--text-dim); font-size: 0.875rem; line-height: 1.5; }
+.card-resolved { background: transparent; }
+.card pre { background: var(--bg); border: 1px solid var(--border); border-radius: 10px;
+    padding: 0.75rem 0.9rem; overflow-x: auto; font-size: 0.8rem; color: var(--text-2); }
+.error-card { border-width: 1px; border-radius: 14px; }
+
+/* Labels: badges are status pills, tags are quiet chips */
+.badge { font-family: var(--font-mono); font-size: 0.68rem; font-weight: 500;
+    letter-spacing: 0.1em; text-transform: uppercase; padding: 0.22rem 0.6rem;
+    background: var(--bg-elev); border: 1px solid var(--border); color: var(--text); }
+.badge-green  { background: rgba(34, 174, 116, 0.14); border-color: #22AE74; color: var(--text); }
+.badge-yellow { background: rgba(232, 145, 90, 0.14); border-color: var(--event); color: var(--text); }
+.badge-red    { background: rgba(207, 75, 75, 0.14); border-color: var(--error); color: var(--text); }
+.tag { font-family: var(--font-mono); font-size: 0.72rem; border-radius: 999px;
+    padding: 0.15rem 0.6rem; color: var(--text-2); background: var(--bg); }
+
+/* Buttons and inputs */
+.btn { padding: 0.5rem 1rem; border-radius: 10px; font: inherit; font-size: 0.875rem;
+    font-weight: 600; background: transparent; }
+.btn:hover { background: var(--bg-elev); }
+.btn-approve { border-color: #22AE74; background: #22AE74; color: #06130D; font-weight: 700; }
+.btn-approve:hover { background: #2bc385; color: #06130D; }
+.btn-reject { border-color: var(--line-strong); color: var(--text); }
+.btn-reject:hover { background: var(--bg-elev); color: var(--text); border-color: var(--error); }
+.btn-dismiss { border-color: transparent; }
+.proposal-actions { gap: 0.6rem; margin-top: 0.85rem; }
+select, .goal-actions select, .tier-form select, input[type="text"], textarea {
+    font: inherit; font-size: 0.9rem; background: var(--bg); color: var(--text);
+    border: 1px solid var(--line-strong); border-radius: 10px; padding: 0.45rem 0.7rem; }
+select:focus-visible, input:focus-visible, textarea:focus-visible, .btn:focus-visible,
+.nav-list a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Knowledge pages: the record's facts as a quiet panel, then a readable body */
+:where(article) > h1 { max-width: 900px; }
+dl.frontmatter { display: grid; grid-template-columns: max-content 1fr; gap: 0.55rem 1.25rem;
+    align-items: baseline; background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 14px; padding: 1.1rem 1.35rem; margin: 1rem 0 1.5rem; }
+dl.frontmatter dt { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-dim); margin: 0; }
+dl.frontmatter dd { margin: 0; color: var(--text-2); font-size: 0.92rem; overflow-wrap: anywhere; }
+.page-body { font-size: 1.05rem; line-height: 1.65; color: var(--text-2); max-width: 820px; }
+.page-body strong { color: var(--text); }
+.page-body h1, .page-body h2, .page-body h3 { color: var(--text); }
+.page-body ul, .page-body ol { padding-left: 1.3rem; }
+.page-body li { margin: 0.3rem 0; }
+.page-body blockquote { border-left: 2px solid var(--event); background: rgba(232, 145, 90, 0.06);
+    border-radius: 0 10px 10px 0; padding: 0.75rem 1rem; margin: 1rem 0; color: var(--text-2); }
+.page-body pre { background: var(--bg-panel); border-radius: 12px; font-size: 0.85rem; }
+.page-body code { font-size: 0.88em; background: var(--bg-panel); border: 1px solid var(--border);
+    border-radius: 6px; padding: 0.05rem 0.35rem; }
+.page-body pre code { background: none; border: 0; padding: 0; }
+.page-body table, .audit-table { width: 100%; border-collapse: collapse; margin: 1rem 0;
+    font-size: 0.95rem; font-variant-numeric: tabular-nums; overflow-wrap: normal; }
+.page-body th, .page-body td { border: 0; border-top: 1px solid var(--border);
+    padding: 0.7rem 0.9rem 0.7rem 0; text-align: left; vertical-align: top; }
+.page-body th { border-top: 0; font-family: var(--font-mono); font-size: 0.7rem; font-weight: 500;
+    letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-dim); white-space: nowrap; }
+.page-body td { color: var(--text-2); }
+ul.listing li { padding: 0.7rem 0; }
+.result-title { font-weight: 700; }
+
+/* Dashboard */
+.kpi-card, .chart-card { background: var(--bg-panel); border-radius: 14px; }
+.kpi-label { font-family: var(--font-mono); font-size: 0.7rem; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-dim); }
+.kpi-value { font-weight: 800; letter-spacing: -0.02em; }
+.time-toggle a, .queue-tab, .ftab { border-radius: 9px; }
+
+/* The center column may shrink below its content's natural width, so a wide
+   chart scrolls inside its own panel and never pushes the right panel off
+   the screen. Big figures stay on one line. */
+.center-panel { min-width: 0; }
+.sc-figure { white-space: nowrap; font-size: clamp(30px, 3.1vw, 56px); }
+
+/* The Audit page (scorecard and audit check) uses the full width: the context
+   panel has nothing to show beside it. */
+.layout:has(#audit-page) { grid-template-columns: var(--nav-w) 1fr; }
+.layout:has(#audit-page) .right-panel { display: none; }

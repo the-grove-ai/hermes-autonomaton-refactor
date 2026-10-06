@@ -956,6 +956,7 @@ class Dispatcher:
         # evidence for the T0 pattern compiler, and "ok" → "Confirmed: …"
         # must never be mined as a cacheable answer.
         self._current_turn_session_reply: Optional[str] = None
+        self._current_turn_reissued_clean: bool = False
         self._isolation_by_session: Dict[str, str] = {}
         self._last_applied_isolated_sections: Any = None
         # Sprint 48 — per-turn tool invocations (name + args) for the T0
@@ -2139,7 +2140,8 @@ class Dispatcher:
         self._current_turn_absorbed = []
         self._current_turn_question = None
         self._current_turn_session_reply = None
-        self._current_turn_pause_notice = self._take_session_pause(agent)
+        self._current_turn_pause_notice = self._take_session_pause(agent, user_message)
+        self._current_turn_reissued_clean = self._take_reissued_clean(agent, user_message)
         self._current_turn_isolation = self._resolve_turn_isolation(
             agent, user_message,
         )
@@ -5644,11 +5646,24 @@ class Dispatcher:
         self._current_turn_isolation = None
         logger.info("[grove.dispatcher] session %s left its work session (paused)", sid)
 
-    def _take_session_pause(self, agent: Any) -> Optional[str]:
-        """A pause armed for this turn (``grove.reissue.note_pause``): leave
-        the work session BEFORE isolation is resolved, so this turn's message
-        is answered outside it. Returns the pause notice the reply should open
-        with, or None. Never raises."""
+    def _take_reissued_clean(self, agent: Any, user_message: Any) -> bool:
+        """Whether this turn is a request that was just re-issued into a
+        clean session (``grove.reissue.note_reissued``). Such a request is
+        never re-issued a second time. Never raises."""
+        try:
+            from grove import reissue
+            return reissue.take_reissued(
+                self.session_id or getattr(agent, "session_id", None), user_message)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[grove.dispatcher] could not read the re-issue hop: %r", exc)
+            return False
+
+    def _take_session_pause(self, agent: Any, user_message: Any = None) -> Optional[str]:
+        """A pause noted for THIS turn's message (``grove.reissue.note_pause``):
+        leave the work session BEFORE isolation is resolved, so the message is
+        answered outside it. A turn carrying any other message — the next
+        item, already on its way — is untouched. Returns the pause notice the
+        reply should open with, or None. Never raises."""
         try:
             from grove import reissue
             from grove.decision_work import (
@@ -5656,7 +5671,7 @@ class Dispatcher:
             )
 
             sid = self.session_id or getattr(agent, "session_id", None)
-            pause = reissue.take_pause(sid)
+            pause = reissue.take_pause(sid, user_message)
             if not pause:
                 return None
             get_meta = getattr(self.session, "get_meta", None) if self.session is not None else None
@@ -5889,6 +5904,8 @@ class Dispatcher:
             "attempts": list(
                 (getattr(self, "_current_turn_escalation", None) or {}).get("attempts") or ()),
             "session_step": session_step,
+            # This request was already re-issued into a clean session once.
+            "reissued_clean": bool(getattr(self, "_current_turn_reissued_clean", False)),
         }
 
     def _session_card_for(self, agent: Any, work: Any, turn_uid: Any) -> Optional[str]:

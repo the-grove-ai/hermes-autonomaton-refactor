@@ -43,7 +43,11 @@ REPO = Path(__file__).resolve().parents[2]
 def env(tmp_path, monkeypatch):
     db = tmp_path / "pattern_cache.db"
     monkeypatch.setattr(pc, "default_pattern_cache_path", lambda: db)
-    monkeypatch.setattr(grants_mod, "_store", None)      # per-test grant store
+    # A per-test grant store IN the test's own directory. The default store
+    # lives under the real home directory, which the suite does not redirect:
+    # until 2026-10-06 these tests wrote their grants into the operator's own
+    # ~/.grove/grants.yaml.
+    monkeypatch.setattr(grants_mod, "_store", grants_mod.GrantStore(tmp_path / "grants.yaml"))
     (tmp_path / "queue").mkdir()
     (tmp_path / "channels.csv").write_text(
         "Channel,Default Tag\nbilling,finance\noutage,ops\npress,comms\n", encoding="utf-8")
@@ -204,6 +208,34 @@ def test_case_1_unclean_session_gets_a_proposed_session_rule_then_a_clean_sessio
     # Revoked, the rule is out of force at once.
     assert grants_mod.get_grant_store().revoke_grant(grant.id) is True
     assert dw.session_rule_grant(env.work.config) is None
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_a_request_reissued_into_a_clean_session_is_never_reissued_again(env):
+    # Live, 2026-10-06: "keep going" was re-issued into a clean session, where
+    # it still did not open the work — so it was re-issued into another, and
+    # another, every few seconds. One hop, then stop and say so.
+    from grove import reissue
+
+    env.add("billing")
+    # Sign the session rule, as in case 1.
+    env.work.abnormal("session_not_isolated", "x", env.prov(isolation_goal=None))
+    [proposal] = read_all()
+    assert fc.cli_approve(proposal.proposal_id.split(":")[-1][:12]) == 0
+    # First time: the signed rule opens a clean session and re-issues.
+    first = env.work.abnormal(
+        "session_not_isolated", "not clean", env.prov(isolation_goal=None, request="keep going"))
+    assert first.answer["write_class"] == "session_reset"
+    armed = reissue.take("sess")
+    assert (armed["clean_session"], armed["request"]) == (True, "keep going")
+    # The re-issued request still does not open the work: no second hop.
+    again = env.work.abnormal(
+        "session_not_isolated", "not clean",
+        env.prov(isolation_goal=None, request="keep going", reissued_clean=True))
+    assert again.answer["kind"] == andon.KIND_WATCH
+    assert again.answer["summary"].startswith(
+        "That request does not start this work, so it was not run again.")
+    assert reissue.take("sess") is None                       # nothing armed: the chain ends
     assert_every_andon_closed_exactly_once(env.events())
 
 

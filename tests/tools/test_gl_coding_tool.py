@@ -301,13 +301,14 @@ def test_unreadable_invoice_at_t0_stops_the_line(work, tmp_path):
     assert stop["reason"] == "item_unreadable" and stop["andon_id"]
 
 
-def test_refusal_message_carries_the_next_step_and_no_manual_instruction(work, monkeypatch):
+def test_refusal_message_carries_the_next_step_and_no_manual_instruction(work, monkeypatch, tmp_path):
     # Live 2026-10-06: the clean-session remedy fired, but the reply told the
     # operator to type /new. The tool now hands the model ONE message to relay.
     import grove.grants as grants_mod
     from grove.grant_recognition import GrantToken
 
-    monkeypatch.setattr(grants_mod, "_store", None)
+    # In the test's own directory: the default store is under the real home.
+    monkeypatch.setattr(grants_mod, "_store", grants_mod.GrantStore(tmp_path / "grants.yaml"))
     cfg = work.config
     object.__setattr__(cfg, "on_unclean", dw.ON_UNCLEAN_OPEN_CLEAN)
     grants_mod.get_grant_store().add_standing_grant(GrantToken(
