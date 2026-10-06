@@ -63,6 +63,8 @@ HOLD_SPRINT = "researcher-retrieval-broker-v1"     # the 4 held fleet records (h
 #     pull-reachable on T2/T3, unreachable on T1. NOT in the Part-1 census (empty
 #     intents, always:true); declared so the guard discloses it and catches drift.
 #     Owner: t1-disclosure-pull-parity.
+#     vision_analyze LEFT this class (operator decision, 2026-10-05): image
+#     analysis is a Green read offered on every turn at every tier.
 LEDGER: dict[str, dict] = {
     "notion_write": {
         "owning_sprint": MCP_WAVE, "kind": "config_census",
@@ -72,7 +74,7 @@ LEDGER: dict[str, dict] = {
         "owning_sprint": T1_PARITY, "kind": "declared_exception",
         "records": [
             "browser_write", "delegate_task", "feishu_doc_read", "ha_call_service",
-            "ha_get_state", "mixture_of_agents", "video_analyze", "vision_analyze",
+            "ha_get_state", "mixture_of_agents", "video_analyze",
         ],
         "note": "inference-sized; pull-reachable on T2/T3, unreachable on T1",
     },

@@ -9370,6 +9370,19 @@ class AIAgent:
         # Shared/primary clients and Anthropic / Bedrock paths are
         # unaffected (they don't go through here).
         request_kwargs["max_retries"] = 0
+        # A retry after an EMPTY model response must reach the model. With the
+        # OpenRouter response cache on, the identical retry request is answered
+        # from the cache — the same empty response, three times in under a
+        # second — so the retry ladder never actually retried. While an
+        # empty-response retry is in flight, send the request without the
+        # response-cache headers.
+        if getattr(self, "_empty_content_retries", 0) > 0:
+            _headers = request_kwargs.get("default_headers")
+            if isinstance(_headers, dict):
+                request_kwargs["default_headers"] = {
+                    k: v for k, v in _headers.items()
+                    if not str(k).lower().startswith("x-openrouter-cache")
+                }
         if (
             base_url_host_matches(str(request_kwargs.get("base_url", "")), "api.githubcopilot.com")
             and self._api_kwargs_have_image_parts(api_kwargs or {})
@@ -17911,8 +17924,9 @@ class AIAgent:
                             self._empty_content_retries += 1
                             logger.warning(
                                 "Empty response (no content or reasoning) — "
-                                "retry %d/3 (model=%s)",
+                                "retry %d/3 (model=%s, finish_reason=%s)",
                                 self._empty_content_retries, self.model,
+                                finish_reason,
                             )
                             self._emit_status(
                                 f"⚠️ Empty response from model — retrying "

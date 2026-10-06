@@ -7,7 +7,7 @@ trigger:
   keywords: []
   dock_affinity: []
   always: true
-  disclosure: complexity
+  disclosure: proactive
 bindings:
   tools:
   - vision_analyze

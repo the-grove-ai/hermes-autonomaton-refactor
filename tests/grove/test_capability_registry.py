@@ -301,8 +301,10 @@ def test_real_records_disclosure_modes_match_golden():
     caps = load_capabilities()
     # exploratory cohort -> complexity (present on complex-known T3, absent simple).
     # P6.1: browser_read left this cohort for the ambient baseline class.
+    # vision_analyze left this cohort (operator decision, 2026-10-05): image
+    # analysis is offered on every turn at every tier.
     for rid in ("browser_write", "delegate_task", "mixture_of_agents",
-                "vision_analyze", "video_analyze", "feishu_doc_read", "ha_get_state",
+                "video_analyze", "feishu_doc_read", "ha_get_state",
                 "ha_call_service"):
         assert caps[rid].trigger.disclosure is TD.COMPLEXITY, rid
     # fallback-retirement-v1: the never-grouped-integration cohort that carried
@@ -318,7 +320,7 @@ def test_real_records_disclosure_modes_match_golden():
     # read de-gated from its wrong system_admin intent default; still carries
     # intents retained under always:true — presence-inert, payload-live).
     for rid in ("todo", "send_message", "kanban_read", "kanban_write",
-                "homeassistant_read"):
+                "homeassistant_read", "vision_analyze"):
         assert caps[rid].trigger.disclosure is TD.PROACTIVE, rid
         assert caps[rid].trigger.always, rid
     # Class B2 / C — proactive but INTENT-GATED (always:false, non-empty intents).
