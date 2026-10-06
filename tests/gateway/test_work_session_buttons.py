@@ -112,3 +112,75 @@ def test_only_an_authorized_user_can_press(monkeypatch):
     update, answered, cleared = _press("ws:c:m01")
     asyncio.run(a._handle_callback_query(update, None))
     assert answered == ["⛔ You are not authorized to decide this."] and a.delivered == []
+
+
+# ── collision safety: a typed message never fights the loop ───────────
+# Live, run 5 (2026-10-06): the next item was already on its way when the
+# operator typed "next"; the gateway interrupted it and said so.
+
+
+def _runner(monkeypatch, tmp_path, *, advancing, isolated_goal="message-triage", enabled=True):
+    from gateway import run as gw
+    from grove import decision_work as dw
+
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    cfg = SimpleNamespace(
+        work_session=SimpleNamespace(enabled=enabled, confirm=("ok", "confirm"), start=()),
+        keg=SimpleNamespace(request="tag the next message", requests=("next",),
+                            match_threshold=0.8, verb_bonus=0.0),
+        goal_id="message-triage")
+    monkeypatch.setattr(dw, "config_for_goal", lambda goal, dock=None: cfg)
+    queued = {}
+    monkeypatch.setattr(gw, "merge_pending_message_event",
+                        lambda pending, key, event: queued.setdefault(key, []).append(event.text))
+    runner = SimpleNamespace(
+        session_store=SimpleNamespace(
+            get_or_create_session=lambda source: SimpleNamespace(session_id="sess")),
+        _ws_advance={"chat": {"goal": "message-triage"}} if advancing else {},
+        _session_db=SimpleNamespace(get_meta=lambda key: isolated_goal))
+    for name in ("_work_session_goal", "_work_session_busy_message"):
+        setattr(runner, name, getattr(gw.GatewayRunner, name).__get__(runner))
+    adapter = SimpleNamespace(_pending_messages={})
+    say = lambda text: runner._work_session_busy_message(
+        SimpleNamespace(text=text, source=SimpleNamespace()), "chat", adapter)
+    return say, queued
+
+
+def test_next_or_ok_while_the_next_item_is_on_its_way_is_absorbed(monkeypatch, tmp_path):
+    from grove import reissue
+
+    say, queued = _runner(monkeypatch, tmp_path, advancing=True)
+    assert say("next") is True and say("OK!") is True and say("confirm #m01") is True
+    assert queued == {}                                        # nothing queued: no second card
+    kept = reissue.take_absorbed("sess")
+    assert [k["text"] for k in kept] == ["next", "OK!", "confirm #m01"]
+    assert all(k["at"] for k in kept) and reissue.take_pause("sess") is None
+
+
+def test_a_change_of_subject_waits_for_the_item_then_pauses(monkeypatch, tmp_path):
+    from grove import reissue
+
+    say, queued = _runner(monkeypatch, tmp_path, advancing=True)
+    assert say("what's on my calendar tomorrow?") is True      # handled: never an interrupt
+    assert queued == {"chat": ["what's on my calendar tomorrow?"]}
+    assert reissue.take_pause("sess") == {"notice": True} and reissue.take_absorbed("sess") == []
+
+
+def test_another_turn_of_the_session_just_makes_the_message_wait(monkeypatch, tmp_path):
+    from grove import reissue
+
+    # Not an auto-advance (the model is answering a question about the item):
+    # "ok" must NOT be absorbed — it is the operator's confirmation, in turn.
+    say, queued = _runner(monkeypatch, tmp_path, advancing=False)
+    assert say("ok") is True
+    assert queued == {"chat": ["ok"]}
+    assert reissue.take_absorbed("sess") == [] and reissue.take_pause("sess") is None
+
+
+def test_outside_a_work_session_the_gateway_behaves_as_before(monkeypatch, tmp_path):
+    for kwargs in ({"advancing": False, "isolated_goal": None},        # ordinary chat
+                   {"advancing": True, "enabled": False}):             # the kill switch
+        say, queued = _runner(monkeypatch, tmp_path, **kwargs)
+        assert say("next") is False and queued == {}
+    say, queued = _runner(monkeypatch, tmp_path, advancing=True)
+    assert say("/stop") is False                                       # commands are never swallowed

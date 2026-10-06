@@ -634,3 +634,111 @@ def test_the_dispatcher_answers_a_stale_press_plainly(env):
     assert result["final_response"] == "That card is out of date."
     assert written[0]["outcome"] == "pending" and "failure_kind" not in written[0]
     assert work.pending()["item_id"] == "m02" and reissue.take("sess") is None
+
+
+# ── a model turn must end in something on record ──────────────────────
+# Live, run 5 (2026-10-06): the model fetched the item, then told the
+# operator "My code: …" without recording it. Nothing was pending, so there
+# was no card, no buttons, and "confirm" had nothing to confirm.
+
+
+def test_presenting_an_answer_that_was_never_recorded_fails_upward(env):
+    work = env.work()
+    env.add("billing", "outage")
+    called = env.prov()                       # the tool WAS called, but nothing recorded
+    refused = work.unanswered("My tag: finance. Confirm or revise?", called)
+    assert refused is not None and refused.reason == "reply_without_record"
+    assert reissue.take("sess")["tier"] == "T2"               # the ladder, automatically
+    # In order: the item was proposed on record this turn.
+    env.add()
+    record = env.propose(work)
+    assert work.unanswered("x", {**env.prov(), "turn_uid": record["turn_uid"]}) is None
+
+
+def test_a_declared_question_is_not_a_decision_and_not_a_fault(env):
+    work = env.work()
+    env.add("billing")
+    asking = env.prov()
+    work.ask(asking)
+    assert work.unanswered("Is this billing or legal?", asking) is None
+    assert work.pending() is None and reissue.take("sess") is None
+    # The declaration belongs to that turn only.
+    later = env.prov()
+    assert work.unanswered("My tag: finance.", later).reason == "reply_without_record"
+
+
+def test_an_empty_queue_is_a_fine_way_to_end_and_off_is_as_before(env):
+    work = env.work()
+    assert work.unanswered("Nothing left.", env.prov()) is None      # nothing queued
+    off = env.work(session={**SESSION, "enabled": False})
+    env.add("billing")
+    assert off.unanswered("My tag: finance.", env.prov()) is None    # the old rule only
+
+
+def test_a_model_turn_that_recorded_the_decision_replies_from_the_record(env):
+    work = env.work()
+    env.add("billing", "outage")
+    env.propose(work)
+    deciding = env.prov()
+    work.decide(decision="correct", corrected_output={"tag": "ops"}, provenance=deciding)
+    assert work.decided_reply(deciding["turn_uid"]).splitlines()[0] == (
+        "Revised: finance Money in or out → ops Something is down.")
+    assert work.decided_reply("some-other-turn") is None
+    d, agent, written, said = _dispatcher(env, work)
+    assert d._session_card_for(agent, work, deciding["turn_uid"]).startswith("Revised: finance")
+
+
+# ── pause, resume, the declared question, and what the model is told ──
+
+
+def test_a_pause_phrase_is_routing_and_decides_nothing(env):
+    work = env.work(session={**SESSION, "pause": ["pause", "i'll come back later"]})
+    env.add("billing", "outage")
+    env.propose(work)
+    assert work.session_action("I'll come back later") == {"action": "pause"}
+    assert work.pause_notice() == (
+        "Paused at message 1 of 2. Say “let's tag some messages” to pick it back up.")
+    d, agent, written, said = _dispatcher(env, work)
+    ended = []
+    d._end_isolation = lambda a: ended.append(True)
+    result = d._session_intercept(agent, "pause", None)
+    assert result["final_response"].startswith("Paused at message 1 of 2.")
+    assert ended == [True] and agent.calls == []              # no tool, no model
+    assert work.pending()["item_id"] == "m01"                 # the item still waits
+
+
+def test_the_model_can_pause_for_a_change_of_subject(env):
+    work = env.work()
+    env.add("billing")
+    env.propose(work)
+    asked = env.prov(request="what's on my calendar?")
+    work.pause(asked)
+    armed = reissue.take("sess")
+    assert (armed["request"], armed["leave_goal"], armed["advance"]) == (
+        "what's on my calendar?", True, False)
+    assert work.pending() is not None                         # nothing decided
+
+
+def test_absorbing_is_only_for_what_repeats_the_loop(env):
+    work = env.work()
+    for said in ("next", "ok", "Tag the next message", dw.button_message("confirm", "m01")):
+        assert work.absorbs(said) is True, said
+    for said in ("what's the weather", "that one was wrong", "ops"):
+        assert work.absorbs(said) is False, said
+    assert env.work(session={**SESSION, "enabled": False}).absorbs("next") is False
+
+
+def test_with_the_session_on_the_model_is_never_told_to_wait_for_the_operator(env):
+    work = env.work()
+    env.add("billing", "outage")
+    env.propose(work)
+    deciding = env.prov()
+    work.decide(decision="confirm", provenance=deciding)
+    with pytest.raises(DecisionRefused) as stop:
+        work.check_one_step_per_turn(deciding)
+    assert "the system presents the next item itself" in str(stop.value)
+    assert "asks for it" not in str(stop.value).replace("to ask for it", "")
+    off = env.work(session={**SESSION, "enabled": False})
+    with pytest.raises(DecisionRefused) as stop:
+        off.check_one_step_per_turn(deciding)
+    assert "starts when the operator asks for it" in str(stop.value)   # as before

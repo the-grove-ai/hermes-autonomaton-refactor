@@ -944,6 +944,13 @@ class Dispatcher:
         # How this turn's message scored against the goal's declared
         # work-session phrases, fired or not (recognition, stage summary).
         self._current_turn_phrase_match: Optional[Dict[str, Any]] = None
+        # Messages the gateway absorbed while this turn (the next item, on its
+        # way) was running; the question a model declared it is asking; and
+        # the pause notice this turn's reply opens with, when it leaves a
+        # work session.
+        self._current_turn_absorbed: List[Dict[str, Any]] = []
+        self._current_turn_question: Optional[str] = None
+        self._current_turn_pause_notice: Optional[str] = None
         self._isolation_by_session: Dict[str, str] = {}
         self._last_applied_isolated_sections: Any = None
         # Sprint 48 — per-turn tool invocations (name + args) for the T0
@@ -2124,6 +2131,9 @@ class Dispatcher:
         # goal isolation — decided here, BEFORE the T0 short-circuit and
         # before classification, so a session is latched on its first turn
         # whichever tier answers it.
+        self._current_turn_absorbed = []
+        self._current_turn_question = None
+        self._current_turn_pause_notice = self._take_session_pause(agent)
         self._current_turn_isolation = self._resolve_turn_isolation(
             agent, user_message,
         )
@@ -2159,6 +2169,13 @@ class Dispatcher:
         # ``_t0_intercept`` finalizes the previous turn, records the hit,
         # writes telemetry + the intent record, and returns the result dict;
         # a miss returns None and falls through to the normal flow unchanged.
+        if isinstance(user_message, str) and not self._current_turn_isolation:
+            # Asking for a goal's work from a session that is not its own
+            # ("back to invoices" after a pause): answered through the bus,
+            # with no model — a clean session is opened under the signed rule.
+            _resume_result = self._resume_intercept(agent, user_message, previous_turn_id)
+            if _resume_result is not None:
+                return _resume_result
         if isinstance(user_message, str) and self._current_turn_isolation:
             # A work session's unambiguous messages (confirm, a valid revised
             # value, "show me the item again") are carried out here with no
@@ -2795,7 +2812,17 @@ class Dispatcher:
                     # turn's exit reason decides; the text is the backstop,
                     # matched by prefix so appended text cannot hide it.
                     _withheld = getattr(self, "_current_turn_withheld", None)
-                    if _withheld:
+                    if getattr(self, "_current_turn_question", None) and not _withheld:
+                        # The turn ended by asking the operator about the
+                        # next item: control is with the operator, and
+                        # nothing was decided.
+                        self._write_intent_record(
+                            agent,
+                            outcome="awaiting_operator",
+                            final_response_chars=len(yielded.content or ""),
+                            response_content=yielded.content or "",
+                        )
+                    elif _withheld:
                         # The reply was withheld (review_final_reply): this
                         # attempt did not complete, and is recorded as such.
                         self._write_intent_record(
@@ -2935,6 +2962,7 @@ class Dispatcher:
         tools_run = list(self._current_turn_tools_yielded)
 
         cap = self._STAGE_DETAIL_CAP
+        absorbed = self._collect_absorbed(agent)
         return {
             "telemetry": {
                 "turn_uid": self._current_turn_uid,
@@ -2953,6 +2981,9 @@ class Dispatcher:
                 # it with no model. Absent on every other turn.
                 **({"phrase_match": self._current_turn_phrase_match}
                    if getattr(self, "_current_turn_phrase_match", None) else {}),
+                # Messages absorbed while this turn was already bringing the
+                # next item ("next", "ok"): no reply, no interrupt, on record.
+                **({"absorbed": absorbed} if absorbed else {}),
             },
             "compilation": {
                 "tier": tier,
@@ -2986,6 +3017,10 @@ class Dispatcher:
                 "red_resolutions": red[:cap],
             },
             "execution": {
+                # The model declared it is asking the operator a question
+                # about the next item, not deciding it: the question, as put.
+                **({"asked": True, "question": self._current_turn_question}
+                   if getattr(self, "_current_turn_question", None) else {}),
                 "mode": "tools" if tools_run else "response_only",
                 "model_calls": int(api_calls),
                 "retries": int(getattr(agent, "_turn_retries", 0) or 0),
@@ -4254,6 +4289,18 @@ class Dispatcher:
 
         if previous_turn_id is not None:
             self._finalize_previous_turn_pending(previous_turn_id)
+        if action.get("action") == "pause":
+            # A declared pause phrase: leave the work session now. The item
+            # waiting stays waiting; nothing is decided and no model runs.
+            self._current_turn_session_step = "t0"
+            response_text = work.pause_notice()
+            self._end_isolation(agent)
+            self._write_intent_record(
+                agent, outcome="pending", final_response_chars=len(response_text),
+                intent_class_override="conversation", tier_override="T0",
+            )
+            self._persist_t0_turn(user_message, response_text)
+            return self._session_result_dict(agent, response_text)
         try:
             data = self._run_session_step(agent, cfg.tool, action, "t0")
         except Exception as exc:  # noqa: BLE001 — stop loud; nothing was decided by guess
@@ -5551,6 +5598,113 @@ class Dispatcher:
             )
             return None
 
+    def _collect_absorbed(self, agent: Any) -> List[Dict[str, Any]]:
+        """Messages the gateway absorbed during this turn, gathered onto the
+        turn (``grove.reissue``). Cumulative: each write of the turn's record
+        carries all of them."""
+        try:
+            from grove import reissue
+            new = reissue.take_absorbed(self.session_id or getattr(agent, "session_id", None))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[grove.dispatcher] could not read absorbed messages: %r", exc)
+            new = []
+        kept = getattr(self, "_current_turn_absorbed", None)
+        if kept is None:
+            kept = self._current_turn_absorbed = []
+        kept.extend(new)
+        return list(kept)
+
+    def _end_isolation(self, agent: Any) -> None:
+        """Leave the goal's work session: this session is no longer isolated
+        (a pause). The latch is the session's own record; a later request for
+        the work opens a clean session under the signed rule."""
+        from grove.decision_work import isolation_meta_key
+
+        sid = str(self.session_id or getattr(agent, "session_id", None) or "")
+        if not sid:
+            return
+        set_meta = getattr(self.session, "set_meta", None) if self.session is not None else None
+        if callable(set_meta):
+            set_meta(isolation_meta_key(sid), "")
+        else:
+            self._isolation_by_session[sid] = ""
+        self._current_turn_isolation = None
+        logger.info("[grove.dispatcher] session %s left its work session (paused)", sid)
+
+    def _take_session_pause(self, agent: Any) -> Optional[str]:
+        """A pause armed for this turn (``grove.reissue.note_pause``): leave
+        the work session BEFORE isolation is resolved, so this turn's message
+        is answered outside it. Returns the pause notice the reply should open
+        with, or None. Never raises."""
+        try:
+            from grove import reissue
+            from grove.decision_work import (
+                DecisionWork, config_for_goal, isolation_meta_key,
+            )
+
+            sid = self.session_id or getattr(agent, "session_id", None)
+            pause = reissue.take_pause(sid)
+            if not pause:
+                return None
+            get_meta = getattr(self.session, "get_meta", None) if self.session is not None else None
+            goal = (get_meta(isolation_meta_key(str(sid))) if callable(get_meta)
+                    else self._isolation_by_session.get(str(sid)))
+            notice = None
+            if goal and pause.get("notice"):
+                notice = DecisionWork(config_for_goal(str(goal))).pause_notice()
+            self._end_isolation(agent)
+            return notice
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[grove.dispatcher] could not apply a session pause: %r", exc)
+            return None
+
+    def _resume_intercept(
+        self, agent: Any, user_message: str, previous_turn_id: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """The work of a goal with a work session was asked for in a session
+        that is not that goal's own (it was paused, or it began as something
+        else). That is the same abnormality the goal's tool raises — a session
+        that is not clean — so it goes on the same bus, here with no model:
+        Jidoka flags it, the andon is raised, and Kaizen's answer under the
+        signed session rule opens a clean session and re-issues the request.
+        Returns None for every other message, and on any fault."""
+        if self._turn_counter <= 1:
+            return None          # a session's first turn latches its own isolation
+        try:
+            from grove import turn_provenance
+            from grove.decision_work import DecisionWork, config_for_goal, isolating_goal_for
+
+            goal = isolating_goal_for(user_message)
+            if not goal:
+                return None
+            cfg = config_for_goal(str(goal))
+            if not cfg.work_session.enabled:
+                return None
+            work = DecisionWork(cfg)
+            prov = self.turn_provenance(agent)
+            token = turn_provenance.set_current(prov)
+            try:
+                refusal = work.abnormal(
+                    "session_not_isolated",
+                    f"This session is not {goal}'s own, so the work cannot run here.",
+                    prov)
+            finally:
+                turn_provenance.reset(token)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[grove.dispatcher] could not resume a work session: %r", exc)
+            return None
+        answer = refusal.answer or {}
+        if previous_turn_id is not None:
+            self._finalize_previous_turn_pending(previous_turn_id)
+        self._current_turn_session_step = "t0"
+        response_text = str(answer.get("summary") or str(refusal))
+        self._write_intent_record(
+            agent, outcome="pending", final_response_chars=len(response_text),
+            intent_class_override="conversation", tier_override="T0",
+        )
+        self._persist_t0_turn(user_message, response_text)
+        return self._session_result_dict(agent, response_text)
+
     def _take_reissue_tier(self, agent: Any) -> Optional[str]:
         """The tier an accepted remedy pinned this re-issued turn to, if any
         (``grove.reissue``). Consumed once; a fault means no pin."""
@@ -5582,6 +5736,11 @@ class Dispatcher:
 
         A fault in the review itself is logged loud and the reply stands:
         the review failing is not evidence the reply is wrong."""
+        notice = getattr(self, "_current_turn_pause_notice", None)
+        if notice:
+            # This turn left a work session for a change of subject: one line
+            # says so, then the answer to what the operator actually asked.
+            return f"{notice}\n\n{reply}"
         goal = getattr(self, "_current_turn_isolation", None)
         if not goal or getattr(self, "_current_turn_t0_pattern", None):
             return None
@@ -5600,6 +5759,12 @@ class Dispatcher:
                     "kind": "andon_stop", "andon_id": waiting.get("andon_id"),
                     "summary": f"escalated to {waiting.get('tier')} (ladder rule)"}
                 return ESCALATING_MESSAGE
+            if (waiting and waiting.get("turn_uid") == turn_uid
+                    and waiting.get("leave_goal")):
+                # The model found the message is about something else and
+                # paused the session. The message itself is re-issued and
+                # answered outside it; this reply is only the pause line.
+                return DecisionWork(config_for_goal(str(goal))).pause_notice()
             stop = reissue.stopped(session_id, turn_uid)
             if stop:
                 self._current_turn_withheld = {
@@ -5613,6 +5778,12 @@ class Dispatcher:
             finally:
                 turn_provenance.reset(token)
             if refusal is None:
+                if reissue.turn_note(session_id, turn_uid) == "asked":
+                    # A declared question: the reply is the model's own, and
+                    # the turn's record says it asked rather than decided.
+                    self._current_turn_question = (
+                        reissue.turn_note_text(session_id, turn_uid) or reply)[:500]
+                    return None
                 return self._session_card_for(agent, work, turn_uid)
             answer = refusal.answer or {}
             escalating = (
@@ -5717,7 +5888,11 @@ class Dispatcher:
             return None
         waiting = work.pending()
         if waiting is None or not turn_uid or waiting.get("turn_uid") != turn_uid:
-            return None
+            # Nothing proposed this turn. If the turn recorded the operator's
+            # decision instead, the reply is that decision as recorded — the
+            # next item is already on its way, so the model must not tell the
+            # operator to ask for it.
+            return work.decided_reply(turn_uid)
         data = self._run_session_step(
             agent, work.config.tool,
             {"action": "present", "item_id": waiting["item_id"]}, "review")

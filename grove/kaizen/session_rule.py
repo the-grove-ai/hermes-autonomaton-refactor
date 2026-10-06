@@ -68,7 +68,29 @@ def describe(rule: Mapping[str, Any]) -> str:
             "and when the work is asked for in any other session, a clean "
             "session is opened and the request re-issued there"
         )
-    return "; ".join(parts) + "."
+    text = "; ".join(parts) + "."
+    ws = rule.get("work_session")
+    if ws:
+        # Everything in this block is acted on with no model in between, so
+        # the operator reads every phrase they are signing.
+        def _said(key: str) -> str:
+            return ", ".join(f"“{p}”" for p in (ws.get(key) or []))
+
+        text += " Work session, acted on with no model:"
+        if ws.get("start"):
+            text += f" wording close to {_said('start')} starts or resumes the work;"
+        if ws.get("confirm"):
+            text += f" a message that is exactly {_said('confirm')} confirms the item waiting;"
+        if ws.get("revise"):
+            text += f" exactly {_said('revise')} asks what it should be;"
+        text += (" a message that is exactly a valid value revises the item to it;"
+                 " after each decision the next item is presented.")
+        if ws.get("batch"):
+            text += (f" Wording close to {_said('batch')} has the signed keg decide every "
+                     "item it covers at once, under its own authority, with no review.")
+        if ws.get("pause"):
+            text += f" Wording close to {_said('pause')} pauses the session."
+    return text
 
 
 def answer(andon: Mapping[str, Any], context: Any = None) -> Answer:

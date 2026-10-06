@@ -179,9 +179,13 @@ def _next(work: DecisionWork) -> Dict[str, Any]:
         "chart_of_accounts": chart,
         "instructions": (
             "Choose the GL code from chart_of_accounts using the invoice and "
-            "the vendor guide row. Then call record with gl_code and one line "
-            "of reasoning, tell the operator the code and why, and ask them to "
-            "confirm or revise it."
+            "the vendor guide row. Then you MUST do exactly one of two things "
+            "before you reply: (1) call record with gl_code and one line of "
+            "reasoning; or (2) if the invoice and the guide do not let you "
+            "choose (the guide says to confirm with the operator, or the "
+            "lines are too vague), call ask and then put your question to the "
+            "operator. Never tell the operator a code you have not recorded: "
+            "a code that is not on record is not a decision."
         ),
     }
 
@@ -274,10 +278,18 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
             )
         elif p["summary"]:
             parts.append(p["summary"])
-    parts.append(
-        "Stop here and tell the operator it is recorded. Do not fetch or code "
-        "the next invoice in this turn; they will ask for it."
-    )
+    if work.config.work_session.enabled:
+        parts.append(
+            "Stop here and tell the operator it is recorded, in one short "
+            "line. The system presents the next invoice itself, right after "
+            "your reply: do not fetch or code it, and never tell the operator "
+            "to ask for it or to say the word."
+        )
+    else:
+        parts.append(
+            "Stop here and tell the operator it is recorded. Do not fetch or "
+            "code the next invoice in this turn; they will ask for it."
+        )
     if work.last_observation_error:
         parts.append(
             "The watcher failed after recording this decision: "
@@ -429,6 +441,23 @@ def gl_coding(args: Dict[str, Any]) -> str:
                 if not prov.get("session_step"):
                     raise
                 return _t0_stop(exc)
+        if verb == "pause":
+            work.pause(turn_provenance.current())
+            return json.dumps({
+                "success": True, "status": "pausing",
+                "message": ("The invoice session is pausing and the operator's "
+                            "message will be answered outside it. Reply with "
+                            "nothing more than a brief acknowledgment."),
+            }, ensure_ascii=False)
+        if verb == "ask":
+            work.ask(turn_provenance.current(), str(args.get("question") or ""))
+            return json.dumps({
+                "success": True, "status": "asking",
+                "message": (
+                    "Ask the operator your question now, in one or two sentences. "
+                    "Do not state or imply a code as decided; nothing is recorded "
+                    "until you call record."),
+            }, ensure_ascii=False)
         if verb == "next":
             result = _next(work)
         elif verb == "record":
@@ -437,7 +466,8 @@ def gl_coding(args: Dict[str, Any]) -> str:
             result = _decide(work, args)
         else:
             return json.dumps(
-                {"success": False, "message": "verb must be next, record or decide"},
+                {"success": False,
+                 "message": "verb must be next, record, ask, decide or pause"},
                 ensure_ascii=False,
             )
     except DecisionRefused as exc:
@@ -465,13 +495,19 @@ GL_CODING_SCHEMA = {
         "Code vendor invoices to GL accounts, one at a time. verb='next' "
         "returns the next uncoded invoice, the vendor's row in the vendor "
         "guide and the full chart of accounts. verb='record' stores your "
-        "proposed gl_code with one line of reasoning. verb='decide' stores "
+        "proposed gl_code with one line of reasoning; after next you must "
+        "call record before replying, unless you need the operator to choose, "
+        "in which case call verb='ask' and then ask your question. Never "
+        "state a code you have not recorded. verb='decide' stores "
         "the operator's answer: decision='confirm', or decision='correct' "
         "with corrected_gl_code when the operator revises the code. Always "
         "ask the operator to confirm or revise each coding before moving on. "
-        "Say 'revise' and 'revised' to the operator, never 'correct'. One invoice per request: after "
-        "decide, stop — never call next or record again in the same turn; the "
-        "operator asks for each invoice. Use only what this tool "
+        "Say 'revise' and 'revised' to the operator, never 'correct'. One "
+        "invoice per request: after decide, stop — never call next or record "
+        "again in the same turn. Never tell the operator to ask for the next "
+        "invoice or to say the word: when a work session is on, the system "
+        "presents it. If the operator's message is about something other "
+        "than invoices, call verb='pause' and nothing else. Use only what this tool "
         "returns to choose a code. If the tool refuses, relay its `message` "
         "to the operator as written — it already says what happens next — "
         "and do not add instructions of your own (never tell the operator "
@@ -480,7 +516,11 @@ GL_CODING_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "verb": {"type": "string", "enum": ["next", "record", "decide"]},
+            "verb": {"type": "string", "enum": ["next", "record", "ask", "decide", "pause"]},
+            "question": {
+                "type": "string",
+                "description": "ask: the question you are about to put to the operator.",
+            },
             "gl_code": {
                 "type": "string",
                 "description": "record: the GL code from the chart of accounts.",

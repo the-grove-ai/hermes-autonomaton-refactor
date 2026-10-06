@@ -2774,6 +2774,70 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
+    def _work_session_goal(self, session_key: str, source: Any) -> tuple:
+        """``(goal, session_id, advancing)`` for a chat: the goal whose work
+        session this chat is in (or None), and whether the turn now running
+        is the system bringing the next item."""
+        from grove.decision_work import isolation_meta_key
+
+        try:
+            entry = self.session_store.get_or_create_session(source)
+            session_id = getattr(entry, "session_id", "") or ""
+        except Exception:
+            return None, "", False
+        flight = (getattr(self, "_ws_advance", None) or {}).get(session_key)
+        if flight:
+            return flight.get("goal"), session_id, True
+        goal = None
+        db = getattr(self, "_session_db", None)
+        if db is not None and session_id:
+            goal = db.get_meta(isolation_meta_key(session_id)) or None
+        return goal, session_id, False
+
+    def _work_session_busy_message(self, event: MessageEvent, session_key: str,
+                                   adapter: Any) -> bool:
+        """A message that arrives while a work session's turn is running.
+
+        The loop belongs to the system, so a typed message never fights it:
+
+          * the next item is already on its way and the message just repeats
+            that ("next", "ok", a button): ABSORBED — no reply, no interrupt,
+            no second card; kept on the in-flight turn's own record;
+          * the next item is on its way and the message is anything else: a
+            change of subject — the item finishes, then the session pauses
+            and the message is answered outside it, after a one-line notice;
+          * any other turn of the session is running: the message waits its
+            turn, with no interrupt and no notice.
+
+        Returns False (ordinary handling) outside a work session, for a goal
+        whose work session is switched off, and for slash commands."""
+        text = (event.text or "").strip()
+        if not text or text.startswith("/"):
+            return False
+        goal, session_id, advancing = self._work_session_goal(session_key, event.source)
+        if not goal or not session_id:
+            return False
+        from grove import reissue
+        from grove.decision_work import DecisionWork, config_for_goal
+
+        try:
+            cfg = config_for_goal(str(goal))
+        except ValueError:
+            return False
+        if not cfg.work_session.enabled:
+            return False
+        if advancing and DecisionWork(cfg).absorbs(text):
+            reissue.absorb(session_id, text)
+            logger.info("work session %s: absorbed %r while the next item was on its way",
+                        session_key, text[:40])
+            return True
+        merge_pending_message_event(adapter._pending_messages, session_key, event)
+        if advancing:
+            reissue.note_pause(session_id, notice=True)
+            logger.info("work session %s: change of subject; pausing after this item",
+                        session_key)
+        return True
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -2823,6 +2887,14 @@ class GatewayRunner:
         adapter = self.adapters.get(event.source.platform)
         if not adapter:
             return False  # let default path handle it
+
+        # A work session never interrupts its own loop, and never tells the
+        # operator it is interrupting. See _work_session_busy_message.
+        try:
+            if self._work_session_busy_message(event, session_key, adapter):
+                return True
+        except Exception as _ws_exc:
+            logger.error("work-session busy handling failed: %r", _ws_exc)
 
         running_agent = self._running_agents.get(session_key)
 
@@ -10124,6 +10196,11 @@ class GatewayRunner:
         signed standing rule; consumed exactly once."""
         from grove import reissue
 
+        # The turn that just ended is no longer "the next item on its way".
+        advancing = getattr(self, "_ws_advance", None)
+        if advancing is None:
+            advancing = self._ws_advance = {}
+        was_advancing = advancing.pop(quick_key, None)
         try:
             entry = self.session_store.get_or_create_session(source)
         except Exception:
@@ -10148,6 +10225,15 @@ class GatewayRunner:
         if adapter is None:
             logger.error("remedy re-issue for %s found no adapter", quick_key)
             return
+        if armed.get("leave_goal"):
+            # A pause the model asked for: the operator's message is answered
+            # outside the work session. The pause line was this turn's reply.
+            reissue.note_pause(getattr(entry, "session_id", "") or "", notice=False)
+        elif armed.get("advance") or (was_advancing and armed.get("tier")):
+            # The system is bringing the next item (or retrying it one tier
+            # up). Until that turn ends, a typed "next" or "ok" is absorbed.
+            advancing[quick_key] = {
+                "goal": armed.get("goal") or (was_advancing or {}).get("goal")}
         self._enqueue_fifo(quick_key, MessageEvent(
             text=str(request), message_type=MessageType.TEXT, source=source,
             message_id=None, channel_prompt=None,

@@ -95,7 +95,7 @@ class DecisionRefused(Exception):
 ABNORMAL_REFUSALS = frozenset({
     "no_provenance", "session_not_isolated", "contaminated_turn",
     "output_not_in_domain", "undeclared_output", "item_unreadable", "keg_fault",
-    "reply_without_tool",
+    "reply_without_tool", "reply_without_record",
 })
 
 
@@ -802,8 +802,11 @@ class DecisionWork:
                 if record.get("turn_uid") == turn_uid:
                     raise DecisionRefused(
                         "one_step_per_turn",
-                        "The operator's decision is recorded. Stop here: the "
-                        "next item starts when the operator asks for it.",
+                        "The operator's decision is recorded. Stop here: "
+                        + ("the system presents the next item itself; do not "
+                           "fetch it and do not tell the operator to ask for it."
+                           if self.config.work_session.enabled else
+                           "the next item starts when the operator asks for it."),
                     )
                 return
 
@@ -916,14 +919,140 @@ class DecisionWork:
             return None
         if not asks_for_work(str(prov.get("request") or ""), self.config):
             return None
-        if self.config.tool in set(prov.get("tools_yielded") or ()):
+        if self.config.tool not in set(prov.get("tools_yielded") or ()):
+            return self.abnormal(
+                "reply_without_tool",
+                f"The reply answered a request for {self.config.goal_id} work "
+                f"without calling {self.config.tool}, so nothing it says was done.",
+                prov,
+            )
+        if not self.config.work_session.enabled:
+            return None
+        # In a work session the turn must END in something the system can
+        # stand behind: an item proposed on record, a question the model
+        # declared it is asking, or an empty queue. A reply that presents an
+        # answer it never recorded is a claim, not a decision.
+        waiting = self.pending()
+        if waiting is not None and waiting.get("turn_uid") == prov.get("turn_uid"):
+            return None
+        from grove import reissue
+        if reissue.turn_note(prov.get("session_id"), prov.get("turn_uid")) == "asked":
+            return None
+        if waiting is None and self.next_item() is None:
             return None
         return self.abnormal(
-            "reply_without_tool",
-            f"The reply answered a request for {self.config.goal_id} work "
-            f"without calling {self.config.tool}, so nothing it says was done.",
+            "reply_without_record",
+            f"The reply answered a request for {self.config.goal_id} work but "
+            f"recorded no decision and declared no question, so what it says "
+            f"is not on record.",
             prov,
         )
+
+    def ask(self, provenance: Optional[Mapping[str, Any]], question: str = "") -> None:
+        """The model declares that this turn ends with a question to the
+        operator about the next item, not a decision. Declared, so the
+        system knows the reply is a question — and that nothing was decided.
+        A transient note for this turn only; the question itself goes on the
+        turn's own intent record."""
+        prov = provenance or {}
+        self.check_turn(prov)
+        if prov.get("session_id") and prov.get("turn_uid"):
+            from grove import reissue
+            reissue.note_turn(str(prov["session_id"]), str(prov["turn_uid"]), "asked",
+                              text=question)
+
+    def absorbs(self, message: Any) -> bool:
+        """Whether a message that arrives while the next item is ALREADY on
+        its way just repeats what the system is doing ("next", "ok", a press
+        on a button): absorbed with no reply. Anything else is a change of
+        subject."""
+        ws = self.config.work_session
+        if not ws.enabled:
+            return False
+        return bool(
+            says(message, ws.confirm) or asks_for_work(str(message or ""), self.config)
+            or BUTTON_PRESS.fullmatch(str(message or "").strip()))
+
+    def pause_notice(self) -> str:
+        """The one line the operator reads when the session pauses."""
+        ws = self.config.work_session
+        waiting = self.pending()
+        at = waiting["item_id"] if waiting is not None else (
+            self.next_item().stem if self.next_item() is not None else None)
+        one = self.config.item_name[0]
+        where = ""
+        if at:
+            position, total = self.progress(at)
+            where = f" at {one} {position} of {total}"
+        resume = f" Say “{ws.start[0]}” to pick it back up." if ws.start else ""
+        return f"Paused{where}.{resume}"
+
+    def pause(self, provenance: Optional[Mapping[str, Any]]) -> None:
+        """The model found the operator's message is about something else:
+        leave the work session and have that message answered outside it.
+        Re-issued as it was said; nothing about the pending item changes."""
+        prov = provenance or {}
+        if not self.config.work_session.enabled or not prov.get("session_id"):
+            raise DecisionRefused("work_session_off", "There is no work session to pause.")
+        from grove import reissue
+        reissue.arm({
+            "request": prov.get("request"), "turn_uid": prov.get("turn_uid"),
+            "goal": self.config.goal_id, "leave_goal": True,
+            "authorized": getattr(session_rule_grant(self.config), "id", None),
+        }, session_id=str(prov["session_id"]))
+
+    def decided_reply(self, turn_uid: Any) -> Optional[str]:
+        """What the operator reads when a MODEL turn recorded their decision
+        (they explained a revision in their own words): the same line a
+        no-model confirm gives, from the record — and what the improvement
+        loop did about it. None when this turn decided nothing."""
+        if not turn_uid:
+            return None
+        proposed, decided = self._state()
+        for record in proposed.values():
+            verdict = decided.get(record["id"])
+            if verdict is None or verdict.get("turn_uid") != turn_uid:
+                continue
+            before = self.value_text(record.get("output") or {})
+            if verdict.get("decision") == DECISION_CORRECT:
+                lines = [f"Revised: {before} → {self.value_text(verdict['output'])}."]
+            elif verdict.get("decision") == DECISION_CONFIRM:
+                lines = [f"Confirmed: {before}."]
+            else:
+                return None
+            return "\n".join(lines + self.loop_notices(since=verdict.get("ts")))
+        return None
+
+    def loop_notices(self, since: Any) -> List[str]:
+        """Read off the stores, not off a live watcher: a keg of this goal
+        halted, or a proposal of this goal filed, at or after ``since``."""
+        from grove import keg as keg_mod
+        from grove.pattern_cache import PatternCacheStore, STATUS_HALTED
+
+        lines: List[str] = []
+        many = self.config.item_name[1]
+        run = self.log.current_run() or {}
+        try:
+            for entry in PatternCacheStore().all():
+                record = keg_mod.keg_record(entry).get("keg") or {}
+                if (entry.status == STATUS_HALTED
+                        and record.get("dock_goal") == self.config.goal_id
+                        and record.get("lineage") == run.get("run_id")):
+                    lines.append(
+                        f"Keg v{record.get('version')} halted: covered {many} go back to "
+                        f"the model until you rule on the fix.")
+            from grove.eval.proposal_queue import read_all
+            for proposal in read_all():
+                keg = (proposal.payload or {}).get("keg") or {}
+                if (keg.get("dock_goal") == self.config.goal_id
+                        and str(proposal.created_at or "") >= str(since or "")):
+                    lines.append(f"Kaizen proposed keg v{keg.get('version')}. "
+                                 f"Review in portal: " + _portal("proposals/pending"))
+        except Exception:  # noqa: BLE001 — the decision stands; the notice is extra
+            import logging
+            logging.getLogger(__name__).warning(
+                "[decision_work] could not read loop notices for %s", self.config.goal_id)
+        return lines
 
     def check_turn(self, provenance: Optional[Mapping[str, Any]]) -> None:
         """Refuse unless this turn may decide for this goal. Only an isolated
@@ -1256,7 +1385,7 @@ class DecisionWork:
         reissue.arm({
             "request": cfg.keg.request, "authorized": getattr(grant, "id", None),
             "turn_uid": provenance.get("turn_uid"),
-            "after_decision": decided.get("id"),
+            "goal": cfg.goal_id, "advance": True,
         }, session_id=str(session_id))
         self.next_armed = True
         return True
@@ -1338,6 +1467,8 @@ class DecisionWork:
             kind, item_id = pressed.group(1).lower(), pressed.group(2)
             return {"action": "confirm" if kind == "confirm" else "revise_prompt",
                     "item_id": item_id, "button": True}
+        if routes(message, ws.pause, self.config):
+            return {"action": "pause"}
         if waiting is not None:
             if says(message, ws.confirm):
                 return {"action": "confirm", "item_id": waiting["item_id"]}

@@ -280,6 +280,7 @@ def _correction(andon: Mapping[str, Any], context: Any) -> Answer:
 # is answered by the ladder rule — the same request, one tier up.
 LADDER_REASONS = frozenset({
     "output_not_in_domain", "undeclared_output", "reply_without_tool",
+    "reply_without_record",
 })
 ESCALATING_MESSAGE = "That attempt didn't complete; retrying with a stronger model."
 NOT_COMPLETED_MESSAGE = (

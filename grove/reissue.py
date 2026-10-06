@@ -53,6 +53,12 @@ def arm(action: Mapping[str, Any], *, session_id: Optional[str] = None) -> Dict[
         # (turn, tier, why it did not complete): the escalation's own trace.
         "turn_uid": action.get("turn_uid"),
         "attempts": list(action.get("attempts") or []),
+        # A work session's own re-issues: the goal whose next item is being
+        # presented, or a request to leave the goal's session (a pause) so
+        # the operator's message is answered outside it.
+        "goal": action.get("goal"),
+        "advance": bool(action.get("advance")),
+        "leave_goal": bool(action.get("leave_goal")),
         "armed_at": datetime.now(timezone.utc).isoformat(),
     }
     path = _path(str(session_id))
@@ -145,6 +151,100 @@ def stopped(session_id: Optional[str], turn_uid: Optional[str]) -> Optional[Dict
     except ValueError:
         return None
     return record if isinstance(record, dict) and record.get("turn_uid") == turn_uid else None
+
+
+def absorb(session_id: str, text: str) -> None:
+    """Keep a message the gateway absorbed while the next item was already on
+    its way ("next", "ok"): no reply, no interrupt, no second card. Read by
+    the Dispatcher onto the in-flight turn's own recognition record."""
+    path = _dir() / ("absorbed-" + _path(str(session_id)).name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    kept = []
+    if path.exists():
+        try:
+            kept = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            kept = []
+    kept.append({"text": str(text)[:200], "at": datetime.now(timezone.utc).isoformat()})
+    path.write_text(json.dumps(kept), encoding="utf-8")
+
+
+def take_absorbed(session_id: Optional[str]) -> list:
+    if not session_id:
+        return []
+    path = _dir() / ("absorbed-" + _path(str(session_id)).name)
+    if not path.exists():
+        return []
+    try:
+        kept = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        kept = []
+    path.unlink()
+    return kept if isinstance(kept, list) else []
+
+
+def note_pause(session_id: str, *, notice: bool) -> None:
+    """The session's NEXT turn leaves the goal's work session (a pause):
+    its message is answered outside it. ``notice`` says whether that turn's
+    reply should open with the one-line pause notice."""
+    path = _dir() / ("pause-" + _path(str(session_id)).name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"notice": bool(notice)}), encoding="utf-8")
+
+
+def take_pause(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not session_id:
+        return None
+    path = _dir() / ("pause-" + _path(str(session_id)).name)
+    if not path.exists():
+        return None
+    try:
+        pause = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        pause = {"notice": True}
+    path.unlink()
+    return pause if isinstance(pause, dict) else {"notice": True}
+
+
+def note_turn(session_id: str, turn_uid: Optional[str], note: str,
+              text: Optional[str] = None) -> None:
+    """Note one fact about the running turn for the Dispatcher's review of
+    its reply (e.g. the model declared it is asking the operator a question).
+    Read only against the same turn."""
+    path = _dir() / ("note-" + _path(str(session_id)).name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"turn_uid": turn_uid, "note": note,
+                                "text": (str(text)[:500] if text else None)}),
+                    encoding="utf-8")
+
+
+def turn_note_text(session_id: Optional[str], turn_uid: Optional[str]) -> Optional[str]:
+    """The text kept with this turn's note (the question a model declared)."""
+    if not session_id or not turn_uid:
+        return None
+    path = _dir() / ("note-" + _path(str(session_id)).name)
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(record, dict) and record.get("turn_uid") == turn_uid:
+        return record.get("text")
+    return None
+
+
+def turn_note(session_id: Optional[str], turn_uid: Optional[str]) -> Optional[str]:
+    if not session_id or not turn_uid:
+        return None
+    path = _dir() / ("note-" + _path(str(session_id)).name)
+    if not path.exists():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        return None
+    if isinstance(record, dict) and record.get("turn_uid") == turn_uid:
+        return record.get("note")
+    return None
 
 
 def offer_actions(session_id: str, actions: Mapping[str, Any]) -> None:
