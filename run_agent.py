@@ -18218,6 +18218,15 @@ class AIAgent:
         else:
             logger.info(_diag_msg, *_diag_args)
 
+        # The "(empty)" terminal is a failure marker, not an answer. Nothing may
+        # be appended to it: the Dispatcher records the turn as an error and the
+        # gateway swaps in its failure message only while the marker is intact.
+        _decorate_reply = (
+            bool(final_response)
+            and not interrupted
+            and _turn_exit_reason != "empty_response_exhausted"
+        )
+
         # File-mutation verifier footer.
         # If one or more ``write_file`` / ``patch`` calls failed during this
         # turn and were never superseded by a successful write to the same
@@ -18233,7 +18242,7 @@ class AIAgent:
         # Gate: only applied when a real text response exists for this
         # turn and the user didn't interrupt.  Empty/interrupted turns
         # already have other surface text that shouldn't be augmented.
-        if final_response and not interrupted:
+        if _decorate_reply:
             try:
                 final_response = self._apply_mutation_verifier(final_response)
             except Exception as _ver_err:
@@ -18243,7 +18252,7 @@ class AIAgent:
         # Fired once per turn after the tool-calling loop completes.
         # Plugins can transform the LLM's output text before it's returned.
         # First hook to return a string wins; None/empty return leaves text unchanged.
-        if final_response and not interrupted:
+        if _decorate_reply:
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _transform_results = _invoke_hook(
@@ -18265,7 +18274,7 @@ class AIAgent:
         # append to any current-session proposal type). Placed after
         # transform_llm_output so a plugin transform cannot clobber the offer,
         # and before result assembly.
-        if final_response and not interrupted:
+        if _decorate_reply:
             # kaizen-proposal-surface-unification-v1 — ONE push surface for all
             # proposal types (routing + memory + future). Surfaces at most one
             # proposal per session, highest priority first (memory_context=1).
@@ -18518,6 +18527,7 @@ class AIAgent:
             content=str(result.get("final_response") or "") if isinstance(result, dict) else "",
             metadata={
                 "completed": (result.get("completed") if isinstance(result, dict) else None),
+                "turn_exit_reason": (result.get("turn_exit_reason") if isinstance(result, dict) else None),
                 "api_calls": (result.get("api_calls") if isinstance(result, dict) else None),
                 "model": getattr(self, "model", ""),
                 "provider": getattr(self, "provider", ""),

@@ -44,6 +44,7 @@ def _synthetic_generator(
     result: Dict[str, Any],
     *,
     final_text: str = "ok",
+    final_metadata: Optional[Dict[str, Any]] = None,
 ):
     """Yield one batch (or nothing) and then a FinalResponse.
 
@@ -62,7 +63,7 @@ def _synthetic_generator(
             obs = yield ToolBatchYield(intents=intents_batch, api_call_count=3)
             assert isinstance(obs, list)
             assert all(isinstance(o, Observation) for o in obs)
-        yield FinalResponse(content=final_text)
+        yield FinalResponse(content=final_text, metadata=dict(final_metadata or {}))
         return result
     return gen()
 
@@ -1026,6 +1027,27 @@ class TestFailedTurnsAreRecorded:
         Dispatcher(intent_store=tmp_store).dispatch_turn(agent, user_message="go")
         rec = _records(tmp_store)[-1]
         assert rec.outcome == "error" and rec.failure_kind == "empty_response"
+
+    @pytest.mark.parametrize("final_text, metadata", [
+        # A footer glued onto the marker (live: 20261005_213546_ea5d69a1#1).
+        ("(empty)\n\nCellar context this turn:\nlink", {}),
+        # The exit reason alone decides, whatever the text became.
+        ("something else entirely", {"turn_exit_reason": "empty_response_exhausted"}),
+    ])
+    def test_decorated_empty_response_is_still_an_error(
+        self, monkeypatch, tmp_store, final_text, metadata,
+    ):
+        _patch_classifier_green(monkeypatch)
+        _set_current_classification(monkeypatch)
+        agent = _bare_agent_with_exec([])
+        agent._run_turn_generator = lambda **kw: _synthetic_generator(
+            None, {"final_response": final_text}, final_text=final_text,
+            final_metadata=metadata,
+        )
+        Dispatcher(intent_store=tmp_store).dispatch_turn(agent, user_message="go")
+        rec = _records(tmp_store)[-1]
+        assert rec.outcome == "error" and rec.failure_kind == "empty_response"
+        assert rec.failure_summary == "model returned no content after retries"
 
     def test_normal_turn_writes_exactly_one_record_and_no_failure_fields(
         self, monkeypatch, tmp_store,

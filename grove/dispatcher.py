@@ -2719,8 +2719,14 @@ class Dispatcher:
                     # orphaned pending as success.
                     # failed-turn-records-v1 — "(empty)" is the agent loop's
                     # sentinel for "no content after every retry". It used to
-                    # be written pending and later swept to success.
-                    if (yielded.content or "").strip() == "(empty)":
+                    # be written pending and later swept to success. The
+                    # turn's exit reason decides; the text is the backstop,
+                    # matched by prefix so appended text cannot hide it.
+                    if (
+                        (yielded.metadata or {}).get("turn_exit_reason")
+                        == "empty_response_exhausted"
+                        or (yielded.content or "").lstrip().startswith("(empty)")
+                    ):
                         self._write_intent_record(
                             agent,
                             outcome="error",

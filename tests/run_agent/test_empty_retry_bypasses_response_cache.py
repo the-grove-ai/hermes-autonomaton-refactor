@@ -45,3 +45,27 @@ def test_empty_response_retry_drops_the_response_cache_headers():
     # the agent's own client settings are untouched — the next normal request
     # uses the cache again
     assert agent._client_kwargs["default_headers"] == _CACHE_HEADERS
+
+
+def test_empty_terminal_marker_is_never_decorated():
+    # Live 20261005_213546_ea5d69a1#1: the Cellar footer was appended to the
+    # "(empty)" marker, so neither the Dispatcher nor the gateway recognised it.
+    # Every reply-decorating block after the loop must sit behind the one guard
+    # that excludes the empty terminal.
+    import inspect
+
+    import run_agent
+
+    src = inspect.getsource(run_agent)
+    guard = src.index("_decorate_reply = (")
+    result_build = src.index('"turn_exit_reason": _turn_exit_reason,')
+    tail = src[guard:result_build]
+    assert '_turn_exit_reason != "empty_response_exhausted"' in tail[:400]
+    for appender in (
+        "_apply_mutation_verifier(", "transform_llm_output",
+        "_append_pending_offer(", "_append_connector_failure_offer(",
+        "_append_artifact_links(", "_append_cellar_citations(",
+    ):
+        at = tail.index(appender)
+        opened = tail.rfind("\n        if ", 0, at)
+        assert tail[opened:].startswith("\n        if _decorate_reply:"), appender
