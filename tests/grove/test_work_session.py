@@ -921,3 +921,46 @@ def test_however_the_operator_asks_the_keg_goes_first_on_a_new_backlog(env, tmp_
     # No released backlog, an item waiting, or the switch off: the model proceeds as usual.
     plain = env.work()
     assert plain.backlog_first(env.prov()) is False
+
+
+# ── the goal page: a goal and its standard work ───────────────────────
+
+
+def test_the_goal_page_shows_the_goals_standard_work_from_its_own_records(env, monkeypatch):
+    from grove.api import fragments
+    import grove.dock.attachment_store as attachments
+
+    monkeypatch.setattr(attachments, "attachments_for_goal", lambda goal_id: [])
+    work = env.work(session={**BATCH, "pause": ["pause"]})
+    _serve_keg()
+    env.add("billing", "outage")
+    env.propose(work)
+    work.session_step({"action": "confirm"}, env.prov(tier="T0"))
+    goal = SimpleNamespace(
+        id=GOAL, name="Tag every message", vector="operational", status="accelerating",
+        definition_of_done="Every message has the tag I would give it.",
+        keywords=("message",), root=work.config.queue.parent,
+        extra={}, resolved_sources=lambda: [])
+    monkeypatch.setattr(dw, "load_config", lambda g: work.config)
+    html = fragments.render_goal_detail(None, goal)
+    order = [html.index(s) for s in (
+        '<div id="goal-detail">', "all goals", "GOAL · OPERATIONAL · ACCELERATING",
+        "Tag every message", "THIS RUN", "1 / 2", "STANDARD WORK", "SESSION RULE",
+        "Open the scorecard", "Standard work, version by version",
+        "How this work runs", "SIGNED · IN FORCE", "ACTED ON WITH NO MODEL",
+        "Confirms", "Lets the keg decide a backlog at once",
+        "What it works from", "Reference table", "channels.csv",
+        "Attached artifacts",
+    )]
+    assert order == sorted(order)
+    for phrase in ("looks good", "work the backlog", "let&#x27;s tag some messages"):
+        assert phrase in html, phrase
+    # Unsigned: the page says the rule is not in force, in the event color.
+    grants_mod.get_grant_store().signed.clear()
+    unsigned = fragments.render_goal_detail(None, goal)
+    assert "NOT SIGNED · NOT IN FORCE" in unsigned and "not signed" in unsigned
+    # A goal with no decision work keeps its plain page.
+    monkeypatch.setattr(dw, "load_config", lambda g: None)
+    plain = fragments.render_goal_detail(None, goal)
+    assert "Tag every message" in plain and "Attached artifacts" in plain
+    assert "STANDARD WORK" not in plain and "sc-tiles" not in plain

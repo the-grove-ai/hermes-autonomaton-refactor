@@ -1176,3 +1176,15 @@ ul.listing li { padding: 0.7rem 0; }
     .sc-trace > .sc-rule { margin-left: 16px; }
     .sc-tstep { grid-template-columns: 1fr; gap: 4px; }
 }
+
+/* Goal page — a goal and its standard work, in the scorecard's style. */
+.layout:has(#goal-detail .sc-tiles) { grid-template-columns: var(--nav-w) 1fr; }
+.layout:has(#goal-detail .sc-tiles) .right-panel { display: none; }
+.sc-goal { cursor: default; }
+.sc-goal .sc-header h1 { font-size: clamp(30px, 4vw, 52px); }
+.sc-goal .sc-version { font-size: 15px; line-height: 1.5; color: var(--sc-text-2); }
+.sc-goal .sc-version strong { color: var(--sc-text); }
+.sc-goal .sc-row .tag { margin-left: 4px; }
+.sc-goal .sc-panel-head { align-items: center; }
+.sc-goal .sc-row .sc-mono { white-space: normal; text-align: right; }
+.sc-goal .sc-row > span:first-child { flex: 0 0 auto; max-width: 55%; }
