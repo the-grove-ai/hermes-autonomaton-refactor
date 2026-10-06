@@ -40,6 +40,11 @@ from grove import keg as keg_mod
 
 logger = logging.getLogger(__name__)
 
+# How a keg's scope text introduces the cases it hands back. The proposal
+# card shows those cases in plain words from the rules themselves, and reads
+# the scope text only up to this phrase.
+HANDS_BACK = " Hands back to the interpreter: "
+
 DRAFT_TOOL = {
     "name": "propose_condition",
     "description": "Propose one condition that separates the cases described.",
@@ -507,8 +512,7 @@ def answer(
     )
     if deferring:
         scope_text += (
-            " Hands back to the interpreter: "
-            + "; ".join(str(c["if"]) for c in deferring) + "."
+            HANDS_BACK + "; ".join(str(c["if"]) for c in deferring) + "."
         )
     reserve = (
         f"Any {ref.key_input} with more than one value in {table_name}; any "

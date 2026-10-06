@@ -1078,151 +1078,436 @@ def _keg_outputs_text(outputs) -> str:
     return ", ".join(f"{k} {v}" for k, v in outputs.items())
 
 
+def _keg_value(outputs) -> str:
+    """A decision's outputs as the operator reads them: the bare value when
+    the work has one output, ``name value`` pairs otherwise."""
+    if not outputs:
+        return "—"
+    if len(outputs) == 1:
+        return str(next(iter(outputs.values())))
+    return ", ".join(f"{k} {v}" for k, v in outputs.items())
+
+
+def _keg_plain(rule, inputs) -> str:
+    """One rule's condition in plain words; the formal text when the grammar
+    cannot read it (shown, never hidden)."""
+    from grove import keg as keg_mod
+    try:
+        return keg_mod.describe_condition(str(rule.get("if")), inputs)
+    except ValueError:
+        return str(rule.get("if"))
+
+
+def _keg_sentence(rule, inputs) -> str:
+    plain = _keg_plain(rule, inputs)
+    if rule.get("defer"):
+        return f"If {plain}, send it to the model."
+    return f"If {plain}, answer {_keg_value(rule.get('then'))}."
+
+
+def _keg_formal(rule) -> str:
+    then = "hand back" if rule.get("defer") else _keg_outputs_text(rule.get("then"))
+    return f"{rule.get('if')} → {then}"
+
+
+def _keg_context(goal: str) -> dict:
+    """What the card reads beside the proposal itself: how the goal names its
+    work, and where each item sat in the current run. Every part is optional —
+    a card for a goal no longer in the Dock still renders, in plain names."""
+    from grove import audit as audit_mod
+
+    out = {"title": None, "one": "item", "many": "items", "label_key": None,
+           "table": None, "numbers": {}}
+    try:
+        shown = audit_mod._presentation(goal)
+        out.update(title=shown["title"], one=shown["item_name"][0],
+                   many=shown["item_name"][1], label_key=shown["label_key"])
+        from grove.decision_work import DecisionLog, KIND_PROPOSED, config_for_goal
+        cfg = config_for_goal(goal)
+        out["table"] = cfg.reference.path.name if cfg.reference else None
+        proposed = [r for r in DecisionLog(goal).run_records() if r.get("kind") == KIND_PROPOSED]
+        out["numbers"] = {r.get("item_id"): n for n, r in enumerate(proposed, 1)}
+    except Exception as exc:  # noqa: BLE001 — the card must render without them
+        logger.warning("[portal] keg card context for %s unavailable: %r", goal, exc)
+    return out
+
+
 def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str:
-    """The keg proposal card — Kaizen's step in the improvement loop, laid out
-    for the operator's signature. Order is the review order: what Jidoka
-    flagged, what the keg covers and does NOT cover, the backtest (changed
-    cases first), the rule table, then GRV-004 classification and evidence.
-    Deterministic over the structured payload + the ``detail`` backtest
-    envelope; no inference and no writes from this path. A malformed backtest
-    is shown AS malformed and the card offers no Approve — the operator never
-    signs standard work whose replay cannot be read."""
+    """The keg proposal — Kaizen's step in the improvement loop, laid out for
+    the operator's signature in review order: why it was proposed, what
+    changes, the replay (cases to review first), what the version covers, the
+    rules, then the technical record. Deterministic over the proposal record,
+    the version it replaces and the goal's own declaration; no inference and no
+    writes. A malformed backtest is shown AS malformed and the card offers no
+    Sign — the operator never signs standard work whose replay cannot be read."""
+    from datetime import datetime
+
     from grove import keg as keg_mod
     from grove.kaizen import rendering as kaizen_rendering
+    from grove.kaizen.standard_work import HANDS_BACK
+    from grove.pattern_cache import PatternCacheStore
 
     keg = view.payload.get("keg") or {}
     name = keg.get("name") or "keg"
     version = keg.get("version", "?")
-    flag = keg.get("flag")
-    flag_label = {
-        keg_mod.FLAG_TIER_DOWN_PATTERN: "tier-down pattern",
-        keg_mod.FLAG_ANOMALY: "anomaly",
-    }.get(flag, str(flag or "?"))
+    goal = str(keg.get("dock_goal") or "")
+    inputs = keg.get("inputs") or {}
+    rules = list(keg.get("conditions") or [])
+    anomaly = keg.get("flag") == keg_mod.FLAG_ANOMALY
+    ctx = _keg_context(goal)
+    one, many = ctx["one"], ctx["many"]
+    title = str(ctx["title"] or name).upper()
 
-    backtest = None
-    backtest_error = ""
+    def _num(ref: str) -> str:
+        n = ctx["numbers"].get(ref)
+        return f"#{n}" if n else str(ref)
+
+    # The version this replaces, read from the cache entry the proposal names.
+    prior_id = keg.get("supersedes")
+    prior_version = keg.get("supersedes_version")
+    prior_rules = None
+    if prior_id:
+        try:
+            prior = PatternCacheStore().get(prior_id)
+            prior_rules = (keg_mod.keg_of(prior) or {}).get("conditions") if prior else None
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[portal] keg card: prior version %s unreadable: %r", prior_id, exc)
+    diff = keg_mod.diff_rules(prior_rules, rules)
+    first = not prior_id
+    new_ifs = {str(r.get("if")) for r in diff["added"]}
+
+    backtest, backtest_error = None, ""
     try:
         backtest = kaizen_rendering.decode_detail(view)
     except ValueError as exc:
         backtest_error = repr(exc)
         logger.warning("[portal] keg backtest malformed for %s: %r", pid, exc)
 
-    if backtest is None:
-        backtest_html = (
-            '<div class="meta error">Backtest unreadable — this proposal '
-            'cannot be signed.'
-            + (f' {_esc(backtest_error)}' if backtest_error else '')
-            + '</div>'
-        )
+    # 1. Header
+    changes = len(diff["added"]) + len(diff["removed"]) + len(diff["changed"])
+    if first:
+        direct = sum(1 for r in rules if not r.get("defer"))
+        lead = (f"Keg v{version}: answer {direct} kind{'' if direct == 1 else 's'} of "
+                f"{one} with no model.")
+        clause = "Everything else still goes to the model."
+    elif prior_rules is None:
+        lead, clause = f"Keg v{version}: a revision of v{prior_version}.", ""
+    elif changes == 1 and len(diff["added"]) == 1:
+        rule = diff["added"][0]
+        where = _keg_plain(rule, inputs)
+        lead = (f"Keg v{version}: send {many} where {where} back to the model."
+                if rule.get("defer") else
+                f"Keg v{version}: answer {many} where {where} directly, "
+                f"{_keg_value(rule.get('then'))}.")
+        clause = "Everything else stays the same."
     else:
-        def _case_row(c) -> str:
-            if c.result == "would_change":
-                verdict = (
-                    " (matches your correction)" if c.agrees_with_confirmed
-                    else "" if c.agrees_with_confirmed is None
-                    else " (conflicts with your confirmation)"
-                )
-                after = (
-                    _keg_outputs_text(c.keg) if c.keg is not None
-                    else "handed back to the interpreter"
-                )
-                text = f"{_keg_outputs_text(c.served)} → {after}{verdict}"
-            elif c.result == "not_covered":
-                text = "not covered — routes to the interpreter" + (
-                    f" ({c.note})" if c.note else "")
-            else:
-                text = f"{_keg_outputs_text(c.served)} (unchanged)"
-            return f"<div>{_esc(c.ref)} · {_esc(c.label)} · {_esc(text)}</div>"
-
-        changed = [c for c in backtest.cases if c.result != "unchanged"]
-        rest = [c for c in backtest.cases if c.result == "unchanged"]
-        changed_html = (
-            '<div class="keg-changed">' + "".join(_case_row(c) for c in changed)
-            + '</div>'
-        ) if changed else ""
-        rest_html = (
-            f'<details class="card-evidence"><summary>unchanged cases '
-            f'({len(rest)})</summary>{"".join(_case_row(c) for c in rest)}'
-            f'</details>'
-        ) if rest else ""
-        backtest_html = (
-            f'<p><strong>{_esc(backtest.headline)}</strong></p>'
-            f'{changed_html}{rest_html}'
-        )
-
-    rules = "".join(
-        f"<div>if {_esc(c.get('if'))} → "
-        + (
-            "hand back to the interpreter" if c.get("defer")
-            else _esc(_keg_outputs_text(c.get("then")))
-        )
-        + "</div>"
-        for c in keg.get("conditions") or []
-    )
-    replaces = keg.get("supersedes")
+        parts = [f"{len(diff[k])} {word}" for k, word in
+                 (("added", "added"), ("removed", "removed"), ("changed", "changed"))
+                 if diff[k]]
+        lead = f"Keg v{version}: {', '.join(parts) or 'no rule changes'}."
+        clause = ""
     feedback = [f for f in (keg.get("feedback") or []) if f]
-    feedback_html = (
-        '<div class="meta">Revised after your feedback: '
-        + _esc(" · ".join(feedback)) + '</div>'
-    ) if feedback else ""
-    evidence = "".join(f"<div>{_esc(t)}</div>" for t in view.evidence)
+    if anomaly:
+        why = (f"You corrected one {one} the keg decided. The keg stopped itself, and this "
+               f"is the smallest change that would have gotten it right, tested against "
+               f"every {one} it has seen.")
+    else:
+        why = (f"Your confirmed decisions matched {ctx['table'] or 'the reference table'} "
+               f"every time. This puts those cases on standard work, tested against "
+               f"every {one} so far.")
+    if feedback:
+        why += " Revised after your feedback: " + "; ".join(f"“{f}”" for f in feedback) + "."
+    header = (
+        f'<header class="sc-header"><div class="sc-check-line"><span class="sc-eyebrow '
+        f'sc-event">KAIZEN PROPOSAL · STANDARD WORK · {_esc(title)}</span>'
+        f'<span class="sc-status sc-status-draft">DRAFT · AWAITING YOUR SIGNATURE</span></div>'
+        f'<h1>{_esc(lead)} <span class="sc-event">{_esc(clause)}</span></h1>'
+        f'<p>{_esc(why)}</p></header>')
 
-    approve = (
-        f'<button class="btn btn-approve" '
+    # 2. Why this was proposed
+    miss = keg.get("miss") or {}
+    replayed = backtest.replayed if backtest is not None else None
+    if anomaly and miss:
+        label = str((miss.get("inputs") or {}).get(ctx["label_key"], "")) if ctx["label_key"] else ""
+        who = ", ".join(x for x in (_num(str(miss.get("item_id") or "")), label) if x)
+        flagged = (f'You corrected <strong>{_esc(who)}</strong>, from '
+                   f'{_esc(_keg_value(miss.get("served")))} to '
+                   f'{_esc(_keg_value(miss.get("corrected")))}.')
+    elif anomaly:
+        flagged = _esc(keg.get("flag_detail") or "A decision was corrected.")
+    else:
+        flagged = _esc(keg.get("flag_detail") or
+                       f"{len(view.evidence)} confirmed decisions matched the reference table.")
+    if anomaly and prior_version:
+        andon = (f"Keg v{prior_version} halted. Its {many} went back to the model until "
+                 f"you rule on this.")
+        andon_title = "2 · ANDON STOPPED THE LINE"
+    else:
+        andon = "Nothing was stopped. This is a tier-down pattern, so the line kept running."
+        andon_title = "2 · ANDON RAISED"
+    if first:
+        drafted = f"{len(rules)} rule{'' if len(rules) == 1 else 's'}"
+        fix_title = "3 · KAIZEN DRAFTED STANDARD WORK"
+    else:
+        words = []
+        for key, word in (("added", "added"), ("removed", "removed"), ("changed", "changed")):
+            if diff[key]:
+                words.append(f"{len(diff[key])} {word} rule{'' if len(diff[key]) == 1 else 's'}")
+        drafted = ", ".join(words) or "No rule changes"
+        fix_title = "3 · KAIZEN DRAFTED A FIX"
+    drafted = (drafted[0].upper() + drafted[1:]) + (
+        f", replayed on all {replayed} {many} so far." if replayed is not None
+        else "; the replay could not be read.")
+    decide = (f"Sign it and v{version} starts serving, or send it back with feedback."
+              if first else
+              f"Sign it and v{version} replaces v{prior_version}, or send it back with feedback.")
+
+    def _step(label, body, mine=False):
+        return (f'<div class="sc-tile sc-step"><div class="sc-eyebrow'
+                f'{" sc-event" if mine else ""}">{_esc(label)}</div><div>{body}</div></div>')
+
+    steps = (
+        '<section class="sc-steps" aria-label="Why this was proposed">'
+        + _step("1 · JIDOKA FLAGGED", flagged) + _step(andon_title, _esc(andon))
+        + _step(fix_title, _esc(drafted)) + _step("4 · YOU DECIDE", _esc(decide), mine=True)
+        + '</section>')
+
+    # 3. What changes
+    def _change(rule, sign, cls):
+        return (f'<div class="sc-change {cls}"><span class="sc-sign" aria-hidden="true">'
+                f'{sign}</span><div><div class="sc-change-plain">'
+                f'{_esc(_keg_sentence(rule, inputs))}</div><div class="sc-change-formal">'
+                f'{_esc(_keg_formal(rule))}</div></div></div>')
+
+    if first:
+        change_title = f"What v{version} does"
+        change_body = (
+            f'<div class="sc-note">This is the first version, so every rule is new. '
+            f'The {len(rules)} rule{"" if len(rules) == 1 else "s"} are listed below, '
+            f'in order.</div>')
+    elif prior_rules is None:
+        change_title = f"What changes from v{prior_version}"
+        change_body = (
+            f'<div class="sc-note sc-event">The rules of v{_esc(prior_version)} could not be '
+            f'read, so the change cannot be shown rule by rule. Review the full rule list '
+            f'below before signing.</div>')
+    else:
+        change_title = f"What changes from v{prior_version}"
+        change_body = "".join(_change(r, "+", "sc-add") for r in diff["added"])
+        change_body += "".join(_change(r, "−", "sc-remove") for r in diff["removed"])
+        for old, new in diff["changed"]:
+            change_body += (
+                f'<div class="sc-change sc-alter"><span class="sc-sign" aria-hidden="true">~'
+                f'</span><div><div class="sc-change-plain">{_esc(_keg_sentence(new, inputs))}'
+                f'</div><div class="sc-change-formal">was: {_esc(_keg_formal(old))}</div>'
+                f'<div class="sc-change-formal">now: {_esc(_keg_formal(new))}</div></div></div>')
+        kept = len(diff["unchanged"])
+        still = ("Nothing removed. " if not diff["removed"] else "") + (
+            f"The other {kept} rule{'' if kept == 1 else 's'} from v{prior_version} "
+            f"{'is' if kept == 1 else 'are'} unchanged." if kept
+            else f"No rule from v{prior_version} is carried over unchanged.")
+        change_body += f'<div class="sc-note">{_esc(still)}</div>'
+    change = (f'<section class="sc-panel"><h3>{_esc(change_title)}</h3>{change_body}</section>')
+
+    # 4. Replay
+    if backtest is None:
+        replay = (
+            '<section class="sc-panel sc-problems"><h3>Replay unreadable</h3>'
+            '<div class="sc-note sc-event">The replay on history could not be read, so this '
+            'proposal cannot be signed.'
+            + (f' {_esc(backtest_error)}' if backtest_error else '') + '</div></section>')
+    else:
+        def _case_head(c):
+            others = [str(v) for k, v in (c.inputs or {}).items()
+                      if k != ctx["label_key"] and v not in (None, "")]
+            sub = f'<div class="sc-quiet">{_esc("; ".join(others))}</div>' if others else ""
+            who = " · ".join(x for x in (_num(c.ref), c.label) if x)
+            return f'<div><div class="sc-case-title">{_esc(who)}</div>{sub}</div>'
+
+        prior_word = f"v{prior_version}" if prior_version else "a model"
+        review = ""
+        for c in backtest.cases:
+            if c.result != "would_change":
+                continue
+            after = (f"answers <strong>{_esc(_keg_value(c.keg))}</strong>"
+                     if c.keg is not None else "<strong>sends it to the model</strong>")
+            if c.confirmed is not None and c.confirmed != c.served:
+                before = (f'{_esc(prior_word)} answered <strong>'
+                          f'{_esc(_keg_value(c.served))}</strong> · you corrected it to '
+                          f'<strong>{_esc(_keg_value(c.confirmed))}</strong>')
+            else:
+                before = (f'{_esc(prior_word)} answered <strong>'
+                          f'{_esc(_keg_value(c.served))}</strong>')
+            if c.agrees_with_confirmed is None:
+                verdict = "You have not ruled on this one"
+            elif not c.agrees_with_confirmed:
+                verdict = "Conflicts with your decision"
+            elif c.keg is None:
+                # Handing a case back does not reproduce the correction; it
+                # stops the keg from getting it wrong.
+                verdict = "Consistent with your correction"
+            else:
+                verdict = "Matches your correction"
+            review += (
+                f'<div class="sc-case sc-case-change">{_case_head(c)}<div>{before}</div>'
+                f'<div>v{_esc(version)}: {after}</div><div class="sc-verdict">'
+                f'{_esc(verdict)}</div></div>')
+        both = f"v{prior_version} and v{version}" if prior_version else f"v{version}"
+        for c in backtest.cases:
+            if c.result != "not_covered":
+                continue
+            review += (
+                f'<div class="sc-case">{_case_head(c)}<div>{_esc(c.note or "No rule covers it")}'
+                f'</div><div>{_esc(both)}: <strong>send it to the model</strong></div>'
+                f'<div class="sc-quiet">Not covered by design</div></div>')
+        same = [c for c in backtest.cases if c.result == "unchanged"]
+        rows = "".join(
+            f'<div class="sc-row"><span>'
+            f'{_esc(" · ".join(x for x in (_num(c.ref), c.label) if x))}</span>'
+            f'<span class="sc-mono">{_esc(_keg_value(c.served))}</span></div>' for c in same)
+        unchanged = (
+            f'<details class="sc-more"><summary>Show the {len(same)} unchanged '
+            f'{_esc(one if len(same) == 1 else many)}</summary><div class="sc-rows">{rows}'
+            f'</div></details>') if same else ""
+        total = max(backtest.replayed, 1)
+        segments = "".join(
+            f'<span class="{cls}" style="flex:{count} 1 0"></span>'
+            for cls, count in (("sc-seg-same", backtest.unchanged),
+                               ("sc-seg-change", backtest.would_change),
+                               ("sc-seg-open", backtest.not_covered)) if count)
+        replay = (
+            f'<section class="sc-panel"><div class="sc-panel-head"><h3>Replayed on history: '
+            f'{backtest.replayed} {_esc(one if backtest.replayed == 1 else many)}</h3>'
+            f'<div class="sc-quiet">The system wrote its own test from what it has already '
+            f'seen.</div></div>'
+            f'<div class="sc-replay"><div class="sc-segbar" role="img" aria-label="'
+            f'{backtest.unchanged} unchanged, {backtest.would_change} would change, '
+            f'{backtest.not_covered} not covered, of {total}">{segments}</div>'
+            f'<div class="sc-legend"><span><i class="sc-swatch sc-seg-same"></i><strong>'
+            f'{backtest.unchanged}</strong>&nbsp;unchanged</span><span><i class="sc-swatch '
+            f'sc-seg-change"></i><strong>{backtest.would_change}</strong>&nbsp;would change'
+            f'</span><span><i class="sc-swatch sc-seg-open"></i><strong>'
+            f'{backtest.not_covered}</strong>&nbsp;not covered, go to the model</span></div>'
+            f'</div>'
+            + (f'<div class="sc-cases"><div class="sc-eyebrow sc-event">REVIEW THESE FIRST'
+               f'</div>{review}</div>' if review else
+               '<div class="sc-note">Nothing changes and nothing is left uncovered.</div>')
+            + unchanged + '</section>')
+
+    # 5. What it covers, and the rules in order
+    scope_text = str(view.semantic_justification or "").split(HANDS_BACK)[0].strip()
+    handed = [_keg_plain(r, inputs) for r in rules if r.get("defer")]
+    reserve = str(keg.get("reserve") or "").strip()
+    always = reserve + (
+        " Handed back by rule: " + "; ".join(handed) + "." if handed else "")
+    confirmed = len(view.evidence)
+    basis = (
+        (f"The answers come from {ctx['table']}. " if ctx["table"] else "")
+        + f"Your {confirmed} confirmed decision{'' if confirmed == 1 else 's'} "
+        f"{'is' if confirmed == 1 else 'are'} the evidence that it matches your judgment.")
+
+    def _short(rule):
+        try:
+            groups = keg_mod.parse_condition(str(rule.get("if")), inputs)
+        except ValueError:
+            return str(rule.get("if"))
+        if len(groups) == 1 and len(groups[0]) == 1 and groups[0][0][1] == "==":
+            return str(groups[0][0][2])
+        return _keg_plain(rule, inputs)
+
+    rule_rows = "".join(
+        f'<div class="sc-row"><span>'
+        + ('<span class="sc-new">New</span> · ' if (not first and str(r.get("if")) in new_ifs)
+           else "")
+        + f'{_esc(_short(r))}</span><span class="sc-mono">'
+        + ("→ model" if r.get("defer") else _esc(_keg_value(r.get("then"))))
+        + '</span></div>' for r in rules)
+    covers = (
+        f'<section class="sc-pair"><div class="sc-panel"><h3>What v{_esc(version)} covers</h3>'
+        f'<div class="sc-version"><div class="sc-eyebrow">ANSWERS DIRECTLY, NO MODEL</div>'
+        f'<div>{_esc(scope_text)}</div></div>'
+        f'<div class="sc-version"><div class="sc-eyebrow">ALWAYS SENDS TO THE MODEL</div>'
+        f'<div>{_esc(always)}</div></div>'
+        f'<div class="sc-note">{_esc(basis)}</div></div>'
+        f'<div class="sc-panel"><h3>The rules, in order</h3><div class="sc-rows">{rule_rows}'
+        f'</div></div></section>')
+
+    # 6. Technical details (collapsed)
+    trigger = keg.get("trigger") or {}
+    matching = ""
+    if trigger.get("match_threshold"):
+        matching = f"Matching: wording that overlaps one of those by {trigger['match_threshold']}"
+        if trigger.get("verb_bonus"):
+            matching += (f"; a shorter request using the same verb gets "
+                         f"+{trigger['verb_bonus']}")
+    try:
+        created = datetime.fromisoformat(str(p.get("created_at"))).astimezone().strftime(
+            "%Y-%m-%d %H:%M") + " local"
+    except ValueError:
+        created = str(p.get("created_at"))
+    tech_lines = [
+        f"Keg: {view.payload.get('pattern_id')}"
+        + (f" · replaces {prior_id}" if prior_id else " · first version"),
+        f"GRV-004 keg · scope {keg.get('scope')} · authority {keg.get('authority_level')} "
+        f"· standard work for {goal} · serves at T0 once signed",
+        "Answers: " + " · ".join(f"“{r}”" for r in keg_mod.trigger_requests(keg)),
+    ] + ([matching] if matching else []) + [
+        f"Jidoka flag: {keg.get('flag')}"
+        + (f" · andon {keg.get('andon_id')}" if keg.get("andon_id") else ""),
+        f"Evidence: {confirmed} decision record{'' if confirmed == 1 else 's'}, each "
+        f"linked to its turn",
+        f"Created {created}",
+    ]
+    tech = (
+        '<details class="sc-more"><summary>Technical details</summary><div class="sc-tech">'
+        + "".join(f"<div>{_esc(line)}</div>" for line in tech_lines)
+        + "".join(f"<div>{_esc(t)}</div>" for t in view.evidence) + '</div></details>')
+
+    # 7. The action bar
+    sign = (
+        f'<button type="button" class="sc-sign-btn" '
         f'hx-post="/portal/actions/proposals/{_esc(pid)}/approve" '
         f'hx-target="#proposal-{short_id}" hx-swap="outerHTML" '
         f'hx-confirm="Sign {_esc(name)} v{_esc(version)} as standard work?">'
-        f'Sign</button>'
+        f'Sign v{_esc(version)}</button>'
     ) if backtest is not None else ""
+    effect = ("Signing takes effect immediately"
+              + (f" and replaces v{prior_version}." if prior_version else "."))
     actions = (
-        f'<div class="proposal-actions">{approve}'
-        f'<input type="text" name="reason" id="keg-feedback-{short_id}" '
-        f'style="flex:1;min-width:16rem" placeholder="Feedback for Kaizen (optional)">'
-        f'<button class="btn btn-reject" '
+        f'<div class="sc-actionbar"><div class="sc-actions">{sign}'
+        f'<label class="sc-sr" for="keg-feedback-{short_id}">Feedback for Kaizen</label>'
+        f'<textarea name="reason" id="keg-feedback-{short_id}" rows="1" '
+        f'placeholder="Or tell Kaizen what to change"></textarea>'
+        f'<button type="button" class="sc-back-btn" '
         f'hx-post="/portal/actions/proposals/{_esc(pid)}/reject" '
         f'hx-include="#keg-feedback-{short_id}" '
         f'hx-target="#proposal-{short_id}" hx-swap="outerHTML">'
-        f'Send feedback</button></div>'
-    )
+        f'Send back with feedback</button>'
+        f'<div class="sc-quiet sc-effect">{_esc(effect)} Demo mode: this approval stands in '
+        f'for Sokori\'s signed grant token.</div></div></div>')
+    return (f'<div class="sc sc-kz" id="proposal-{short_id}">{header}{steps}{change}{replay}'
+            f'{covers}{tech}{actions}</div>')
+
+
+def keg_resolved_html(short_id: str, keg: dict, signed: bool, reason: str = "") -> str:
+    """What replaces a keg proposal once the operator has ruled on it."""
+    version = keg.get("version", "?")
+    if signed:
+        pill = f'<span class="sc-status sc-status-signed">SIGNED · V{_esc(version)} SERVING</span>'
+        lead = f"Keg v{version} is now standard work."
+        text = ("It serves at T0 from the next request"
+                + (f", in place of v{keg.get('supersedes_version')}."
+                   if keg.get("supersedes_version") else "."))
+    else:
+        pill = '<span class="sc-status">SENT BACK TO KAIZEN</span>'
+        lead = f"Keg v{version} was not signed."
+        text = (f"Your feedback went back to Kaizen: “{reason}”. A revised proposal will "
+                f"appear here." if reason else "It was sent back without feedback.")
     return (
-        f'<div class="card" id="proposal-{short_id}">'
-        f'<h4><span class="badge">Kaizen proposal</span> '
-        f'{_esc(name)} · v{_esc(version)} '
-        f'<span class="badge badge-yellow">draft</span></h4>'
-        f'<div class="meta">Jidoka flag: {_esc(flag_label)}'
-        + (f' — {_esc(keg.get("flag_detail"))}' if keg.get("flag_detail") else '')
-        + '</div>'
-        + (
-            f'<div class="meta">Replaces v{_esc(keg.get("supersedes_version") or "?")} '
-            f'({_esc(replaces)})</div>' if replaces else ''
-        )
-        + feedback_html
-        + f'<p>{_esc(view.semantic_justification)}</p>'
-        f'<p>Does not cover: {_esc(keg.get("reserve"))}</p>'
-        f'{backtest_html}'
-        f'<details class="card-evidence" open><summary>rules '
-        f'({len(keg.get("conditions") or [])})</summary>{rules}</details>'
-        f'<div class="meta">Answers the request: '
-        + _esc(" · ".join(f"“{r}”" for r in keg_mod.trigger_requests(keg)))
-        + _esc(
-            f" — or wording that overlaps one by {(keg.get('trigger') or {}).get('match_threshold')}"
-            if (keg.get("trigger") or {}).get("match_threshold") else ""
-        )
-        + _esc(
-            f"; a shorter request using the same verb gets +{(keg.get('trigger') or {}).get('verb_bonus')}"
-            if (keg.get("trigger") or {}).get("verb_bonus") else ""
-        )
-        + '</div>'
-        f'<div class="meta">GRV-004 keg · scope {_esc(keg.get("scope"))} · '
-        f'authority {_esc(keg.get("authority_level"))} · '
-        f'standard work for {_esc(keg.get("dock_goal"))} · serves at T0 once '
-        f'signed</div>'
-        f'<details class="card-evidence"><summary>evidence '
-        f'({len(view.evidence)})</summary>{evidence}</details>'
-        f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
-        f'{actions}'
-        f'</div>'
-    )
+        f'<div class="sc sc-kz sc-kz-done" id="proposal-{short_id}"><header class="sc-header">'
+        f'<div class="sc-check-line"><span class="sc-eyebrow sc-event">KAIZEN PROPOSAL · '
+        f'STANDARD WORK</span>{pill}</div><h2>{_esc(lead)}</h2><p>{_esc(text)}</p>'
+        f'</header></div>')
 
 
 def _kaizen_request_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str:
@@ -4486,47 +4771,126 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     return f'<div class="sc">{header}{tiles}{chart}{panels}{volume}{footer}</div>'
 
 
-def _audit_integrity_html(report) -> str:
-    """The chain check as a card: the same figures the terminal prints."""
-    from grove.audit import RESULT_TEXT
+_CHECK_ICON = (
+    '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<circle cx="12" cy="12" r="10"></circle><path d="M7.5 12.5l3 3 6-6.5"></path></svg>')
+_ALERT_ICON = (
+    '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    'stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<circle cx="12" cy="12" r="10"></circle><path d="M12 7v6"></path>'
+    '<path d="M12 16.5v.5"></path></svg>')
+_TICK_ICON = (
+    '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
+    'stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    '<path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>')
 
-    ok = report["result"] != "broken"
-    rows = [
-        ("Turn records checked", f"{report['records']:,}"),
-        ("Hash-chained", f"{report['chained']:,} in {report['chained_sessions']:,} session(s)"),
-        ("Older, pre-chain", f"{report['unchained']:,} (counted, not chained)"),
-        ("Sessions tail-checked", f"{report['anchored']:,} (newest record still present)"),
-        ("Kaizen ledger events",
-         f"{report['ledger']['chained']:,} chained in {report['ledger']['files']:,} file(s)"
-         + (f"; {report['ledger']['unchained']:,} older, pre-chain"
-            if report["ledger"]["unchained"] else "")),
-    ]
-    for run in report["runs"]:
-        label = f" ({run['label']})" if run["label"] else ""
-        rows.append((
-            f"Run {run['run_number']}{label} · {run['goal']}",
-            f"{run['decisions']:,} decisions, {run['with_turn']:,} with a turn on record"))
-    table = "".join(
-        f"<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>" for k, v in rows)
-    problems = "".join(
-        f"<div>{_esc(p['where'])} · {_esc(p['subject'])} · {_esc(p['problem'])}</div>"
-        for p in report["problems"])
-    verdict = RESULT_TEXT[report["result"]] + (
-        f" — {len(report['problems'])} problem(s)" if not ok else "")
+
+def _audit_integrity_html(report) -> str:
+    """The audit check as a panel. Its words come from ``grove.audit`` — the
+    same ones ``scripts/verify-intent-chain.py`` prints."""
+    from datetime import datetime
+
+    from grove import audit as audit_mod
+
+    result = report["result"]
+    broken = result == "broken"
+    head = audit_mod.check_headline(report)
+    try:
+        checked = datetime.fromisoformat(report["checked_at"]).strftime("%-I:%M:%S %p")
+    except (KeyError, ValueError):
+        checked = "—"
+    runs = report["runs"]
+    if runs:
+        shown = audit_mod._presentation(runs[0]["goal"])
+        title = str(shown["title"] or runs[0]["goal"]).upper()
+        eyebrow = f"AUDIT CHECK · {title} · RUN {runs[0]['run_number']}"
+    else:
+        eyebrow = "AUDIT CHECK"
+    pill = "sc-pill-bad" if broken else "sc-pill-ok" if result == "intact" else "sc-pill-idle"
+    header = (
+        f'<header class="sc-header"><div class="sc-eyebrow sc-event">{_esc(eyebrow)}</div>'
+        f'<div class="sc-check-line"><div role="status" class="sc-pill {pill}">'
+        f'{_ALERT_ICON if broken else _CHECK_ICON}<span>'
+        f'{_esc(audit_mod.STATUS_TEXT[result])}</span></div>'
+        f'<div class="sc-checked">Last checked {_esc(checked)} · {report["records"]:,} '
+        f'record{"" if report["records"] == 1 else "s"}</div></div>'
+        f'<h1>{_esc(head["lead"])} <span class="sc-event">{_esc(head["clause"])}</span></h1>'
+        + (f'<p>{_esc(head["detail"])}</p>' if head["detail"] else "") + '</header>')
+
+    problems = ""
+    if broken:
+        rows = "".join(
+            f'<tr><td>{_esc(p["subject"] or "—")}</td><td>{_esc(p["where"])}</td>'
+            f'<td>{_esc(p["problem"])}</td></tr>' for p in report["problems"])
+        problems = (
+            f'<section class="sc-panel sc-problems"><h3>Where it breaks</h3>'
+            f'<div class="sc-scroll"><table class="sc-table sc-left"><thead><tr><th>RECORD</th>'
+            f'<th>WHERE</th><th>PROBLEM</th></tr></thead><tbody>{rows}</tbody></table>'
+            f'</div></section>')
+
+    chains = ""
+    for run in runs:
+        links = [l for l in report["links"] if l["goal"] == run["goal"]]
+        if not links:
+            continue
+        nodes = ""
+        for link in links:
+            classes = ["sc-node", "sc-keg" if link["keg"] else "sc-model"]
+            if link["corrected"]:
+                classes.append("sc-ring")
+            if not link["on_record"]:
+                classes.append("sc-missing")
+            said = (f'Decision {link["order"]}, decided by '
+                    f'{"the keg" if link["keg"] else "a model"}'
+                    + (", corrected by the operator" if link["corrected"] else "")
+                    + (", turn on record" if link["on_record"] else ", NO turn on record"))
+            nodes += (
+                f'<div class="sc-link" role="img" aria-label="{_esc(said)}">'
+                f'<span class="{" ".join(classes)}">'
+                f'{_TICK_ICON if link["on_record"] else ""}</span>'
+                f'<span class="sc-n">{link["order"]}</span></div>')
+        chains += (
+            f'<section class="sc-panel"><div class="sc-panel-head"><h2>This run, link by '
+            f'link</h2><div class="sc-lead"><strong>{run["with_turn"]} of '
+            f'{run["decisions"]}</strong> decisions have their turn on record</div></div>'
+            f'<div class="sc-scroll"><div class="sc-chain"><span class="sc-chain-line"></span>'
+            f'{nodes}</div></div>'
+            f'<div class="sc-legend"><span><i class="sc-dot sc-model"></i>Decided by a model'
+            f'</span><span><i class="sc-dot sc-keg"></i>Decided by the keg</span>'
+            f'<span><i class="sc-dot sc-keg sc-ring"></i>Corrected by the operator</span>'
+            f'<span class="sc-quiet">Every check mark is a decision linked to the turn that '
+            f'produced it.</span></div></section>')
+
+    tiles = ""
+    for tile in audit_mod.check_tiles(report):
+        figure = "—" if tile["count"] is None else f'{tile["count"]:,}'
+        of = f'<span> / {tile["of"]:,}</span>' if tile["of"] is not None else ""
+        short = tile["count"] is not None and tile["of"] is not None and tile["count"] != tile["of"]
+        tiles += (
+            f'<div class="sc-tile"><div class="sc-eyebrow">{_esc(tile["label"])}</div>'
+            f'<div class="sc-figure sc-ratio{" sc-event" if short else ""}">{figure}{of}</div>'
+            f'<div class="sc-note">{_esc(tile["text"])}</div></div>')
+    catches = "".join(
+        f'<div class="sc-version"><div class="sc-version-head"><strong>{_esc(title)}</strong>'
+        f'</div><div class="sc-note">{_esc(text)}</div></div>'
+        for title, text in audit_mod.WOULD_CATCH)
+    script = "scripts/verify-intent-chain.py"
+    before, _, after = audit_mod.PROOF_OF_CONCEPT.partition(script)
+    about = (
+        f'<section class="sc-about"><div class="sc-estimate sc-proof"><div class="sc-eyebrow '
+        f'sc-event">PROOF-OF-CONCEPT BUILD</div><div>{_esc(before)}<code>{script}</code>'
+        f'{_esc(after)}</div></div><div class="sc-rerun"><button type="button" '
+        f'class="sc-run" hx-get="/portal/fragments/audit/check" hx-target="#audit-integrity" '
+        f'hx-swap="outerHTML" hx-disabled-elt="this"><span class="sc-idle">Run the check '
+        f'again</span><span class="sc-busy">Checking…</span></button>'
+        f'<div class="sc-quiet">Runs the same check against the live records.</div></div>'
+        f'</section>')
     return (
-        f'<div class="card" id="audit-integrity">'
-        f'<h4><span class="badge {"badge-green" if ok else "badge-red"}">'
-        f'{"intact" if ok else "broken"}</span> Is the record intact?</h4>'
-        f'<p><strong>{_esc(verdict)}</strong></p>'
-        f'<table class="audit-table">{table}</table>'
-        + (f'<div class="meta error">{problems}</div>' if problems else "")
-        + '<div class="meta">This is the gateway checking its own records. For an '
-        'independent check, run <code>scripts/verify-intent-chain.py</code> on the '
-        'machine: it reads the files directly and does not ask the gateway.</div>'
-        '<button class="btn" hx-get="/portal/fragments/audit/check" '
-        'hx-target="#audit-integrity" hx-swap="outerHTML">Run the check again</button>'
-        '</div>'
-    )
+        f'<div class="sc sc-check" id="audit-integrity">{header}{problems}{chains}'
+        f'<section class="sc-tiles" aria-label="What was checked">{tiles}</section>'
+        f'<section class="sc-panel"><h3>What the check would catch</h3>'
+        f'<div class="sc-catches">{catches}</div></section>{about}</div>')
 
 
 def _audit_economics_html(report, scale: int, chain=None) -> str:
@@ -4576,9 +4940,11 @@ async def handle_audit(request: web.Request) -> web.Response:
 
 def _audit_check_failed_html(exc) -> str:
     return (
-        f'<div class="card" id="audit-integrity"><h4><span class="badge badge-red">'
-        f'not run</span> Is the record intact?</h4><p class="error">The check could not '
-        f'run: {_esc(type(exc).__name__)}: {_esc(exc)}</p></div>')
+        f'<div class="sc sc-check" id="audit-integrity"><header class="sc-header">'
+        f'<div class="sc-eyebrow sc-event">AUDIT CHECK</div><div class="sc-check-line">'
+        f'<div role="status" class="sc-pill sc-pill-bad">{_ALERT_ICON}<span>NOT RUN</span>'
+        f'</div></div><h1>The check could not run.</h1>'
+        f'<p>{_esc(type(exc).__name__)}: {_esc(exc)}</p></header></div>')
 
 
 async def handle_audit_check(request: web.Request) -> web.Response:

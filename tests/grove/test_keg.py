@@ -464,6 +464,9 @@ def _card(proposal_dict):
 
 
 def test_keg_card_reads_in_review_order(env):
+    # 2026-10-06: the card was rebuilt in review order — why, what changes,
+    # the replay (cases to review first), what it covers, the rules, then the
+    # technical record and the action bar.
     v1 = env.propose()
     fc.cli_approve(env.short(v1), queue_path=env.queue, ledger_dir=env.ledger_dir)
     history = HISTORY + [_case("m6", "billing", "finance", "escalate", urgent=True)]
@@ -471,17 +474,63 @@ def test_keg_card_reads_in_review_order(env):
                 flag=keg.FLAG_ANOMALY, feedback=["be stricter"])
     html = _card(read_all(path=env.queue)[0].to_dict())
     order = [html.index(s) for s in (
-        "Kaizen proposal", "Message tagging · v2", "Jidoka flag: anomaly",
-        "Replaces v1 (keg:message-tagging:v1:",
-        "Does not cover:",
-        "Replayed on history: 4 unchanged · 1 would change · 1 not covered (social message)",
-        "matches your correction", "not covered — routes to the interpreter",
-        "unchanged cases (4)", "rules (3)",
-        "GRV-004 keg · scope reserved · authority green", "Sign</button>",
-        "Send feedback",
+        "KAIZEN PROPOSAL · STANDARD WORK · MESSAGE TAGGING",
+        "DRAFT · AWAITING YOUR SIGNATURE",
+        "Keg v2: answer items where channel is billing and urgent is true directly, escalate.",
+        "Everything else stays the same.",
+        "Revised after your feedback: “be stricter”.",
+        "1 · JIDOKA FLAGGED", "2 · ANDON STOPPED THE LINE", "Keg v1 halted.",
+        "3 · KAIZEN DRAFTED A FIX", "1 added rule, replayed on all 6 items so far.",
+        "4 · YOU DECIDE", "Sign it and v2 replaces v1, or send it back with feedback.",
+        "What changes from v1",
+        "If channel is billing and urgent is true, answer escalate.",
+        "→ tag escalate",                         # the formal rule, beneath the sentence
+        "Nothing removed. The other 2 rules from v1 are unchanged.",
+        "Replayed on history: 6 items", "REVIEW THESE FIRST",
+        "Matches your correction", "Not covered by design",
+        "Show the 4 unchanged items",
+        "What v2 covers", "ANSWERS DIRECTLY, NO MODEL", "ALWAYS SENDS TO THE MODEL",
+        "Your 2 confirmed decisions are the evidence",
+        "The rules, in order", '<span class="sc-new">New</span>',
+        "Technical details", "replaces keg:message-tagging:v1:",
+        "GRV-004 keg · scope reserved · authority green",
+        "Sign v2</button>", 'name="reason"', "Send back with feedback",
+        "Signing takes effect immediately and replaces v1. Demo mode",
     )]
     assert order == sorted(order)
-    assert 'name="reason"' in html and "Revised after your feedback: be stricter" in html
+    # Three outcomes, each counted on its own, as a bar and as numbers.
+    assert html.count("sc-seg-same") == 2 and html.count("sc-seg-change") == 2
+    for count, word in ((4, "unchanged"), (1, "would change"), (1, "not covered")):
+        assert f"<strong>{count}</strong>&nbsp;{word}" in html
+    assert html.count('<span class="sc-new">') == 1          # only the added rule
+    assert "sc-back-btn" in html and "btn-reject" not in html   # sending back is not an error
+
+
+def test_handing_a_case_back_is_consistent_with_a_correction_not_a_match(env):
+    v1 = env.propose()
+    fc.cli_approve(env.short(v1), queue_path=env.queue, ledger_dir=env.ledger_dir)
+    history = HISTORY + [_case("m6", "billing", "finance", "escalate", urgent=True)]
+    history[-1]["served_by_keg"] = True
+    defer = [{"if": "channel == 'billing' AND urgent == true", "defer": True}] + RULES_V1
+    env.propose(rules=defer, history=history, evidence=("t1", "t6"), flag=keg.FLAG_ANOMALY)
+    html = _card(read_all(path=env.queue)[0].to_dict())
+    assert "Keg v2: send items where channel is billing and urgent is true back to the model." in html
+    assert "If channel is billing and urgent is true, send it to the model." in html
+    assert "<strong>sends it to the model</strong>" in html
+    assert "Consistent with your correction" in html and "Matches your correction" not in html
+    assert "Handed back by rule: channel is billing and urgent is true." in html
+
+
+def test_a_first_version_says_it_is_the_first(env):
+    env.propose()
+    html = _card(read_all(path=env.queue)[0].to_dict())
+    for text in ("Keg v1: answer 2 kinds of item with no model.",
+                 "Everything else still goes to the model.",
+                 "What v1 does", "This is the first version, so every rule is new.",
+                 "Sign it and v1 starts serving", "· first version",
+                 "Signing takes effect immediately. Demo mode"):
+        assert text in html, text
+    assert "sc-new" not in html and "replaces v" not in html
 
 
 def test_keg_card_with_unreadable_backtest_cannot_be_signed(env):
@@ -489,8 +538,40 @@ def test_keg_card_with_unreadable_backtest_cannot_be_signed(env):
     data = read_all(path=env.queue)[0].to_dict()
     data["detail"] = {"kind": "keg_backtest"}
     html = _card(data)
-    assert "Backtest unreadable" in html and "Sign</button>" not in html
-    assert "Send feedback" in html
+    assert "Replay unreadable" in html and "cannot be signed" in html
+    assert "sc-sign-btn" not in html and "Sign v1</button>" not in html
+    assert "Send back with feedback" in html
+
+
+def test_a_signed_or_returned_proposal_says_what_happened():
+    from grove.api import fragments
+    signed = fragments.keg_resolved_html("a1", {"version": 2, "supersedes_version": 1}, True)
+    assert "SIGNED · V2 SERVING" in signed and "in place of v1" in signed
+    back = fragments.keg_resolved_html("a1", {"version": 2}, False, reason="narrower")
+    assert "SENT BACK TO KAIZEN" in back and "“narrower”" in back
+
+
+def test_rules_read_in_plain_words_from_the_grammar():
+    inputs = {"channel": {"data_type": "string"}, "subject": {"data_type": "string"},
+              "urgent": {"data_type": "boolean"}}
+    said = {
+        "channel == 'billing' AND subject CONTAINS 'refund'":
+            "channel is billing and subject mentions “refund”",
+        "subject CONTAINS 'a' OR subject CONTAINS 'b' OR subject CONTAINS 'c'":
+            "subject mentions “a”, “b” or “c”",
+        "channel IN ['x', 'y']": "channel is one of x or y",
+        "channel NOT IN ['x']": "channel is not one of x",
+        "channel == 'x' OR urgent == true": "channel is x or urgent is true",
+    }
+    for expr, plain in said.items():
+        assert keg.describe_condition(expr, inputs) == plain
+    with pytest.raises(ValueError):
+        keg.describe_condition("nonsense ==", inputs)
+    diff = keg.diff_rules(
+        [{"if": "a", "then": {"t": 1}}, {"if": "b", "then": {"t": 2}}, {"if": "c", "defer": True}],
+        [{"if": "n", "defer": True}, {"if": "a", "then": {"t": 1}}, {"if": "b", "then": {"t": 9}}])
+    assert [len(diff[k]) for k in ("added", "removed", "changed", "unchanged")] == [1, 1, 1, 1]
+    assert len(keg.diff_rules(None, [{"if": "a", "then": {}}])["added"]) == 1
 
 
 # ── generality ────────────────────────────────────────────────────────

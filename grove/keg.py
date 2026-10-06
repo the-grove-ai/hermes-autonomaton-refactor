@@ -191,6 +191,60 @@ def parse_condition(expr: str, inputs: Mapping[str, Any]) -> List[List[Tuple[str
     return groups
 
 
+def describe_condition(expr: str, inputs: Mapping[str, Any]) -> str:
+    """A rule's condition in plain words, generated from the grammar:
+    ``channel == 'billing' AND subject CONTAINS 'refund'`` reads "channel is
+    billing and subject mentions “refund”". Alternatives on the same input
+    fold together ("subject mentions “a”, “b” or “c”"). Raises ValueError on
+    a condition the grammar cannot read, like :func:`parse_condition`."""
+    def _either(items: List[str]) -> str:
+        return items[0] if len(items) == 1 else ", ".join(items[:-1]) + " or " + items[-1]
+
+    def _clause(clause: Tuple[str, str, Any]) -> str:
+        name, op, operand = clause
+        if op == "==":
+            said = str(operand).lower() if isinstance(operand, bool) else operand
+            return f"{name} is {said}"
+        if op == "CONTAINS":
+            return f"{name} mentions “{operand}”"
+        listed = _either([str(v) for v in operand])
+        return f"{name} is {'not ' if op == 'NOT IN' else ''}one of {listed}"
+
+    groups = parse_condition(expr, inputs)
+    singles = [g[0] for g in groups if len(g) == 1]
+    if (len(groups) > 1 and len(singles) == len(groups)
+            and len({(n, op) for n, op, _ in singles}) == 1
+            and singles[0][1] in ("==", "CONTAINS")):
+        name, op, _ = singles[0]
+        if op == "CONTAINS":
+            return f"{name} mentions " + _either([f"“{v}”" for _, _, v in singles])
+        return f"{name} is " + _either([str(v) for _, _, v in singles])
+    return " or ".join(" and ".join(_clause(c) for c in group) for group in groups)
+
+
+def diff_rules(
+    before: Optional[List[Mapping[str, Any]]], after: List[Mapping[str, Any]],
+) -> Dict[str, List[Any]]:
+    """What a new version changes, rule by rule. A rule is identified by its
+    condition: ``added`` and ``removed`` are whole rules, ``changed`` pairs
+    ``(old, new)`` for a condition whose outcome differs, ``unchanged`` keeps
+    the rest. ``before`` None (a first version) makes every rule added."""
+    def _outcome(rule: Mapping[str, Any]) -> Any:
+        return ("defer",) if rule.get("defer") else ("then", json.dumps(
+            rule.get("then") or {}, sort_keys=True, default=str))
+
+    old = {str(r.get("if")): r for r in (before or [])}
+    new = {str(r.get("if")): r for r in after}
+    return {
+        "added": [r for k, r in new.items() if k not in old],
+        "removed": [r for k, r in old.items() if k not in new],
+        "changed": [(old[k], r) for k, r in new.items()
+                    if k in old and _outcome(old[k]) != _outcome(r)],
+        "unchanged": [r for k, r in new.items()
+                      if k in old and _outcome(old[k]) == _outcome(r)],
+    }
+
+
 def _norm(value: Any) -> Any:
     """Comparison form. Strings compare case-insensitively with whitespace
     collapsed, so "Acme  Co" and "acme co" are one value; numbers compare as numbers; booleans as booleans."""

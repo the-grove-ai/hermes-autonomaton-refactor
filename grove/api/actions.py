@@ -509,6 +509,10 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
             proposal.proposal_id, handler.apply_label_prefix, target,
             f" [gate:{grant.kid}]" if grant is not None else "",
         )
+        if (proposal.payload or {}).get("keg"):
+            from grove.api.fragments import keg_resolved_html
+            return _html_fragment(keg_resolved_html(
+                short_id, proposal.payload["keg"], signed=True))
         return _resolved_card(short_id, type_label, "approved", summary)
 
     # fleet-pipeline-v1 P3 — forge-type-aware reject: archive-then-clear. Move the
@@ -629,6 +633,10 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
     _record_kaizen_disposition(
         proposal, disposition="rejected", reason=reason,
     )
+    if (proposal.payload or {}).get("keg"):
+        from grove.api.fragments import keg_resolved_html
+        return _html_fragment(keg_resolved_html(
+            short_id, proposal.payload["keg"], signed=False, reason=reason or ""))
     return _resolved_card(
         short_id, type_label, _DISPOSITION_LABEL[action], summary
     )

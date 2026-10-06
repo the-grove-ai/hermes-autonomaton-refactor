@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -141,9 +142,11 @@ def _ledger_check(home: Path) -> Dict[str, Any]:
 
 
 def _run_check(home: Path, turn_uids: set) -> Dict[str, Any]:
-    from grove.decision_work import KIND_PROPOSED, DecisionLog
+    from grove.decision_work import (
+        DECISION_CORRECT, KIND_DECIDED, KIND_PROPOSED, DecisionLog,
+    )
 
-    out = {"runs": [], "problems": []}
+    out = {"runs": [], "links": [], "problems": []}
     directory = home / "decisions"
     if not directory.is_dir():
         return out
@@ -151,7 +154,8 @@ def _run_check(home: Path, turn_uids: set) -> Dict[str, Any]:
         log = DecisionLog(log_path.stem, directory=directory)
         try:
             run = log.current_run()
-            proposed = [r for r in log.run_records() if r.get("kind") == KIND_PROPOSED]
+            records = log.run_records()
+            proposed = [r for r in records if r.get("kind") == KIND_PROPOSED]
         except ValueError as exc:
             out["problems"].append({
                 "where": f"decision log {log_path.name}", "subject": "", "problem": str(exc)})
@@ -163,6 +167,15 @@ def _run_check(home: Path, turn_uids: set) -> Dict[str, Any]:
             "goal": log_path.stem, "run_number": run.get("run_number"),
             "label": run.get("label") or "", "decisions": len(proposed), "with_turn": found,
         })
+        corrected = {r.get("ref") for r in records
+                     if r.get("kind") == KIND_DECIDED and r.get("decision") == DECISION_CORRECT}
+        # One link per decision, in order: who decided it, whether the
+        # operator corrected it, and whether its turn is on record.
+        out["links"] += [{
+            "goal": log_path.stem, "order": n, "item_id": r.get("item_id"),
+            "keg": bool(r.get("keg")), "corrected": r.get("id") in corrected,
+            "on_record": r.get("turn_uid") in turn_uids,
+        } for n, r in enumerate(proposed, 1)]
         for r in proposed:
             if r.get("turn_uid") not in turn_uids:
                 out["problems"].append({
@@ -203,11 +216,12 @@ def chain_report(
 
     ledger = {"files": 0, "chained": 0, "unchained": 0, "problems": []}
     runs: List[Dict[str, Any]] = []
+    links: List[Dict[str, Any]] = []
     if live:
         ledger = _ledger_check(base)
         uids = {r.get("turn_uid") for r in _jsonl(path)}
         run_check = _run_check(base, uids)
-        runs = run_check["runs"]
+        runs, links = run_check["runs"], run_check["links"]
         problems += ledger["problems"] + run_check["problems"]
 
     if problems:
@@ -226,56 +240,135 @@ def chain_report(
         "anchored": chain["anchored"],
         "ledger": {k: ledger[k] for k in ("files", "chained", "unchained")},
         "runs": runs,
+        "links": links,
         "problems": problems,
         "result": result,
+        "checked_at": datetime.now().astimezone().isoformat(timespec="seconds"),
     }
 
 
-RESULT_TEXT = {
-    "intact": "CHAIN INTACT — no record altered, removed or reordered",
-    "nothing_to_verify": "NOTHING TO VERIFY — no chained records in this store yet",
+# ── the check, in words ───────────────────────────────────────────────
+# One set of words for the portal's Audit panel and the command line, so the
+# independent check and the page tell the same story.
+
+STATUS_TEXT = {
+    "intact": "CHAIN INTACT",
+    "nothing_to_verify": "NOTHING TO VERIFY",
     "broken": "CHAIN BROKEN",
 }
+HEADLINE = ("Every record accounted for.", "Nothing altered, removed or reordered.")
+HOW_IT_WORKS = (
+    "Each record carries a fingerprint of its own contents and of the record "
+    "before it. Change, delete or reshuffle one, and the chain breaks at that "
+    "exact spot."
+)
+NOTHING_YET = "No chained records in this store yet, so there is nothing to check."
+WOULD_CATCH = (
+    ("A record edited", "Its fingerprint no longer matches its contents."),
+    ("A record deleted or moved",
+     "The next record points to a fingerprint that isn't there."),
+    ("The newest records removed",
+     "Each session's latest fingerprint is stored separately and must still be found."),
+)
+PROOF_OF_CONCEPT = (
+    "This page is the demo system checking its own records. It is a prototype "
+    "of the pattern, not Sokori's production runtime. For an independent "
+    "check, scripts/verify-intent-chain.py reads the record files directly and "
+    "never asks the running system."
+)
+
+
+def _s(n: int, one: str, many: Optional[str] = None) -> str:
+    return one if n == 1 else (many or one + "s")
+
+
+def check_headline(report: Mapping[str, Any]) -> Dict[str, str]:
+    """The verdict in a sentence and a clause. A broken chain names the first
+    broken record and where it sits."""
+    if report["result"] == "broken":
+        first = report["problems"][0]
+        at = " · ".join(x for x in (first.get("subject"), first.get("where")) if x)
+        count = len(report["problems"])
+        return {"lead": f"The chain breaks at {at}.",
+                "clause": f"{count} {_s(count, 'problem')} found.",
+                "detail": first["problem"]}
+    if report["result"] == "nothing_to_verify":
+        return {"lead": NOTHING_YET, "clause": "", "detail": ""}
+    return {"lead": HEADLINE[0], "clause": HEADLINE[1], "detail": HOW_IT_WORKS}
+
+
+def check_tiles(report: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """What was checked, as counts with one sentence each: ``{label, count,
+    of, text}`` (``of`` is None where the count has no denominator)."""
+    sessions = report["chained_sessions"]
+    older = report["unchained"]
+    tiles = [{
+        "label": "TURN RECORDS", "count": report["chained"], "of": report["records"],
+        "text": (f"hash-chained, across {sessions:,} {_s(sessions, 'session')}. "
+                 + ("None older or unchained." if not older else
+                    f"{older:,} older {_s(older, 'record')} "
+                    f"{_s(older, 'predates', 'predate')} the chain and "
+                    f"{_s(older, 'is', 'are')} counted, not chained.")),
+    }]
+    if not report["live"]:
+        tiles.append({
+            "label": "SESSIONS TAIL-CHECKED", "count": None, "of": None,
+            "text": "Not run: this needs the live session database."})
+        return tiles
+    tiles.append({
+        "label": "SESSIONS TAIL-CHECKED", "count": report["anchored"], "of": sessions,
+        "text": "Each session's newest record is still present, so nothing "
+                "was cut off the end.",
+    })
+    ledger = report["ledger"]
+    tiles.append({
+        "label": "LEARNING LEDGER", "count": ledger["chained"], "of": None,
+        "text": (f"chained {_s(ledger['chained'], 'event')} in {ledger['files']:,} "
+                 f"{_s(ledger['files'], 'file')}: every flag, proposal, signature and halt."
+                 + (f" {ledger['unchained']:,} older {_s(ledger['unchained'], 'event')} "
+                    f"{_s(ledger['unchained'], 'predates', 'predate')} the chain and "
+                    f"{_s(ledger['unchained'], 'is', 'are')} counted, not chained."
+                    if ledger["unchained"] else "")),
+    })
+    for run in report["runs"]:
+        tiles.append({
+            "label": "DECISIONS THIS RUN", "count": run["with_turn"], "of": run["decisions"],
+            "text": "with the turn that produced them on record.",
+            "run": f"Run {run['run_number']} · {run['goal']}",
+        })
+    return tiles
 
 
 def format_chain_report(report: Mapping[str, Any]) -> List[str]:
-    """The report as the terminal prints it."""
-    bar = "=" * 62
+    """The report as the terminal prints it — the panel's own words."""
+    bar = "=" * 72
+    head = check_headline(report)
+    checked = _when(report.get("checked_at"))
     lines = [
-        bar, "  AUDIT CHAIN CHECK", bar,
-        f"  Store                      {report['store']}",
-        f"  Records checked            {report['records']:,}",
-        f"  Hash-chained records       {report['chained']:,}  "
-        f"in {report['chained_sessions']:,} session(s)",
-        f"  Older, pre-chain records   {report['unchained']:,}  (counted, not chained)",
+        bar, f"  AUDIT CHECK · {STATUS_TEXT[report['result']]}", bar,
+        "  " + " ".join(x for x in (head["lead"], head["clause"]) if x),
     ]
-    if report["live"]:
-        lines.append(
-            f"  Sessions tail-checked      {report['anchored']:,}  "
-            "(newest record still present)")
-        ledger = report["ledger"]
-        if ledger["files"]:
-            lines.append(
-                f"  Kaizen ledger events       {ledger['chained']:,} chained in "
-                f"{ledger['files']:,} file(s)"
-                + (f"; {ledger['unchained']:,} older, pre-chain" if ledger["unchained"] else ""))
-        for run in report["runs"]:
-            label = f" ({run['label']})" if run["label"] else ""
-            lines += [
-                f"  Run {run['run_number']}{label} · {run['goal']}",
-                f"    Decisions in this run    {run['decisions']:,}",
-                f"    With a turn on record    {run['with_turn']:,} of {run['decisions']:,}",
-            ]
-    else:
-        lines.append("  Sessions tail-checked      not run (needs the live session database)")
-    lines.append(bar)
+    if head["detail"]:
+        lines.append("  " + head["detail"])
+    lines += [
+        "",
+        "  Last checked " + (checked.strftime("%Y-%m-%d %H:%M:%S %Z") if checked else "—")
+        + f" · {report['records']:,} {_s(report['records'], 'record')}",
+        f"  Store: {report['store']}",
+        "",
+    ]
+    for tile in check_tiles(report):
+        figure = ("—" if tile["count"] is None else f"{tile['count']:,}"
+                  + (f" / {tile['of']:,}" if tile["of"] is not None else ""))
+        label = tile["label"] + (f" ({tile['run']})" if tile.get("run") else "")
+        lines += [f"  {label}: {figure}", f"    {tile['text']}"]
     if report["result"] == "broken":
-        lines.append(f"  RESULT: CHAIN BROKEN — {len(report['problems'])} problem(s)")
-        lines.append(bar)
-        for p in report["problems"]:
-            lines.append(f"  {p['where']}  {p['subject']}  {p['problem']}")
-    else:
-        lines += [f"  RESULT: {RESULT_TEXT[report['result']]}", bar]
+        lines += ["", "  PROBLEMS"]
+        lines += [f"    {p['where']}  {p['subject']}  {p['problem']}"
+                  for p in report["problems"]]
+    lines += ["", "  WHAT THE CHECK WOULD CATCH"]
+    lines += [f"    {title}: {text}" for title, text in WOULD_CATCH]
+    lines.append(bar)
     return lines
 
 

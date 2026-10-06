@@ -24,7 +24,7 @@ before any renderer runs) or disposition (apply paths resolve through
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from grove.eval.proposal_queue import (
@@ -1100,6 +1100,8 @@ class KegBacktestCase:
     result: str
     agrees_with_confirmed: Optional[bool]
     note: str = ""
+    # The item's own inputs as replayed, so a reviewer sees what the case was.
+    inputs: Dict[str, Any] = field(default_factory=dict)
 
 
 _KEG_BACKTEST_RESULTS = ("would_change", "not_covered", "unchanged")
@@ -1155,6 +1157,7 @@ class KegBacktestDetail:
                 result=c["result"],
                 agrees_with_confirmed=c.get("agrees_with_confirmed"),
                 note=str(c.get("note") or ""),
+                inputs=dict(c.get("inputs") or {}),
             ))
         # Counts are read off the cases, not trusted from the envelope: an
         # envelope written before the three outcomes were kept apart folded

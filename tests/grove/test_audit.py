@@ -83,8 +83,17 @@ def test_chain_report_is_intact_and_counts_every_decision(home):
     assert report["ledger"] == {"files": 1, "chained": 1, "unchained": 0}
     assert report["runs"] == [{"goal": GOAL, "run_number": 1, "label": "fixture",
                                "decisions": 4, "with_turn": 4}]
+    # One link per decision: who decided, corrected or not, turn on record.
+    assert [(l["order"], l["keg"], l["corrected"], l["on_record"]) for l in report["links"]] == [
+        (1, False, False, True), (2, False, False, True),
+        (3, True, False, True), (4, True, True, True)]
+    # 2026-10-06: the terminal now prints the panel's own words.
     text = "\n".join(audit.format_chain_report(report))
-    assert "RESULT: CHAIN INTACT" in text and "With a turn on record    4 of 4" in text
+    assert "AUDIT CHECK · CHAIN INTACT" in text
+    assert "Every record accounted for. Nothing altered, removed or reordered." in text
+    assert "TURN RECORDS: 8 / 8" in text and "None older or unchained." in text
+    assert "DECISIONS THIS RUN (Run 1 · message-triage): 4 / 4" in text
+    assert "A record deleted or moved: The next record points to a fingerprint" in text
 
 
 def test_chain_report_names_every_kind_of_break(home):
@@ -104,7 +113,13 @@ def test_chain_report_names_every_kind_of_break(home):
     assert "altered" in problems                            # the edited records
     assert "has no turn in the audit trail" in problems     # the decision whose turn was removed
     assert any(p["where"].startswith("ledger s1.jsonl") for p in report["problems"])
-    assert "RESULT: CHAIN BROKEN" in "\n".join(audit.format_chain_report(report))
+    text = "\n".join(audit.format_chain_report(report))
+    assert "AUDIT CHECK · CHAIN BROKEN" in text and "PROBLEMS" in text
+    head = audit.check_headline(report)
+    first = report["problems"][0]
+    assert first["subject"] in head["lead"] and first["where"] in head["lead"]
+    assert head["clause"] == f"{len(report['problems'])} problems found."
+    assert [l["on_record"] for l in report["links"]] == [True, True, False, True]
 
 
 def test_command_line_and_portal_run_the_same_check(home):
@@ -112,7 +127,10 @@ def test_command_line_and_portal_run_the_same_check(home):
         [sys.executable, str(REPO / "scripts" / "verify-intent-chain.py")],
         capture_output=True, text=True, env={"GROVE_HOME": str(home), "PATH": "/usr/bin:/bin"})
     assert out.returncode == 0, out.stderr
-    assert out.stdout.strip().splitlines() == audit.format_chain_report(audit.chain_report(home))
+    def _but_the_clock(lines):
+        return [l for l in lines if "Last checked" not in l]
+    assert _but_the_clock(out.stdout.rstrip().splitlines()) == _but_the_clock(
+        audit.format_chain_report(audit.chain_report(home)))
     script = (REPO / "scripts" / "verify-intent-chain.py").read_text()
     assert "from grove.audit import chain_report, format_chain_report" in script
     assert "def _ledger_report" not in script              # one implementation, not two
@@ -308,8 +326,19 @@ def test_audit_page_shows_the_same_figures_and_its_limits(home):
 
     chain = audit.chain_report(home)
     html = fragments._audit_integrity_html(chain)
-    assert "CHAIN INTACT" in html and "4 decisions, 4 with a turn on record" in html
-    assert "does not ask the gateway" in html              # the independence caveat
+    # The panel and the terminal say the same thing, from the same strings.
+    terminal = "\n".join(audit.format_chain_report(chain))
+    for text in ("CHAIN INTACT", audit.HEADLINE[0], audit.HEADLINE[1],
+                 *(t["text"] for t in audit.check_tiles(chain)),
+                 *(sentence for _, sentence in audit.WOULD_CATCH)):
+        assert text in terminal and fragments._esc(text) in html, text
+    assert "<strong>4 of 4</strong> decisions have their turn on record" in html
+    assert html.count('class="sc-link"') == 4 and html.count("sc-node sc-keg") == 2
+    assert html.count("sc-node sc-keg sc-ring") == 1 and "sc-missing" not in html
+    assert "AUDIT CHECK · MESSAGE-TRIAGE · RUN 1" in html and "sc-pill-ok" in html
+    assert "never asks the running system" in html         # the independence caveat
+    assert "Run the check again" in html and "Checking…" in html
+    assert 'hx-get="/portal/fragments/audit/check"' in html
     eco = fragments._audit_economics_html(audit.economics(home), 1_000_000, chain=chain)
     for text in ("2 of 4 items decided with no model.", "Every one traceable.",
                  "100×", "0.10 s with the keg, 10.0 s with a model",
@@ -363,6 +392,20 @@ def test_scorecard_says_so_when_the_keg_is_still_halted_or_none_is_signed(
     [g] = audit.economics(_loop_home(halted_home, monkeypatch, sign_v2=False))["goals"]
     html = fragments._scorecard_html(g, 10_000, "0")
     assert "halted the keg; it is still halted." in html and "HALTED" in html
+
+
+def test_a_broken_chain_turns_the_panel_red_and_names_the_break(home):
+    from grove.api import fragments
+
+    lines = (home / "intent_records.jsonl").read_text().splitlines()
+    (home / "intent_records.jsonl").write_text("\n".join(lines[:4] + lines[5:]) + "\n")
+    report = audit.chain_report(home)
+    html = fragments._audit_integrity_html(report)
+    first = report["problems"][0]
+    assert "sc-pill-bad" in html and "CHAIN BROKEN" in html and "sc-pill-ok" not in html
+    assert fragments._esc(f"The chain breaks at {first['subject']} · {first['where']}.") in html
+    assert "Where it breaks" in html and html.count("sc-missing") == 1   # m3's turn is gone
+    assert "<strong>3 of 4</strong> decisions have their turn on record" in html
 
 
 def test_audit_page_reads_and_never_writes(home):
