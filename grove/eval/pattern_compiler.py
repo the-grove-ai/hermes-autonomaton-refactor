@@ -729,6 +729,7 @@ def propose_keg(
     feedback: Optional[List[str]] = None,
     lineage: Optional[str] = None,
     andon_id: Optional[str] = None,
+    miss: Optional[Dict[str, Any]] = None,
     queue_path: Optional[Path] = None,
     ledger: Any = None,
     now_iso: Optional[str] = None,
@@ -885,6 +886,9 @@ def propose_keg(
             "flag": flag,
             "flag_detail": flag_detail,
             "andon_id": andon_id,
+            # The corrected case this revision answers (anomaly only), kept
+            # with the proposal so a redraft after feedback still has it.
+            **({"miss": dict(miss)} if miss else {}),
             "lineage": lineage,
             "supersedes": prior_id,
             "supersedes_version": prior_version or None,

@@ -194,6 +194,35 @@ def _check_condition(
     return None
 
 
+# A reasoning model spends output tokens thinking before it answers; a tight
+# cap cuts the answer off before it exists (seen live at T2, 2026-10-06).
+_DRAFT_MAX_TOKENS = 2000
+
+
+def _ask(call: Any, prompt: str, tier: str) -> str:
+    """One drafting call at one tier, returning the condition text.
+
+    Schema-bound first (a forced tool call). Some routes refuse a forced tool
+    (seen live at T3: a 400 on ``tool_choice``); for those the same question is
+    asked as plain text, answer on one line. Either way the text is only a
+    DRAFT: it is parsed against the grammar and checked before anything is
+    proposed, so the transport cannot smuggle in an unchecked rule."""
+    try:
+        out = call(prompt, system=_SYSTEM, tool=DRAFT_TOOL, tier=tier,
+                   max_tokens=_DRAFT_MAX_TOKENS)
+        return str((out or {}).get("condition") or "").strip()
+    except Exception as exc:  # noqa: BLE001
+        if "tool_choice" not in str(exc) and "tool" not in type(exc).__name__.lower():
+            raise
+        logger.info("[kaizen] %s refused a forced tool; asking as text: %r", tier, exc)
+    text = call(
+        prompt + "\n\nReply with the condition ONLY, on one line. No prose, no quotes around it.",
+        system=_SYSTEM, tier=tier, max_tokens=_DRAFT_MAX_TOKENS,
+    )
+    lines = [ln.strip().strip("`") for ln in str(text or "").splitlines() if ln.strip()]
+    return lines[-1] if lines else ""
+
+
 def draft_condition(
     work: Any,
     rules: List[Mapping[str, Any]],
@@ -214,8 +243,7 @@ def draft_condition(
         prompt = _draft_prompt(work, rules, history, target=target,
                                reason=reason, failure=failure)
         try:
-            out = call(prompt, system=_SYSTEM, tool=DRAFT_TOOL, tier=tier, max_tokens=400)
-            condition = str((out or {}).get("condition") or "").strip()
+            condition = _ask(call, prompt, tier)
             problem = (
                 "it was empty." if not condition
                 else _check_condition(work, condition, history, target=target)
@@ -318,7 +346,7 @@ def request_operator_condition(work: Any, andon: Mapping[str, Any]) -> Optional[
     )
 
     details = andon.get("details") or {}
-    origin = details.get("originating_details") or {}
+    origin = details.get("miss") or details.get("originating_details") or {}
     payload = {
         "goal": work.config.goal_id,
         "andon_id": andon.get("andon_id"),
@@ -399,6 +427,7 @@ def answer(
         str(e.get("turn_id") or e.get("item_id")) for e in (work.evidence().get("evidence") or [])
     ]
     target = None
+    miss: Optional[Dict[str, Any]] = None
     drafted: Optional[str] = None
     attempts: List[Dict[str, Any]] = []
 
@@ -409,12 +438,21 @@ def answer(
                     "detail": "the corrected decision was not served by a keg"}
         base = list((keg_mod.keg_of(halted[-1]) or {}).get("conditions") or [])
         details = andon.get("details") or {}
-        target = dict(details.get("inputs") or {})
+        if not details.get("inputs"):
+            return {"status": "no_miss_on_record",
+                    "detail": "the corrected case is not on this event; nothing to separate"}
+        target = dict(details["inputs"])
+        miss = {k: details.get(k) for k in ("item_id", "inputs", "served", "corrected")}
         reason = (
             f"The rules answered {json.dumps(details.get('served'))} for "
             f"{details.get('item_id')} and the operator corrected it to "
             f"{json.dumps(details.get('corrected'))}."
         )
+        if feedback:
+            reason += (
+                " The operator sent the last draft back with this feedback, "
+                "which the new condition must also satisfy: " + " | ".join(feedback)
+            )
         miss_ref = str(details.get("item_id"))
         evidence_ids.append(
             str((andon.get("provenance") or [{}])[0].get("turn_id") or miss_ref)
@@ -503,6 +541,7 @@ def answer(
         feedback=feedback,
         lineage=lineage,
         andon_id=andon.get("andon_id"),
+        miss=miss,
         queue_path=queue_path,
         ledger=ledger,
     )

@@ -285,6 +285,10 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
         "keg_halted": bool(halted),
         "proposals": proposals,
         "message": " ".join(parts),
+        "tell_the_operator": (
+            "Relay `message` as written, numbers included. In the portal the "
+            "operator signs a proposal or sends feedback; use those words."
+        ),
     }
 
 

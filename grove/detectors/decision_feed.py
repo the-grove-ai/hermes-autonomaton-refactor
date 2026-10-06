@@ -22,6 +22,13 @@ DETECTOR_REFERENCE_AGREEMENT = "reference_agreement"
 DETECTOR_CORRECTION = "correction"
 
 
+def _plain(output: Any) -> str:
+    """An output as words ("tag finance"), not as a data structure."""
+    if isinstance(output, Mapping):
+        return ", ".join(f"{k} {v}" for k, v in output.items())
+    return str(output)
+
+
 def _answered_already(work: Any) -> bool:
     """Whether this goal's pattern is already answered in the current run: a
     keg drafted, serving or halted. A pattern is flagged once, not on every
@@ -63,7 +70,8 @@ def observe(
             FLAG_ANOMALY, detector=DETECTOR_CORRECTION, goal=goal,
             summary=(
                 f"the operator corrected {proposed.get('item_id')} "
-                f"({by}: {proposed.get('output')} → {decided.get('output')})"
+                f"({by}: {_plain(proposed.get('output'))} → "
+                f"{_plain(decided.get('output'))})"
             ),
             evidence=[{
                 "item_id": proposed.get("item_id"),

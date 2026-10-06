@@ -1948,27 +1948,38 @@ def _keg_feedback(proposal: RoutingProposal, reason: Optional[str]) -> None:
         "reason": (reason or "").strip(),
     }
     store.set_promotion_evidence(pattern_id, json.dumps(record, sort_keys=True))
-    # The feedback goes back to Kaizen now: it revises the draft with the
-    # operator's reason and proposes again, answering the SAME andon event.
-    # Best-effort — the rejection itself is already recorded.
+    # "Or sends feedback": the expert's other answer. It goes back to Kaizen
+    # as an event through the andon handler, like every other — so the
+    # redraft closes with a recorded answer, and if Kaizen cannot redraft, that
+    # failure is the next andon event and is answered too. Never silence.
+    if not (reason or "").strip() or not keg.get("dock_goal"):
+        return
     try:
+        from grove.andon import raise_andon
         from grove.decision_work import DecisionWork, config_for_goal
-        from grove.kaizen import standard_work
 
-        if not (reason or "").strip() or not keg.get("dock_goal"):
-            return
         work = DecisionWork(config_for_goal(str(keg["dock_goal"])))
-        outcome = standard_work.answer(work, {
-            "andon_id": keg.get("andon_id"), "flag": keg.get("flag"),
-            "summary": keg.get("flag_detail"), "provenance": [], "details": {},
-        }, store=store)
-        logger.info(
-            "[flywheel] Kaizen answered feedback on %s: %s (%s)",
-            keg.get("name"), outcome.get("status"), outcome.get("detail"),
+        raise_andon(
+            str(keg.get("flag") or "anomaly"),
+            detector="operator_feedback",
+            goal=str(keg["dock_goal"]),
+            summary=(
+                f"the operator sent {keg.get('name')} v{keg.get('version')} back: "
+                f"{(reason or '').strip()}"
+            ),
+            details={
+                "feedback": (reason or "").strip(),
+                "originating_andon_id": keg.get("andon_id"),
+                "rejected_proposal": proposal.proposal_id,
+                **(keg.get("miss") or {}),
+            },
+            observed_input={"feedback": (reason or "").strip()},
+            matched_skill=pattern_id,
+            context={"work": work},
         )
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001 — the rejection itself is recorded
         logger.error(
-            "[flywheel] Kaizen could not revise %s from feedback: %r",
+            "[flywheel] could not hand feedback on %s back to Kaizen: %r",
             keg.get("name"), exc,
         )
 

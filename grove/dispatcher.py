@@ -3515,6 +3515,11 @@ class Dispatcher:
                 self._current_turn_api_call_count or 0
             )
             model_used = getattr(agent, "model", None) or None
+            if tier_override == "T0":
+                # No model ran. Name what answered instead of the model the
+                # agent happens to be bound to — a T0 trace must not suggest a
+                # model call that never happened.
+                model_used = "pattern_cache"
 
             # Sprint 48 — T0 pattern-compiler evidence (GATE-A decision 3).
             # response_content (capped) feeds STATIC compilation; a SINGLE

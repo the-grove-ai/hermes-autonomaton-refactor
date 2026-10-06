@@ -391,7 +391,12 @@ def test_rejection_feedback_is_answered_with_a_revised_draft(env, monkeypatch):
     k = revised.payload["keg"]
     assert k["version"] == 1 and k["feedback"] == ["leave press to a person"]
     assert k["conditions"][0] == {"if": "channel == 'press'", "defer": True}
-    assert k["andon_id"] == first.payload["keg"]["andon_id"]   # same event answered
+    # Feedback is its own event through the handler; it points back at the
+    # event the rejected draft answered.
+    cords = {e["andon_id"]: e for e in env.events() if e["event_type"] == "andon_event"}
+    feedback_event = cords[k["andon_id"]]
+    assert feedback_event["detector"] == "operator_feedback"
+    assert feedback_event["details"]["originating_andon_id"] == first.payload["keg"]["andon_id"]
     assert revised.proposal_id != first.proposal_id
 
 

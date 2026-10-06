@@ -218,7 +218,10 @@ def _standard_work(andon: Mapping[str, Any], context: Any) -> Answer:
     if status == "draft_failed":
         raise KaizenCouldNotAnswer(
             "no tier produced a revision that passed its checks",
-            {"attempts": out.get("attempts"), "reason": "draft_failed"},
+            {"attempts": out.get("attempts"), "reason": "draft_failed",
+             # Kept so the operator can be shown the case and asked for the rule.
+             "miss": {k: (andon.get("details") or {}).get(k)
+                      for k in ("item_id", "inputs", "served", "corrected")}},
         )
     # Nothing to propose (already drafted, no keg declared, replay conflicts
     # with a confirmed case): say so as a watch, with the reason kept.
@@ -339,7 +342,10 @@ def _kaizen_failure(andon: Mapping[str, Any], context: Any) -> Answer:
     other standard-work change."""
     details = andon.get("details") or {}
     work = _work(context, andon)
-    if details.get("reason") == "draft_failed" and work is not None and work.config.keg:
+    if (
+        details.get("reason") in ("draft_failed", "condition_refused")
+        and work is not None and work.config.keg
+    ):
         from grove.kaizen import standard_work
         proposal_id = standard_work.request_operator_condition(work, andon)
         if proposal_id:
@@ -356,7 +362,15 @@ def _kaizen_failure(andon: Mapping[str, Any], context: Any) -> Answer:
     return watch_unresolved(andon, context)
 
 
+def _operator_feedback(andon: Mapping[str, Any], context: Any) -> Answer:
+    """The operator sent a draft back with a reason. Redraft with it: the
+    same drafting and the same checks, now also bound by what they said. The
+    stopped line stays stopped until a redraft is signed."""
+    return _standard_work(andon, context)
+
+
 _ANSWERS: Dict[str, Callable[[Mapping[str, Any], Any], Answer]] = {
+    "operator_feedback": _operator_feedback,
     "reference_agreement": _standard_work,
     "correction": _correction,
     "turn_check": _turn_check,

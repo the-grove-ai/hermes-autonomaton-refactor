@@ -540,3 +540,76 @@ async def test_gateway_carries_out_an_armed_reissue_after_the_turn():
     # in the new session.
     assert calls == ["reset", ("enqueue", "key", "tag the next message")]
     assert reissue.take_tier("chat-new") == "T2"
+
+
+# ── feedback never dead-ends (live 2026-10-06) ────────────────────────
+#
+# The operator sent a v2 revision back with feedback. The redraft lost the
+# corrected case, every tier failed, and nothing was proposed: the keg stayed
+# halted with no answer on the table. Feedback now goes through the handler.
+
+
+def _halted_with_v2(env, monkeypatch, *drafts):
+    env.earn_v1()
+    _with_drafts(monkeypatch, *drafts)
+    env.add("billing", "Refund course fee")
+    [event] = env.code(None, decision="correct", corrected="escalate", keg_served=True)
+    [v2] = [p for p in read_all() if (p.payload or {}).get("keg")]
+    return event, v2
+
+
+def test_feedback_on_a_revision_is_redrafted_with_the_miss_and_the_feedback(env, monkeypatch):
+    first = "channel == 'billing' AND subject CONTAINS 'course'"
+    wider = ("channel == 'billing' AND subject CONTAINS 'course' OR "
+             "channel == 'billing' AND subject CONTAINS 'training'")
+    event, v2 = _halted_with_v2(env, monkeypatch, first, wider)
+    # The proposal carries the corrected case, so a redraft cannot lose it.
+    assert v2.payload["keg"]["miss"]["corrected"] == {"tag": "escalate"}
+    assert fc.cli_reject(v2.proposal_id.split(":")[-1][:12],
+                         reason="also training") == 0
+    [redraft] = [p for p in read_all() if (p.payload or {}).get("keg")]
+    k = redraft.payload["keg"]
+    assert k["version"] == 2 and k["feedback"] == ["also training"]
+    assert k["conditions"][0] == {"if": wider, "defer": True}
+    assert k["miss"]["item_id"] == v2.payload["keg"]["miss"]["item_id"]
+    assert env.store.get(event["halted"][0]).status == STATUS_HALTED   # still stopped
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_feedback_that_no_tier_can_satisfy_asks_the_operator_never_silence(env, monkeypatch):
+    event, v2 = _halted_with_v2(
+        env, monkeypatch, "channel == 'billing' AND subject CONTAINS 'course'")
+    # Every later draft is empty: all three tiers fail on the redraft.
+    assert fc.cli_reject(v2.proposal_id.split(":")[-1][:12], reason="also training") == 0
+    pending = read_all()
+    assert [p.type for p in pending] == ["kaizen_request"], (
+        "feedback left the operator with nothing on the table")
+    assert pending[0].payload["miss"]["corrected"] == {"tag": "escalate"}
+    assert len(pending[0].payload["attempts"]) == 3
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_drafting_falls_back_to_text_where_a_tier_refuses_a_forced_tool():
+    calls = []
+
+    def call(prompt, *, system=None, tool=None, tier=None, max_tokens=0):
+        calls.append((tier, tool is not None, max_tokens))
+        if tool is not None:
+            raise RuntimeError("Error code: 400 - tool_choice: type \"tool\" not allowed")
+        return "Here is the condition:\n`channel == 'billing'`"
+
+    assert standard_work._ask(call, "prompt", "T3") == "channel == 'billing'"
+    assert calls == [("T3", True, 2000), ("T3", False, 2000)]   # room to think, both times
+
+    def broken(prompt, **kw):
+        raise ConnectionError("network down")
+
+    with pytest.raises(ConnectionError):      # any other failure is that tier's failure
+        standard_work._ask(broken, "prompt", "T2")
+
+
+def test_t0_record_names_what_answered_not_a_model():
+    import inspect
+    from grove.dispatcher import Dispatcher
+    src = inspect.getsource(Dispatcher._write_intent_record)
+    assert 'if tier_override == "T0":' in src and 'model_used = "pattern_cache"' in src
