@@ -951,6 +951,11 @@ class Dispatcher:
         self._current_turn_absorbed: List[Dict[str, Any]] = []
         self._current_turn_question: Optional[str] = None
         self._current_turn_pause_notice: Optional[str] = None
+        # What a no-model work-session step told the operator, kept on the
+        # turn's execution summary. NOT ``response_content``: that field is
+        # evidence for the T0 pattern compiler, and "ok" → "Confirmed: …"
+        # must never be mined as a cacheable answer.
+        self._current_turn_session_reply: Optional[str] = None
         self._isolation_by_session: Dict[str, str] = {}
         self._last_applied_isolated_sections: Any = None
         # Sprint 48 — per-turn tool invocations (name + args) for the T0
@@ -2133,6 +2138,7 @@ class Dispatcher:
         # whichever tier answers it.
         self._current_turn_absorbed = []
         self._current_turn_question = None
+        self._current_turn_session_reply = None
         self._current_turn_pause_notice = self._take_session_pause(agent)
         self._current_turn_isolation = self._resolve_turn_isolation(
             agent, user_message,
@@ -3021,6 +3027,9 @@ class Dispatcher:
                 # about the next item, not deciding it: the question, as put.
                 **({"asked": True, "question": self._current_turn_question}
                    if getattr(self, "_current_turn_question", None) else {}),
+                # A no-model work-session step: what the operator was told.
+                **({"reply": self._current_turn_session_reply[:600]}
+                   if getattr(self, "_current_turn_session_reply", None) else {}),
                 "mode": "tools" if tools_run else "response_only",
                 "model_calls": int(api_calls),
                 "retries": int(getattr(agent, "_turn_retries", 0) or 0),
@@ -4295,6 +4304,7 @@ class Dispatcher:
             self._current_turn_session_step = "t0"
             response_text = work.pause_notice()
             self._end_isolation(agent)
+            self._current_turn_session_reply = response_text
             self._write_intent_record(
                 agent, outcome="pending", final_response_chars=len(response_text),
                 intent_class_override="conversation", tier_override="T0",
@@ -4310,6 +4320,7 @@ class Dispatcher:
             response_text = (
                 f"⚠️ Stopped: that could not be carried out ({type(exc).__name__}). "
                 f"Nothing was recorded; the item is still pending.")
+            self._current_turn_session_reply = response_text
             self._write_intent_record(
                 agent, outcome="error", final_response_chars=len(response_text),
                 intent_class_override="conversation", tier_override="T0",
@@ -4322,6 +4333,7 @@ class Dispatcher:
             message = str(data.get("message") or "That could not be done.")
             abnormal = bool(data.get("andon_id"))
             response_text = f"⚠️ Stopped: {message}" if abnormal else message
+            self._current_turn_session_reply = response_text
             self._write_intent_record(
                 agent, outcome="error" if abnormal else "pending",
                 final_response_chars=len(response_text),
@@ -4339,6 +4351,7 @@ class Dispatcher:
             "no model call%s", action.get("action"), self._current_turn_id, goal,
             data.get("item_id"), "; next item armed" if data.get("next_armed") else "",
         )
+        self._current_turn_session_reply = response_text
         self._write_intent_record(
             agent, outcome="pending", final_response_chars=len(response_text),
             intent_class_override="conversation", tier_override="T0",
@@ -5698,6 +5711,7 @@ class Dispatcher:
             self._finalize_previous_turn_pending(previous_turn_id)
         self._current_turn_session_step = "t0"
         response_text = str(answer.get("summary") or str(refusal))
+        self._current_turn_session_reply = response_text
         self._write_intent_record(
             agent, outcome="pending", final_response_chars=len(response_text),
             intent_class_override="conversation", tier_override="T0",

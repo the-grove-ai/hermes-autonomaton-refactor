@@ -399,6 +399,10 @@ def test_the_dispatcher_confirms_with_no_model_and_the_next_item_is_its_own_turn
     assert written == [{"outcome": "pending", "final_response_chars": len(result["final_response"]),
                         "intent_class_override": "conversation", "tier_override": "T0"}]
     assert said == [("ok", result["final_response"])]
+    # What the operator was told is kept for the turn's execution summary —
+    # and NOT as response_content, which the T0 pattern compiler mines.
+    assert d._current_turn_session_reply == result["final_response"]
+    assert "response_content" not in written[0]
     # The decision is on record, made by the system from the action.
     [decided] = [r for r in work.log.run_records() if r["kind"] == "decided"]
     assert decided["decision"] == "confirm" and decided["turn_uid"] == "u9"
