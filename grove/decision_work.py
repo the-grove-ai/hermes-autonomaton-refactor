@@ -89,6 +89,7 @@ class DecisionRefused(Exception):
 ABNORMAL_REFUSALS = frozenset({
     "no_provenance", "session_not_isolated", "contaminated_turn",
     "output_not_in_domain", "undeclared_output", "item_unreadable", "keg_fault",
+    "reply_without_tool",
 })
 
 
@@ -345,6 +346,19 @@ def _keyword_matches(message: str, keywords: Any) -> bool:
         if kw and re.search(rf"(?<!\w){re.escape(kw)}(?!\w)", text):
             return True
     return False
+
+
+def asks_for_work(message: str, cfg: "DecisionWorkConfig") -> bool:
+    """Whether a message, inside this goal's session, asks for the next unit
+    of work: token overlap against EVERY request the goal declares (the
+    primary and its short continuations), at the goal's declared threshold
+    and verb bonus — the same match the keg's trigger makes."""
+    if cfg.keg is None:
+        return False
+    from grove.intent_match import matches
+    return matches(
+        message, (cfg.keg.request, *cfg.keg.requests), cfg.keg.match_threshold,
+        verb_bonus=cfg.keg.verb_bonus)
 
 
 def opens_work(message: str, goal: Any, cfg: "DecisionWorkConfig") -> bool:
@@ -694,8 +708,12 @@ class DecisionWork:
                 details={"reason": reason, "message": message,
                          "tier": prov.get("tier"),
                          "session_id": prov.get("session_id"),
+                         "turn_uid": prov.get("turn_uid"),
                          "item_id": prov.get("item_id"),
-                         "request": prov.get("request")},
+                         "request": prov.get("request"),
+                         # Earlier tries at this same request, when this turn
+                         # is itself a re-issue one tier up.
+                         "attempts": list(prov.get("attempts") or [])},
                 observed_input={"reason": reason},
                 matched_skill=prov.get("t0_pattern"),
                 context={"work": self},
@@ -709,11 +727,57 @@ class DecisionWork:
             )
         return DecisionRefused(reason, message, andon_id=andon_id, answer=answer)
 
+    def check_attempt_not_stopped(self, provenance: Optional[Mapping[str, Any]]) -> None:
+        """Refuse any further step in a turn whose attempt was already stopped
+        and handed up the ladder. The request is being re-issued one tier up;
+        letting this tier carry on would have two tiers answer one request."""
+        prov = provenance or {}
+        if not prov.get("turn_uid") or not prov.get("session_id"):
+            return
+        from grove import reissue
+
+        waiting = reissue.armed(str(prov["session_id"]))
+        if waiting and waiting.get("turn_uid") == prov["turn_uid"]:
+            raise DecisionRefused(
+                "attempt_stopped",
+                "This attempt was stopped and the request is being retried one "
+                "tier up. Stop here.",
+            )
+        if reissue.stopped(str(prov["session_id"]), str(prov["turn_uid"])):
+            raise DecisionRefused(
+                "attempt_stopped",
+                "This attempt was stopped and no tier is left to retry on. "
+                "Stop here.",
+            )
+
+    def unanswered(
+        self, reply: str, provenance: Optional[Mapping[str, Any]],
+    ) -> Optional[DecisionRefused]:
+        """A turn that was asked for this goal's work and replied without
+        calling the goal's tool has claimed work it did not do. Returns the
+        refusal (flagged and answered on the bus), or None when the turn is
+        in order. Deterministic: the request is matched the same way the keg's
+        trigger is, and the tool call is read off the turn's own record."""
+        prov = provenance or {}
+        if not self.config.isolated or prov.get("isolation_goal") != self.config.goal_id:
+            return None
+        if not asks_for_work(str(prov.get("request") or ""), self.config):
+            return None
+        if self.config.tool in set(prov.get("tools_yielded") or ()):
+            return None
+        return self.abnormal(
+            "reply_without_tool",
+            f"The reply answered a request for {self.config.goal_id} work "
+            f"without calling {self.config.tool}, so nothing it says was done.",
+            prov,
+        )
+
     def check_turn(self, provenance: Optional[Mapping[str, Any]]) -> None:
         """Refuse unless this turn may decide for this goal. Only an isolated
         goal checks; the reasons are stated plainly for the operator."""
         if not self.config.isolated:
             return
+        self.check_attempt_not_stopped(provenance)
         if not provenance:
             raise self.abnormal(
                 "no_provenance",

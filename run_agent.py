@@ -18190,6 +18190,24 @@ class AIAgent:
         # can replay assistant("(empty)") / recovery nudges and fall into the
         # same empty-response loop again.
         self._drop_trailing_empty_response_scaffolding(messages)
+
+        # The Dispatcher reviews the reply BEFORE it is saved or sent. A reply
+        # it withholds (work claimed without the tool call that does it; an
+        # attempt already handed up the ladder) is replaced here, in the
+        # transcript too, so no later turn reads the withheld text as fact.
+        _reviewer = getattr(getattr(self, "_dispatcher_singleton", None),
+                            "review_final_reply", None)
+        if _reviewer is not None and final_response and not interrupted:
+            _instead = _reviewer(self, final_response)
+            if _instead:
+                for _m in reversed(messages):
+                    if _m.get("role") == "assistant":
+                        if not _m.get("tool_calls"):
+                            _m["content"] = _instead
+                        break
+                final_response = _instead
+                _turn_exit_reason = "reply_withheld"
+
         self._persist_session(messages, conversation_history)
 
         # ── Turn-exit diagnostic log ─────────────────────────────────────
@@ -18243,6 +18261,7 @@ class AIAgent:
             bool(final_response)
             and not interrupted
             and _turn_exit_reason != "empty_response_exhausted"
+            and _turn_exit_reason != "reply_withheld"
         )
 
         # File-mutation verifier footer.

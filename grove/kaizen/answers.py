@@ -275,6 +275,64 @@ def _correction(andon: Mapping[str, Any], context: Any) -> Answer:
     )
 
 
+# Abnormalities that mean "this tier did not complete the turn": the answer it
+# gave is not a valid one, or it answered without doing the work at all. Each
+# is answered by the ladder rule — the same request, one tier up.
+LADDER_REASONS = frozenset({
+    "output_not_in_domain", "undeclared_output", "reply_without_tool",
+})
+ESCALATING_MESSAGE = "That attempt didn't complete; retrying with a stronger model."
+NOT_COMPLETED_MESSAGE = (
+    "This request couldn't be completed: every tier was tried and none "
+    "finished it. Nothing was recorded."
+)
+
+
+def _fail_upward(andon: Mapping[str, Any]) -> Answer:
+    """The ladder rule. Re-issue the same request one tier up — automatically,
+    one attempt per tier. At the top there is nothing higher: stop, and watch."""
+    from grove import reissue
+    from grove.andon import AUTHORIZED_LADDER_RULE
+
+    details = andon.get("details") or {}
+    tier, reason = details.get("tier"), details.get("reason")
+    attempts = list(details.get("attempts") or []) + [{
+        "turn_uid": details.get("turn_uid"), "tier": tier, "reason": reason,
+        "andon_id": andon.get("andon_id"),
+    }]
+    up = reissue.next_tier(tier)
+    if up is None or not details.get("session_id") or not details.get("request"):
+        # The top of the ladder (or a turn that cannot be re-issued): no
+        # further retries. Watch for it repeating.
+        stop = watch(
+            andon, signature={"class": reason, "goal": andon.get("goal")},
+            description=(
+                f"a request no tier completed (last tried: {tier or 'unknown'}; "
+                f"{reason})"
+            ),
+            promote_after=_DEFAULT_PROMOTE_AFTER,
+        )
+        if stop.kind == KIND_WATCH:
+            stop.summary = f"{NOT_COMPLETED_MESSAGE} {stop.summary}"
+            stop.detail = {**stop.detail, "stops_attempt": {
+                "session_id": details.get("session_id"),
+                "turn_uid": details.get("turn_uid"), "attempts": attempts}}
+        return stop
+    return Answer(
+        kind=KIND_REMEDY, summary=ESCALATING_MESSAGE,
+        artifact=f"ladder:{andon.get('andon_id')}",
+        write_class="tier_escalation",
+        detail={"authorized": AUTHORIZED_LADDER_RULE,
+                "reissue": {"goal": andon.get("goal"), "from_tier": tier, "tier": up,
+                            "request": details.get("request"),
+                            "session_id": details.get("session_id"),
+                            "turn_uid": details.get("turn_uid"),
+                            "andon_id": andon.get("andon_id"),
+                            "authorized": AUTHORIZED_LADDER_RULE,
+                            "attempts": attempts}},
+    )
+
+
 def _turn_check(andon: Mapping[str, Any], context: Any) -> Answer:
     details = andon.get("details") or {}
     reason = details.get("reason")
@@ -288,29 +346,8 @@ def _turn_check(andon: Mapping[str, Any], context: Any) -> Answer:
             action={"goal": andon.get("goal"), "item_id": details.get("item_id"),
                     "reason": details.get("message") or reason},
         )
-    if reason in ("output_not_in_domain", "undeclared_output"):
-        from grove import reissue
-
-        up = reissue.next_tier(details.get("tier"))
-        if up is None:
-            # Already at the top of the ladder (or at T0): nothing higher to
-            # fail upward to. Watch for it repeating.
-            return watch(
-                andon, signature={"class": reason, "goal": andon.get("goal")},
-                description=(
-                    f"an invalid answer at {details.get('tier') or 'an unknown tier'} "
-                    "with no higher tier to retry on"
-                ),
-                promote_after=_DEFAULT_PROMOTE_AFTER,
-            )
-        return file_remedy(
-            andon, write_class="tier_escalation",
-            summary=f"Retry this request one tier up, at {up}.",
-            action={"goal": andon.get("goal"), "from_tier": details.get("tier"),
-                    "tier": up, "request": details.get("request"),
-                    "session_id": details.get("session_id"),
-                    "andon_id": andon.get("andon_id")},
-        )
+    if reason in LADDER_REASONS:
+        return _fail_upward(andon)
     if reason in ("session_not_isolated", "contaminated_turn", "no_provenance"):
         from grove.kaizen import session_rule
         return session_rule.answer(andon, context)

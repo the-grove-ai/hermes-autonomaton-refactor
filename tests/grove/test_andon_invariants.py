@@ -207,28 +207,117 @@ def test_case_1_unclean_session_gets_a_proposed_session_rule_then_a_clean_sessio
     assert_every_andon_closed_exactly_once(env.events())
 
 
-def test_case_2_invalid_output_gets_a_retry_one_tier_up(env):
-    env.add("billing")
-    with pytest.raises(DecisionRefused) as refused:
-        env.work.record(item_id="m01", inputs=env.inputs(), output={"tag": "made-up"},
-                        reasoning="", provenance=env.prov())
-    answer = refused.value.answer
-    assert (answer["kind"], answer["write_class"], answer["channel"]) == (
-        andon.KIND_REMEDY, "tier_escalation", andon.CHANNEL_CHAT)
-    [remedy] = read_all()
-    assert remedy.type == "remedy" and remedy.payload["action"]["from_tier"] == "T1"
-    assert remedy.payload["action"]["tier"] == "T2"
-    # Accepted in chat: the request is re-issued one tier up, once.
+def test_case_2_invalid_output_fails_upward_automatically_one_tier_at_a_time(env):
+    # 2026-10-06: was a chat-accepted remedy. Moving one turn one tier up
+    # grants no authority, so the ladder rule carries it out with no accept.
     from grove import reissue
-    assert fc.cli_approve(remedy.proposal_id.split(":")[-1][:12]) == 0
+
+    env.add("billing")
+    bad = dict(item_id="m01", inputs=env.inputs(), output={"tag": "made-up"}, reasoning="")
+    with pytest.raises(DecisionRefused) as refused:
+        env.work.record(**bad, provenance=env.prov())
+    answer = refused.value.answer
+    assert (answer["kind"], answer["write_class"]) == (andon.KIND_REMEDY, "tier_escalation")
+    assert answer["detail"]["authorized"] == andon.AUTHORIZED_LADDER_RULE
+    assert answer["summary"] == answers.ESCALATING_MESSAGE      # the one line the operator sees
+    assert read_all() == []                                     # nothing waits for an accept
+    [applied] = [e for e in env.events() if e["event_type"] == "remedy_applied"]
+    assert (applied["channel"], applied["summary"], applied["andon_id"]) == (
+        "ladder_rule", "escalated T1 → T2 (ladder rule)", refused.value.andon_id)
+    # The same turn may not carry on: the request now belongs to the next tier.
+    with pytest.raises(DecisionRefused) as again:
+        env.work.record(**{**bad, "output": {"tag": "finance"}}, provenance=env.prov())
+    assert again.value.reason == "attempt_stopped" and env.work.pending() is None
     armed = reissue.take("sess")
     assert (armed["tier"], armed["clean_session"], armed["request"]) == (
         "T2", False, "tag the next message")
-    # At the top of the ladder there is nothing higher: Kaizen watches instead.
+    assert [(a["tier"], a["reason"]) for a in armed["attempts"]] == [
+        ("T1", "output_not_in_domain")]
+    # One attempt per tier: T2 fails the same way and goes to T3, trace intact.
+    with pytest.raises(DecisionRefused):
+        env.work.record(**bad, provenance=env.prov(
+            tier="T2", turn_uid="u-t2", attempts=armed["attempts"]))
+    armed = reissue.take("sess")
+    assert armed["tier"] == "T3" and [a["tier"] for a in armed["attempts"]] == ["T1", "T2"]
+    # The top of the ladder: stop. A watch, nothing armed, no further retry.
     with pytest.raises(DecisionRefused) as top:
-        env.work.record(item_id="m01", inputs=env.inputs(), output={"tag": "made-up"},
-                        reasoning="", provenance=env.prov(tier="T3"))
+        env.work.record(**bad, provenance=env.prov(
+            tier="T3", turn_uid="u-t3", attempts=armed["attempts"]))
     assert top.value.answer["kind"] == andon.KIND_WATCH
+    assert top.value.answer["summary"].startswith(answers.NOT_COMPLETED_MESSAGE)
+    assert reissue.take("sess") is None and reissue.stopped("sess", "u-t3")
+    with pytest.raises(DecisionRefused) as after:
+        env.work.record(**{**bad, "output": {"tag": "finance"}},
+                        provenance=env.prov(tier="T3", turn_uid="u-t3"))
+    assert after.value.reason == "attempt_stopped"
+    assert len([e for e in env.events() if e["event_type"] == "remedy_applied"]) == 2
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_case_6_a_reply_that_claims_the_work_without_the_tool_is_refused(env):
+    from grove import reissue
+
+    env.add("billing")
+    asked = env.prov()                                  # "tag the next message", no tool call
+    refused = env.work.unanswered("m01 is tagged finance.", asked)
+    assert refused is not None and refused.reason == "reply_without_tool"
+    assert refused.answer["detail"]["authorized"] == andon.AUTHORIZED_LADDER_RULE
+    assert reissue.take("sess")["tier"] == "T2"
+    # In order: the tool was called; or the operator asked something else.
+    assert env.work.unanswered("x", env.prov(tools_yielded=["tag_message"])) is None
+    assert env.work.unanswered("x", env.prov(request="why that tag?")) is None
+    assert env.work.unanswered("x", env.prov(isolation_goal=None)) is None
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_the_dispatcher_withholds_the_reply_and_says_one_line(env):
+    from grove import reissue
+    from grove.dispatcher import Dispatcher
+
+    env.add("billing")
+
+    def stand_in(**prov):
+        return SimpleNamespace(
+            _current_turn_isolation=GOAL, _current_turn_t0_pattern=None,
+            _current_turn_id="sess#1", _current_turn_withheld=None,
+            turn_provenance=lambda agent: env.prov(**prov))
+
+    # Asked for the work, answered without the tool: withheld, retried one tier up.
+    d = stand_in()
+    assert Dispatcher.review_final_reply(d, None, "m01 is tagged finance.") == (
+        answers.ESCALATING_MESSAGE)
+    assert d._current_turn_withheld["kind"] == "reply_without_tool"
+    assert "T2" in d._current_turn_withheld["summary"]
+    assert reissue.take("sess")["tier"] == "T2"
+    # At the top tier: withheld, and the operator is told plainly.
+    d = stand_in(tier="T3", turn_uid="u-top")
+    assert Dispatcher.review_final_reply(d, None, "m01 is tagged finance.") == (
+        answers.NOT_COMPLETED_MESSAGE)
+    assert reissue.take("sess") is None
+    # A turn that did the work, and a session with no goal, are left alone.
+    d = stand_in(tools_yielded=["tag_message"], turn_uid="u-ok")
+    assert Dispatcher.review_final_reply(d, None, "Tagged.") is None
+    assert d._current_turn_withheld is None
+    d = stand_in(turn_uid="u-open")
+    d._current_turn_isolation = None
+    assert Dispatcher.review_final_reply(d, None, "Hello.") is None
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_the_ladder_rule_authorizes_a_tier_step_and_nothing_else(env, monkeypatch):
+    env.add("billing")
+    smuggled = andon.Answer(
+        kind=andon.KIND_REMEDY, summary="x", write_class="set_aside_item",
+        detail={"authorized": andon.AUTHORIZED_LADDER_RULE,
+                "reissue": {"session_id": "sess", "tier": "T2"}})
+    with pytest.raises(andon.ScopeViolation, match="ladder rule"):
+        andon.channel_for(smuggled)
+    monkeypatch.setitem(answers._ANSWERS, "turn_check", lambda a, c: smuggled)
+    refused = env.work.abnormal("output_not_in_domain", "x", env.prov())
+    from grove import reissue
+    assert reissue.take("sess") is None                  # nothing was carried out
+    assert refused.answer["kind"] in andon.ANSWER_KINDS  # closed through Kaizen's failure path
+    assert not [e for e in env.events() if e["event_type"] == "remedy_applied"]
     assert_every_andon_closed_exactly_once(env.events())
 
 

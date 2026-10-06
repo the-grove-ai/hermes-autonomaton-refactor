@@ -79,6 +79,17 @@ REMEDY_WRITE_CLASSES: Dict[str, str] = {
     "session_reset": "this chat's session (a clean one, under a signed standing rule)",
 }
 
+# The ladder rule. The router sends each turn to the cheapest tier that can
+# handle it; when that tier does not complete the turn, the turn fails UPWARD,
+# one tier, once per tier. Moving one turn up grants no authority and is always
+# the safe direction, so it needs no operator accept: the remedy is carried out
+# when it is answered, recorded against its event, and shown to the operator.
+# Only these write classes may be authorized this way. Changing which tier a
+# CLASS of work starts on is standard work, and is signed.
+AUTHORIZED_STANDING_RULE = "standing_rule"
+AUTHORIZED_LADDER_RULE = "ladder_rule"
+LADDER_WRITE_CLASSES = frozenset({"tier_escalation"})
+
 # How deep Kaizen's failures may nest before the handler closes the event with
 # a watch — an answer that is built without a model and cannot fail to draft.
 _MAX_DEPTH = 2
@@ -148,6 +159,11 @@ def channel_for(answer: Answer) -> str:
             f"remedy {answer.write_class!r} would write a scope-defining "
             f"surface; it must be proposed as a standard-work change"
         )
+    if (answer.detail.get("authorized") == AUTHORIZED_LADDER_RULE
+            and answer.write_class not in LADDER_WRITE_CLASSES):
+        raise ScopeViolation(
+            f"the ladder rule authorizes only {sorted(LADDER_WRITE_CLASSES)}, "
+            f"not {answer.write_class!r}")
     return CHANNEL_CHAT
 
 
@@ -313,25 +329,43 @@ def raise_andon(
             str(p["turn_uid"]) for p in provenance if p.get("turn_uid")
         ],
     )
-    if answer.kind == KIND_REMEDY and answer.detail.get("authorized") == "standing_rule":
-        # The operator already signed the rule that authorizes this action, so
-        # it needs no further accept. Carried out here, recorded against the
-        # standing grant — and still only ever an in-scope, one-time action.
+    authorized = answer.detail.get("authorized") if answer.kind == KIND_REMEDY else None
+    if authorized in (AUTHORIZED_STANDING_RULE, AUTHORIZED_LADDER_RULE):
+        # Already authorized — by a rule the operator signed, or by the ladder
+        # rule — so it needs no further accept. Carried out here and recorded
+        # against its authority; still only ever an in-scope, one-time action.
         assert_chat_acceptable(answer)
         from grove import reissue
 
         action = dict(answer.detail.get("reissue") or {})
         if action.get("session_id"):
             reissue.arm(action, session_id=action["session_id"])
+            applied = {}
+            if authorized == AUTHORIZED_LADDER_RULE:
+                applied = {
+                    "from_tier": action.get("from_tier"), "tier": action.get("tier"),
+                    "summary": (f"escalated {action.get('from_tier')} → "
+                                f"{action.get('tier')} (ladder rule)"),
+                    "attempts": list(action.get("attempts") or []),
+                }
             bus.record(
                 "remedy_applied",
                 loop_step="remedy_applied",
                 andon_id=andon["andon_id"],
+                goal=goal,
                 write_class=answer.write_class,
                 standing_grant=answer.detail.get("standing_grant"),
-                surface_class=surface, channel="standing_rule",
+                surface_class=surface, channel=authorized,
                 source_chain=[closing["record_hash"]],
+                **applied,
             )
+    stops = answer.detail.get("stops_attempt") if answer.kind == KIND_WATCH else None
+    if stops and stops.get("session_id"):
+        # The top of the ladder: nothing higher to try. The attempt is stopped
+        # for the rest of its turn; no retry is armed.
+        from grove import reissue
+        reissue.mark_stopped(
+            str(stops["session_id"]), stops.get("turn_uid"), andon["andon_id"])
     andon["answer"] = {
         "kind": answer.kind, "summary": answer.summary, "artifact": answer.artifact,
         "surface_class": surface, "channel": channel,

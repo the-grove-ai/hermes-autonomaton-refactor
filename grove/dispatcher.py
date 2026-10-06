@@ -932,6 +932,11 @@ class Dispatcher:
         # when there is no session database, and the last isolation set a
         # prompt was composed under (a change forces a recompose).
         self._current_turn_isolation: Optional[str] = None
+        # The ladder: earlier attempts at this turn's request, when this turn
+        # is a re-issue one tier up; and why this turn's reply was withheld,
+        # when it was.
+        self._current_turn_escalation: Optional[Dict[str, Any]] = None
+        self._current_turn_withheld: Optional[Dict[str, Any]] = None
         self._isolation_by_session: Dict[str, str] = {}
         self._last_applied_isolated_sections: Any = None
         # Sprint 48 — per-turn tool invocations (name + args) for the T0
@@ -2116,6 +2121,8 @@ class Dispatcher:
             agent, user_message,
         )
         self._current_turn_t0_handback = None
+        self._current_turn_escalation = None
+        self._current_turn_withheld = None
         # Sprint 35 — pre-construction classification + tier binding.
         # Fires AFTER the per-turn reset block above so the reset
         # cannot null out the captured classification. Pre-Sprint-35
@@ -2769,7 +2776,18 @@ class Dispatcher:
                     # be written pending and later swept to success. The
                     # turn's exit reason decides; the text is the backstop,
                     # matched by prefix so appended text cannot hide it.
-                    if (
+                    _withheld = getattr(self, "_current_turn_withheld", None)
+                    if _withheld:
+                        # The reply was withheld (review_final_reply): this
+                        # attempt did not complete, and is recorded as such.
+                        self._write_intent_record(
+                            agent,
+                            outcome="error",
+                            final_response_chars=len(yielded.content or ""),
+                            failure_kind=str(_withheld.get("kind") or "andon_stop"),
+                            failure_summary=str(_withheld.get("summary") or "")[:120],
+                        )
+                    elif (
                         (yielded.metadata or {}).get("turn_exit_reason")
                         == "empty_response_exhausted"
                         or (yielded.content or "").lstrip().startswith("(empty)")
@@ -2921,6 +2939,9 @@ class Dispatcher:
                 # A T0 pattern that was consulted and handed this turn back as
                 # outside its scope (standard work, not a fault). None otherwise.
                 "t0_handback": getattr(self, "_current_turn_t0_handback", None),
+                # The ladder: every earlier attempt at this request and the
+                # tier it ran on, when this turn is a re-issue one tier up.
+                "escalation": getattr(self, "_current_turn_escalation", None),
                 "model": model_used,
                 "tools_offered": {
                     "count": len(offered),
@@ -5386,10 +5407,82 @@ class Dispatcher:
         (``grove.reissue``). Consumed once; a fault means no pin."""
         try:
             from grove import reissue
-            return reissue.take_tier(
+            pin = reissue.take_pin(
                 self.session_id or getattr(agent, "session_id", None))
         except Exception as exc:  # noqa: BLE001
             logger.error("[grove.dispatcher] could not read the re-issue tier: %r", exc)
+            return None
+        if not pin:
+            return None
+        self._current_turn_escalation = {
+            "attempts": pin["attempts"], "andon_id": pin["andon_id"]}
+        return pin["tier"]
+
+    def review_final_reply(self, agent: Any, reply: str) -> Optional[str]:
+        """Review a turn's reply before it is saved or sent. Returns the text
+        to deliver INSTEAD when the reply must be withheld, else None.
+
+        Approval stage. In a session isolated to a decision-work goal, a
+        reply is withheld when (a) the goal's tool already stopped this
+        attempt and handed the request up the ladder, or (b) the operator
+        asked for the work and the reply arrived with no call to the goal's
+        tool — a claim of work that was not done. (b) is flagged here, raised
+        as an andon and answered by Kaizen under the ladder rule; the
+        operator sees one short line while the request is retried one tier
+        up, or a plain statement that it could not be completed.
+
+        A fault in the review itself is logged loud and the reply stands:
+        the review failing is not evidence the reply is wrong."""
+        goal = getattr(self, "_current_turn_isolation", None)
+        if not goal or getattr(self, "_current_turn_t0_pattern", None):
+            return None
+        try:
+            from grove import reissue, turn_provenance
+            from grove.andon import AUTHORIZED_LADDER_RULE
+            from grove.decision_work import DecisionWork, config_for_goal
+            from grove.kaizen.answers import ESCALATING_MESSAGE, NOT_COMPLETED_MESSAGE
+
+            prov = self.turn_provenance(agent)
+            session_id, turn_uid = prov.get("session_id"), prov.get("turn_uid")
+            waiting = reissue.armed(session_id)
+            if (waiting and waiting.get("turn_uid") == turn_uid
+                    and waiting.get("authorized") == AUTHORIZED_LADDER_RULE):
+                self._current_turn_withheld = {
+                    "kind": "andon_stop", "andon_id": waiting.get("andon_id"),
+                    "summary": f"escalated to {waiting.get('tier')} (ladder rule)"}
+                return ESCALATING_MESSAGE
+            stop = reissue.stopped(session_id, turn_uid)
+            if stop:
+                self._current_turn_withheld = {
+                    "kind": "andon_stop", "andon_id": stop.get("andon_id"),
+                    "summary": "no tier completed the request"}
+                return NOT_COMPLETED_MESSAGE
+            work = DecisionWork(config_for_goal(str(goal)))
+            token = turn_provenance.set_current(prov)
+            try:
+                refusal = work.unanswered(reply, prov)
+            finally:
+                turn_provenance.reset(token)
+            if refusal is None:
+                return None
+            answer = refusal.answer or {}
+            escalating = (
+                answer.get("kind") == "remedy"
+                and (answer.get("detail") or {}).get("authorized") == AUTHORIZED_LADDER_RULE)
+            up = ((answer.get("detail") or {}).get("reissue") or {}).get("tier")
+            self._current_turn_withheld = {
+                "kind": refusal.reason, "andon_id": refusal.andon_id,
+                "summary": (f"escalated to {up} (ladder rule)" if escalating
+                            else "no tier completed the request")}
+            logger.warning(
+                "[grove.dispatcher] turn %s reply withheld (%s; andon %s) — %s",
+                self._current_turn_id, refusal.reason, refusal.andon_id,
+                self._current_turn_withheld["summary"])
+            return ESCALATING_MESSAGE if escalating else NOT_COMPLETED_MESSAGE
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "[grove.dispatcher] could not review the reply of turn %s: %r — "
+                "the reply stands unreviewed", self._current_turn_id, exc)
             return None
 
     def _session_is_goal_isolated(self, session_id: str) -> bool:
@@ -5444,6 +5537,9 @@ class Dispatcher:
             "sections": sections,
             "tools_yielded": list(self._current_turn_tools_yielded),
             "isolation_goal": self._current_turn_isolation,
+            # Earlier attempts at this request, when this turn is a re-issue.
+            "attempts": list(
+                (getattr(self, "_current_turn_escalation", None) or {}).get("attempts") or ()),
         }
 
     def _apply_tier_budget(self, agent: Any, tier: Optional[str]) -> None:

@@ -209,9 +209,11 @@ def test_refuses_out_of_order_and_out_of_domain(tmp_path):
     assert _refusal(lambda: work.record(
         item_id="m01", inputs={}, output={"tag": "made-up"}, reasoning="",
         provenance=_prov())).reason == "output_not_in_domain"
+    # 2026-10-06: a new turn. The refusal above stopped that turn's attempt
+    # (it failed upward), so the same turn may not try again.
     assert _refusal(lambda: work.record(
         item_id="m01", inputs={}, output={}, reasoning="",
-        provenance=_prov())).reason == "missing_output"
+        provenance=_prov(turn_uid="u2"))).reason == "missing_output"
     assert work.log.records() == []          # a refusal writes nothing
 
 

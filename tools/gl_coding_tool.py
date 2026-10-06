@@ -114,7 +114,7 @@ def _next_step(exc: DecisionRefused) -> str:
     if kind == "standard_work":
         return f"{summary} Sign it or send feedback there."
     if kind == "remedy":
-        if (answer.get("detail") or {}).get("authorized") == "standing_rule":
+        if (answer.get("detail") or {}).get("authorized") in ("standing_rule", "ladder_rule"):
             return summary
         return f"Proposed next step: {summary} Reply approve to do it, or say what to do instead."
     if kind == "watch":

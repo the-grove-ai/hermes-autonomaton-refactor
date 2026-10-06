@@ -10118,7 +10118,9 @@ class GatewayRunner:
             await self._handle_reset_command(event)
             entry = self.session_store.get_or_create_session(source)
         if armed.get("tier"):
-            reissue.arm_tier(getattr(entry, "session_id", "") or "", str(armed["tier"]))
+            reissue.arm_tier(
+                getattr(entry, "session_id", "") or "", str(armed["tier"]),
+                attempts=armed.get("attempts"), andon_id=armed.get("andon_id"))
         adapter = self.adapters.get(source.platform)
         if adapter is None:
             logger.error("remedy re-issue for %s found no adapter", quick_key)

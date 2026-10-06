@@ -49,5 +49,14 @@ def turn_trace(turn_uid: str, *, home: Optional[Path] = None) -> Dict[str, Any]:
     if log_dir.is_dir():
         for path in sorted(log_dir.glob("*.jsonl")):
             decisions += [r for r in _jsonl(path) if r.get("turn_uid") == turn_uid]
-    return {"turn_uid": turn_uid, "intent": intent,
-            "tool_rows": tool_rows, "decisions": decisions}
+    # The ladder: when this turn is a re-issue one tier up, every earlier
+    # attempt at the same request (turn, tier, why it did not complete), then
+    # this turn as the last one.
+    escalation = (((intent or {}).get("stages") or {}).get("compilation") or {}).get(
+        "escalation") or {}
+    attempts = [dict(a) for a in (escalation.get("attempts") or [])]
+    if attempts:
+        attempts.append({"turn_uid": turn_uid, "tier": (intent or {}).get("tier_selected"),
+                         "reason": (intent or {}).get("failure_kind")})
+    return {"turn_uid": turn_uid, "intent": intent, "tool_rows": tool_rows,
+            "decisions": decisions, "attempts": attempts}
