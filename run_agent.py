@@ -18206,7 +18206,7 @@ class AIAgent:
                             _m["content"] = _instead
                         break
                 final_response = _instead
-                _turn_exit_reason = "reply_withheld"
+                _turn_exit_reason = "reply_replaced"
 
         self._persist_session(messages, conversation_history)
 
@@ -18261,7 +18261,7 @@ class AIAgent:
             bool(final_response)
             and not interrupted
             and _turn_exit_reason != "empty_response_exhausted"
-            and _turn_exit_reason != "reply_withheld"
+            and _turn_exit_reason != "reply_replaced"
         )
 
         # File-mutation verifier footer.

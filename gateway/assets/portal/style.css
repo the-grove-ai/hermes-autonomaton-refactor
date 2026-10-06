@@ -988,3 +988,27 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
     font: inherit; font-size: 16px; }
 .sc-effect { flex-basis: 100%; font-size: 13px; }
 .sc-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+/* Long runs (more than 30 items): the same chart and chain, drawn tighter. A
+   bar's time and its keg version stay one hover or tab away. */
+.sc-bars.sc-dense { gap: 2px; min-width: 900px; }
+.sc-bars.sc-dense .sc-bar { min-width: 12px; }
+.sc-bars.sc-dense .sc-value { visibility: hidden; }
+.sc-bars.sc-dense .sc-bar:hover .sc-value, .sc-bars.sc-dense .sc-bar:focus-visible .sc-value,
+.sc-bars.sc-dense .sc-fill.sc-cut + .sc-value { visibility: visible; }
+.sc-bars.sc-dense .sc-chip { font-size: 0; padding: 0; width: 8px; height: 8px; border-radius: 50%; }
+.sc-bars.sc-dense .sc-n { font-size: 10px; }
+.sc-bars.sc-dense .sc-bar:nth-child(5n+2) .sc-n, .sc-bars.sc-dense .sc-bar:nth-child(5n+3) .sc-n,
+.sc-bars.sc-dense .sc-bar:nth-child(5n+4) .sc-n, .sc-bars.sc-dense .sc-bar:nth-child(5n) .sc-n {
+    visibility: hidden; }
+.sc-chain.sc-dense { min-width: 900px; padding: 8px 2px; }
+.sc-chain.sc-dense .sc-chain-line { top: 16px; left: 8px; right: 8px; }
+.sc-chain.sc-dense .sc-link { width: 14px; gap: 8px; }
+.sc-chain.sc-dense .sc-node { width: 12px; height: 12px; box-shadow: 0 0 0 2px var(--sc-panel); }
+.sc-chain.sc-dense .sc-node svg { display: none; }
+.sc-chain.sc-dense .sc-node.sc-ring { box-shadow: 0 0 0 2px var(--sc-panel), 0 0 0 4px var(--sc-event); }
+.sc-chain.sc-dense .sc-n { font-size: 10px; }
+.sc-chain.sc-dense .sc-link:not(:nth-child(5n+2)) .sc-n { visibility: hidden; }
+.sc-period { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 6px 0; }
+.sc-period > div { display: flex; flex-direction: column; gap: 4px; }
+.sc-period .sc-figure { font-size: 34px; }

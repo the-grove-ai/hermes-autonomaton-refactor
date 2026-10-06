@@ -61,6 +61,12 @@ KIND_SET_ASIDE = "set_aside"     # an item taken out of the queue for manual han
 
 DECISION_CONFIRM = "confirm"
 DECISION_CORRECT = "correct"
+# Decided under a signed keg's own authority, in a batch, with no operator
+# checkpoint: "decided by the keg, not reviewed". It is NOT the operator's
+# confirmation — it is never counted as one, never evidence for standard
+# work, and never part of an accuracy figure. The operator can still confirm
+# or revise the item afterward; a revision is a miss like any other.
+DECISION_ACCEPTED = "accepted"
 
 SCOPE_SINGLE_VALUE_KEYS = "single_value_keys"
 
@@ -116,6 +122,9 @@ class OutputDomain:
     output: str
     path: Path
     column: str
+    # Optional: the column holding each value's display name, so a value can
+    # be shown as the operator knows it ("<value> <name>").
+    name_column: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -157,6 +166,31 @@ class KegDeclaration:
 
 
 @dataclass(frozen=True)
+class WorkSession:
+    """How this goal's work runs as a session: the operator decides, and the
+    system presents the next item. Every phrase here is acted on with no model
+    in between, so the block is part of the goal's SESSION RULE and is in
+    force only while the operator's signature on it stands. ``enabled`` False
+    (or no block) leaves the request-per-item rhythm exactly as it was."""
+    enabled: bool = False
+    start: Tuple[str, ...] = ()       # opens (or resumes) the work
+    confirm: Tuple[str, ...] = ()     # confirms the pending item
+    revise: Tuple[str, ...] = ()      # asks to revise it (answered with revise_prompt)
+    pause: Tuple[str, ...] = ()       # pauses the session
+    # Batch: the keg decides everything it covers at once, under its own
+    # authority; the rest come to the operator one at a time as usual.
+    batch: Tuple[str, ...] = ()
+    batch_label: str = "Batch"            # what the scorecard calls the batch
+    done_word: str = "decided"            # the goal's own word for a decided item
+    before_label: str = "Before the batch"
+    revise_prompt: str = "What should it be?"
+    buttons: Tuple[Tuple[str, str], ...] = ()     # (action, label), in order
+    # The item card. Fields: n, total, value, why, the item's declared inputs
+    # and whatever else the goal's adapter supplies for the item.
+    card: str = "{item} {n} of {total}: {label}\nProposed: {value}\n{why}"
+
+
+@dataclass(frozen=True)
 class DecisionWorkConfig:
     goal_id: str
     tool: str
@@ -176,6 +210,7 @@ class DecisionWorkConfig:
     # What one unit of this work is called, singular and plural ("message",
     # "messages"). Read by reports; plays no part in deciding anything.
     item_name: Tuple[str, str] = ("item", "items")
+    work_session: WorkSession = field(default_factory=WorkSession)
 
     @property
     def isolated(self) -> bool:
@@ -247,6 +282,7 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
             output=str(out),
             path=_resolve(root, _need(dom, "path", "output_domains")),
             column=str(_need(dom, "column", "output_domains")),
+            name_column=(str(dom["name_column"]) if dom.get("name_column") else None),
         ))
 
     evidence = None
@@ -279,6 +315,46 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
                 f"goal {goal.id!r}: item_name must give 'one' and 'many' as words"
             )
         item_name = (name_raw["one"].strip(), name_raw["many"].strip())
+
+    session = WorkSession()
+    ws_raw = raw.get("work_session")
+    if ws_raw is not None:
+        if not isinstance(ws_raw, Mapping):
+            raise ValueError(f"goal {goal.id!r}: work_session must be a mapping")
+
+        def _phrases(key: str) -> Tuple[str, ...]:
+            value = ws_raw.get(key) or ()
+            if not isinstance(value, (list, tuple)) or not all(
+                isinstance(v, str) and v.strip() for v in value
+            ):
+                raise ValueError(
+                    f"goal {goal.id!r}: work_session.{key} must be a list of phrases "
+                    f"(quote each one: a bare yes or no is read as true or false)")
+            return tuple(v.strip() for v in value)
+
+        enabled = ws_raw.get("enabled", False)
+        if not isinstance(enabled, bool):
+            raise ValueError(f"goal {goal.id!r}: work_session.enabled must be true or false")
+        labels = ws_raw.get("buttons") or {}
+        if not isinstance(labels, Mapping) or any(k not in ("confirm", "revise") for k in labels):
+            raise ValueError(
+                f"goal {goal.id!r}: work_session.buttons may label 'confirm' and 'revise'")
+        session = WorkSession(
+            enabled=enabled,
+            start=_phrases("start"), confirm=_phrases("confirm"),
+            revise=_phrases("revise"), pause=_phrases("pause"),
+            batch=_phrases("batch"),
+            batch_label=str(ws_raw.get("batch_label") or WorkSession.batch_label),
+            done_word=str(ws_raw.get("done_word") or WorkSession.done_word),
+            before_label=str(ws_raw.get("before_label") or WorkSession.before_label),
+            revise_prompt=str(ws_raw.get("revise_prompt") or WorkSession.revise_prompt),
+            buttons=tuple((k, str(labels[k])) for k in ("confirm", "revise") if labels.get(k)),
+            card=str(ws_raw.get("card") or WorkSession.card),
+        )
+        if session.enabled and (isolation != ISOLATION_SOURCES_ONLY or not session.confirm):
+            raise ValueError(
+                f"goal {goal.id!r}: an enabled work_session needs an isolated goal "
+                f"and at least one confirm phrase")
 
     keg = None
     keg_raw = raw.get("keg")
@@ -321,6 +397,7 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         keg=keg,
         on_unclean=on_unclean,
         item_name=item_name,
+        work_session=session,
     )
 
 
@@ -356,9 +433,59 @@ def asks_for_work(message: str, cfg: "DecisionWorkConfig") -> bool:
     if cfg.keg is None:
         return False
     from grove.intent_match import matches
-    return matches(
+    if matches(
         message, (cfg.keg.request, *cfg.keg.requests), cfg.keg.match_threshold,
-        verb_bonus=cfg.keg.verb_bonus)
+        verb_bonus=cfg.keg.verb_bonus,
+    ):
+        return True
+    return cfg.work_session.enabled and routes(message, cfg.work_session.start, cfg)
+
+
+def score(message: Any, phrases: Any, cfg: "DecisionWorkConfig") -> Tuple[float, Optional[str]]:
+    """The declared phrase a message is closest to, as ``(score, phrase)``:
+    token overlap on normalized wording (``grove.intent_match``), with the
+    goal's verb bonus. The one matcher; nothing here is a keyword list."""
+    from grove.intent_match import best_match
+    bonus = cfg.keg.verb_bonus if cfg.keg is not None else 0.0
+    return best_match(str(message or ""), tuple(phrases or ()), verb_bonus=bonus)
+
+
+def routes(message: Any, phrases: Any, cfg: "DecisionWorkConfig") -> bool:
+    """Whether a message is CLOSE ENOUGH to a declared phrase to route on:
+    overlap at or above the goal's declared threshold. For routing only —
+    opening, resuming, batching, pausing. A miss just falls through to the
+    model. Nothing that RECORDS a decision is ever matched this way (see
+    :func:`says`)."""
+    threshold = cfg.keg.match_threshold if cfg.keg is not None else 1.0
+    return score(message, phrases, cfg)[0] >= float(threshold)
+
+
+def _portal(fragment: str) -> str:
+    """A portal deep link, or the bare route when no base URL is configured."""
+    try:
+        from grove.prompt.portal_links import resolve_portal_base_url
+        base = (resolve_portal_base_url() or "").strip().rstrip("/")
+    except Exception:  # noqa: BLE001 — a link is a convenience, never a blocker
+        base = ""
+    return f"{base}/portal#fragments/{fragment}"
+
+
+_PHRASE_RE = re.compile(r"[^\w\s']+")
+
+
+def _phrase(text: Any) -> str:
+    """A phrase as it is compared: lower case, punctuation and extra space
+    dropped. "OK!" and "ok" are the same thing to say."""
+    return " ".join(_PHRASE_RE.sub(" ", str(text or "").casefold()).split())
+
+
+def says(message: Any, phrases: Any) -> bool:
+    """Whether a message IS one of the declared phrases — the whole message,
+    nothing more. The match for anything that WRITES: a confirmation or a
+    revision is recorded only on an exact phrase. A near miss ("sounds right",
+    "ok but...") is ambiguous, and an ambiguous message goes to the model."""
+    said = _phrase(message)
+    return bool(said) and said in {_phrase(p) for p in (phrases or ())}
 
 
 def opens_work(message: str, goal: Any, cfg: "DecisionWorkConfig") -> bool:
@@ -372,7 +499,9 @@ def opens_work(message: str, goal: Any, cfg: "DecisionWorkConfig") -> bool:
     this goal's. A goal with no keg falls back to its declared keywords."""
     if cfg.keg is not None:
         from grove.intent_match import matches
-        return matches(message, (cfg.keg.request,), cfg.keg.match_threshold)
+        if matches(message, (cfg.keg.request,), cfg.keg.match_threshold):
+            return True
+        return cfg.work_session.enabled and routes(message, cfg.work_session.start, cfg)
     return _keyword_matches(message, goal.keywords)
 
 
@@ -386,13 +515,25 @@ def session_rule(cfg: "DecisionWorkConfig") -> Dict[str, Any]:
     so it is in force ONLY while the operator's signature on exactly this rule
     stands (:func:`session_rule_grant`). An edit to any of these fields is a
     draft until it is signed again."""
-    return {
+    rule = {
         "goal": cfg.goal_id,
         "isolation": cfg.isolation,
         "opens_on": cfg.keg.request if cfg.keg is not None else None,
         "match_threshold": cfg.keg.match_threshold if cfg.keg is not None else None,
         "on_unclean": cfg.on_unclean,
     }
+    ws = cfg.work_session
+    if ws.enabled:
+        # Present only while the work session is switched on, so switching it
+        # off leaves the rule — and the operator's signature on it — as it was.
+        rule["work_session"] = {
+            "start": list(ws.start), "confirm": list(ws.confirm),
+            "revise": list(ws.revise), "pause": list(ws.pause),
+            "after_a_decision": "present_the_next_item",
+        }
+        if ws.batch:
+            rule["work_session"]["batch"] = list(ws.batch)
+    return rule
 
 
 def session_rule_digest(cfg: "DecisionWorkConfig") -> str:
@@ -595,6 +736,8 @@ class DecisionWork:
         self.log = log or DecisionLog(config.goal_id)
         # What Jidoka did about the most recent decision (andon events raised).
         self.last_observations: List[Dict[str, Any]] = []
+        self.next_armed = False
+        self.last_match: Optional[Dict[str, Any]] = None
         self.last_observation_error: Optional[str] = None
 
     # -- reading ----------------------------------------------------------
@@ -737,7 +880,8 @@ class DecisionWork:
         from grove import reissue
 
         waiting = reissue.armed(str(prov["session_id"]))
-        if waiting and waiting.get("turn_uid") == prov["turn_uid"]:
+        if (waiting and waiting.get("turn_uid") == prov["turn_uid"]
+                and waiting.get("authorized") == "ladder_rule"):
             raise DecisionRefused(
                 "attempt_stopped",
                 "This attempt was stopped and the request is being retried one "
@@ -879,7 +1023,158 @@ class DecisionWork:
             "session_id": prov.get("session_id"),
             "turn_id": prov.get("turn_id"),
             "turn_uid": prov.get("turn_uid"),
+            **({"batch": self.current_batch()} if self.current_batch() else {}),
         })
+
+    def current_batch(self) -> Optional[str]:
+        """The batch this run is in, if one has begun: the batch id on the
+        run's most recent proposed record that carries one. Items the keg
+        left for a model are part of the same batch, so they carry it too."""
+        for record in reversed(self.log.run_records()):
+            if record.get("kind") == KIND_PROPOSED and record.get("batch"):
+                return str(record["batch"])
+        return None
+
+    def serving_keg(self) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
+        """``(spec, reference)`` of the keg now serving this goal, or None."""
+        from grove import keg as keg_mod
+        from grove.pattern_cache import PatternCacheStore, STATUS_ACTIVE
+
+        for entry in PatternCacheStore().all():
+            if entry.status != STATUS_ACTIVE:
+                continue
+            spec = keg_mod.keg_of(entry)
+            if spec and spec.get("dock_goal") == self.config.goal_id:
+                return spec, {"name": spec.get("name"), "version": spec.get("version"),
+                              "pattern_id": entry.pattern_id}
+        return None
+
+    def batch_pass(
+        self, provenance: Optional[Mapping[str, Any]], inputs_for: Any,
+    ) -> Dict[str, Any]:
+        """Decide every queued item the serving keg covers, at once and with
+        no model, each recorded as ACCEPTED under the keg's own authority.
+        Items it does not cover — and any item that cannot be read — are left
+        in the queue untouched, for the ordinary one-at-a-time loop.
+
+        The operator's signature on the keg was the checkpoint, so this runs
+        only for a keg whose signed authority level is green. ``inputs_for``
+        is the adapter's reader: a queue path in, the item's declared inputs
+        out (ValueError when the item cannot be read). Returns the counts."""
+        from grove import keg as keg_mod
+
+        self.check_turn(provenance)
+        if self.pending() is not None:
+            raise DecisionRefused(
+                "prior_unconfirmed", "An item is waiting for your decision first.")
+        prov = dict(provenance or {})
+        proposed, _ = self._state()
+        aside = self.set_aside_items()
+        todo = [p for p in self.queue_items() if p.stem not in proposed and p.stem not in aside]
+        serving = self.serving_keg()
+        out = {"batch": None, "total": len(todo), "coded": 0, "left": len(todo),
+               "keg": None, "reason": None}
+        if serving is None:
+            out["reason"] = "no_keg"
+            return out
+        spec, keg_ref = serving
+        out["keg"] = keg_ref
+        if spec.get("authority_level") != "green":
+            out["reason"] = "not_green"
+            return out
+        run = self._run()
+        batch_id = uuid.uuid4().hex
+        out["batch"] = batch_id
+        for path in todo:
+            try:
+                inputs = dict(inputs_for(path))
+            except (ValueError, OSError):
+                continue          # unreadable: the ordinary loop surfaces it
+            output = keg_mod.evaluate(spec, inputs)
+            if output is None:
+                continue
+            clean = {k: str(v).strip() for k, v in output.items()}
+            self.check_output(clean, prov)
+            record = self.log.append({
+                "kind": KIND_PROPOSED, "run_id": run["run_id"], "item_id": path.stem,
+                "inputs": inputs, "output": clean,
+                "reasoning": f"keg {keg_ref['name']} v{keg_ref['version']}",
+                "tier": "T0", "model": "pattern_cache", "keg": dict(keg_ref),
+                "session_id": prov.get("session_id"), "turn_id": prov.get("turn_id"),
+                "turn_uid": prov.get("turn_uid"), "batch": batch_id,
+            })
+            self.log.append({
+                "kind": KIND_DECIDED, "run_id": run["run_id"], "ref": record["id"],
+                "item_id": path.stem, "decision": DECISION_ACCEPTED, "output": clean,
+                "by": "keg_authority", "session_id": prov.get("session_id"),
+                "turn_id": prov.get("turn_id"), "turn_uid": prov.get("turn_uid"),
+            })
+            out["coded"] += 1
+        out["left"] = out["total"] - out["coded"]
+        if not out["coded"]:
+            # Nothing covered: no batch began, so nothing later is labeled one.
+            out["batch"] = None
+        return out
+
+    def rule_on(
+        self, item_id: str, *, decision: str,
+        corrected_output: Optional[Mapping[str, Any]] = None,
+        provenance: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """The operator's ruling on an item the keg ACCEPTED without review:
+        a confirmation (it becomes confirmed) or a revision (a miss — Jidoka
+        sees it exactly as it sees any correction, and the keg halts). Only an
+        accepted item can be ruled on this way; a decision the operator
+        already made stands."""
+        if decision not in (DECISION_CONFIRM, DECISION_CORRECT):
+            raise DecisionRefused(
+                "unknown_decision", "The decision must be 'confirm' or 'correct'.")
+        proposed, decided = self._state()
+        record = proposed.get(item_id)
+        verdict = decided.get(record["id"]) if record else None
+        if record is None or verdict is None:
+            raise DecisionRefused("not_decided", f"{item_id} has not been decided.")
+        if verdict.get("decision") != DECISION_ACCEPTED:
+            raise DecisionRefused(
+                "already_ruled", f"You have already ruled on {item_id}.")
+        if decision == DECISION_CORRECT:
+            if not corrected_output:
+                raise DecisionRefused(
+                    "missing_correction", "A revision needs the revised value.")
+            self.check_output(corrected_output, provenance)
+            final = {k: str(v).strip() for k, v in corrected_output.items()}
+            if final == record["output"]:
+                raise DecisionRefused(
+                    "correction_matches",
+                    "The revised value is the same as the keg's; that is a confirmation.")
+        else:
+            final = dict(record["output"])
+        prov = dict(provenance or {})
+        ruled = self.log.append({
+            "kind": KIND_DECIDED, "run_id": record["run_id"], "ref": record["id"],
+            "item_id": item_id, "decision": decision, "output": final,
+            "after": DECISION_ACCEPTED, "session_id": prov.get("session_id"),
+            "turn_id": prov.get("turn_id"), "turn_uid": prov.get("turn_uid"),
+        })
+        self._observe(record, ruled)
+        return ruled
+
+    def _observe(self, proposed: Mapping[str, Any], decided: Mapping[str, Any]) -> None:
+        """Jidoka observes a feed write. The decision is already on record; a
+        watcher fault is logged loud and kept for the caller to report, and
+        never un-records what the operator decided."""
+        self.last_observations = []
+        self.last_observation_error = None
+        try:
+            from grove.detectors import decision_feed
+            self.last_observations = decision_feed.observe(self, proposed, decided)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).error(
+                "[decision_work] Jidoka could not observe decision %s for %s: %r",
+                decided.get("id"), self.config.goal_id, exc,
+            )
+            self.last_observation_error = f"{type(exc).__name__}: {exc}"
 
     def decide(
         self,
@@ -923,22 +1218,337 @@ class DecisionWork:
             "turn_id": prov.get("turn_id"),
             "turn_uid": prov.get("turn_uid"),
         })
-        # Jidoka observes the feed write. The decision is already on record;
-        # a watcher fault is logged loud and kept for the caller to report,
-        # and never un-records what the operator decided.
-        self.last_observations = []
-        self.last_observation_error = None
-        try:
-            from grove.detectors import decision_feed
-            self.last_observations = decision_feed.observe(self, waiting, decided)
-        except Exception as exc:  # noqa: BLE001
-            import logging
-            logging.getLogger(__name__).error(
-                "[decision_work] Jidoka could not observe decision %s for %s: %r",
-                decided.get("id"), self.config.goal_id, exc,
-            )
-            self.last_observation_error = f"{type(exc).__name__}: {exc}"
+        self._observe(waiting, decided)
+        self.present_next_after(decided, prov)
         return decided
+
+    # -- the work session -------------------------------------------------
+
+    def present_next_after(self, decided: Mapping[str, Any],
+                           provenance: Mapping[str, Any]) -> bool:
+        """After a decision, have the system present the next item: re-issue
+        the goal's own request, so it is routed from scratch (standard work
+        first, a model only if no keg covers the item). One re-issue per
+        decision, never more, and only under the operator's signed session
+        rule. Returns whether it was armed. Nothing is armed when the work
+        session is off: the operator then asks for each item, as before."""
+        self.next_armed = False
+        cfg = self.config
+        if not cfg.work_session.enabled or cfg.keg is None:
+            return False
+        session_id = provenance.get("session_id")
+        if not session_id or provenance.get("isolation_goal") != cfg.goal_id:
+            return False
+        grant = session_rule_grant(cfg)
+        if grant is None:
+            return False
+        from grove import reissue
+
+        reissue.arm({
+            "request": cfg.keg.request, "authorized": getattr(grant, "id", None),
+            "turn_uid": provenance.get("turn_uid"),
+            "after_decision": decided.get("id"),
+        }, session_id=str(session_id))
+        self.next_armed = True
+        return True
+
+    def session_action(self, message: Any) -> Optional[Dict[str, Any]]:
+        """What a message in this goal's work session unambiguously IS, decided
+        with no model — or None, which sends it to the model.
+
+          confirm        — the pending item is confirmed
+          revise         — the message is exactly a valid value for the goal's
+                           one output: the pending item is revised to it
+          revise_prompt  — the operator asked to revise; ask what it should be
+          present        — the work was asked for while an item is pending:
+                           show that item again
+          summary        — the work was asked for and the queue is done
+        """
+        ws = self.config.work_session
+        self.last_match = None
+        if not ws.enabled:
+            return None
+        action = self._session_action(message)
+        self.last_match = self.match_trace(message, action)
+        return action
+
+    def match_trace(self, message: Any, action: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+        """How a work-session message scored against the goal's declared
+        phrases, for the turn's recognition record: the closest phrase of any
+        kind, its score, whether the system acted on it, and what as. A
+        message that fell through to the model is recorded too — repeated
+        near misses read the same way are how a phrase earns its place."""
+        cfg, ws = self.config, self.config.work_session
+        groups = {
+            "confirm": ws.confirm, "revise": ws.revise, "start": ws.start,
+            "pause": ws.pause, "batch": ws.batch,
+            "request": ((cfg.keg.request, *cfg.keg.requests) if cfg.keg else ()),
+        }
+        best = (0.0, None, None)
+        for kind, phrases in groups.items():
+            value, phrase = score(message, phrases, cfg)
+            if value > best[0]:
+                best = (value, phrase, kind)
+        return {
+            "message": _phrase(message)[:120],
+            "best_phrase": best[1], "phrase_kind": best[2],
+            "score": round(float(best[0]), 3),
+            "fired": action is not None,
+            "action": (action or {}).get("action"),
+            # How it fired: an exact phrase or value (the only way a decision
+            # is recorded), or overlap at the threshold (routing only).
+            "match": (None if action is None else
+                      "exact" if action.get("action") in ("confirm", "revise", "revise_prompt")
+                      else "overlap"),
+        }
+
+    def _session_action(self, message: Any) -> Optional[Dict[str, Any]]:
+        ws = self.config.work_session
+        waiting = self.pending()
+        if waiting is not None:
+            if says(message, ws.confirm):
+                return {"action": "confirm", "item_id": waiting["item_id"]}
+            if says(message, ws.revise):
+                return {"action": "revise_prompt", "item_id": waiting["item_id"]}
+            value = self._exact_value(message)
+            if value is not None:
+                return {"action": "revise", "item_id": waiting["item_id"], "output": value}
+            if asks_for_work(str(message or ""), self.config) or routes(
+                    message, ws.batch, self.config):
+                return {"action": "present", "item_id": waiting["item_id"]}
+            return None
+        if routes(message, ws.batch, self.config):
+            return {"action": "summary"} if self.next_item() is None else {"action": "batch"}
+        if asks_for_work(str(message or ""), self.config) and self.next_item() is None:
+            return {"action": "summary"}
+        return None
+
+    def _exact_value(self, message: Any) -> Optional[Dict[str, str]]:
+        """The message as a revised output, when the goal has ONE output, that
+        output has a declared domain, and the message is exactly one of its
+        values. Anything else (a reason, a description) is not a value."""
+        outputs = list(self.config.outputs)
+        if len(outputs) != 1:
+            return None
+        said = str(message or "").strip()
+        for domain in self.config.output_domains:
+            if domain.output == outputs[0] and said and said in _domain_values(domain):
+                return {outputs[0]: said}
+        return None
+
+    def progress(self, item_id: str) -> Tuple[int, int]:
+        """``(position, total)`` of an item in the queue, counted from one."""
+        names = [p.stem for p in self.queue_items()]
+        return (names.index(item_id) + 1 if item_id in names else 0), len(names)
+
+    def value_text(self, output: Mapping[str, Any]) -> str:
+        """An output as the operator knows it: the value, with its display
+        name when the goal declares where to find one."""
+        parts = []
+        for name, value in output.items():
+            text = str(value)
+            for domain in self.config.output_domains:
+                if domain.output == name and domain.name_column:
+                    with open(domain.path, newline="", encoding="utf-8-sig") as fh:
+                        for row in csv.DictReader(fh):
+                            if (row.get(domain.column) or "").strip() == text:
+                                label = (row.get(domain.name_column) or "").strip()
+                                text = f"{text} {label}".strip()
+                                break
+            parts.append(text if len(output) == 1 else f"{name} {text}")
+        return ", ".join(parts)
+
+    def why(self, record: Mapping[str, Any]) -> str:
+        """Who decided a proposed item and why, in one line: the keg version
+        and the rule that fired, or the model's own reason and its tier."""
+        keg_ref = record.get("keg")
+        value = self.value_text({k: v for k, v in (record.get("output") or {}).items()})
+        if keg_ref:
+            head = f"Keg v{keg_ref.get('version')}, no model call"
+            try:
+                from grove import keg as keg_mod
+                from grove.pattern_cache import PatternCacheStore
+
+                entry = PatternCacheStore().get(str(keg_ref.get("pattern_id")))
+                spec = keg_mod.keg_of(entry) if entry is not None else None
+                rule = keg_mod.match(spec, record.get("inputs") or {}) if spec else None
+                if rule is not None:
+                    groups = keg_mod.parse_condition(str(rule.get("if")), spec.get("inputs") or {})
+                    if len(groups) == 1 and len(groups[0]) == 1 and groups[0][0][1] == "==":
+                        fired = str(groups[0][0][2])
+                    else:
+                        fired = keg_mod.describe_condition(
+                            str(rule.get("if")), spec.get("inputs") or {})
+                    return f"{head}: {fired} → {value}"
+            except Exception:  # noqa: BLE001 — the card still says who decided
+                import logging
+                logging.getLogger(__name__).warning(
+                    "[decision_work] could not read the rule keg %s fired",
+                    keg_ref.get("pattern_id"))
+            return head + "."
+        reason = str(record.get("reasoning") or "").strip()
+        tier = record.get("tier") or "model"
+        return f"Model ({tier}): {reason}" if reason else f"Decided by a model ({tier})."
+
+    def card(self, record: Mapping[str, Any], fields: Optional[Mapping[str, Any]] = None) -> str:
+        """The pending item as the operator sees it, from the goal's own card
+        template. ``fields`` are whatever the goal's adapter knows about the
+        item beyond its declared inputs. A field the template names and
+        nothing supplies is left empty, never a crash."""
+        position, total = self.progress(str(record.get("item_id")))
+        label_key = self.config.reference.key_input if self.config.reference else None
+        inputs = dict(record.get("inputs") or {})
+
+        class _Fields(dict):
+            def __missing__(self, key: str) -> str:
+                return ""
+
+        values = _Fields({
+            **inputs, **dict(fields or {}),
+            "item": self.config.item_name[0].capitalize(),
+            "n": position, "total": total,
+            "label": str(inputs.get(label_key, "")) if label_key else "",
+            "value": self.value_text(record.get("output") or {}),
+            "why": self.why(record),
+        })
+        return self.config.work_session.card.format_map(values).strip()
+
+    def notices(self) -> List[str]:
+        """What the improvement loop did when it saw the last decision, one
+        line each: a keg halted, a proposal waiting for signature. The loop
+        never blocks the work; it says what happened and the work goes on."""
+        lines: List[str] = []
+        one, many = self.config.item_name
+        for event in self.last_observations:
+            if event.get("halted"):
+                keg = (event.get("details") or {}).get("keg") or {}
+                lines.append(
+                    f"Keg v{keg.get('version')} halted: covered {many} go back to the "
+                    f"model until you rule on the fix.")
+            answer = event.get("answer") or {}
+            if answer.get("kind") == "standard_work":
+                version = (answer.get("detail") or {}).get("version")
+                lines.append(
+                    "Kaizen proposed " + (f"keg v{version}" if version else "a change")
+                    + ". Review in portal: " + _portal("proposals/pending"))
+            elif answer.get("summary") and answer.get("kind") != "watch":
+                lines.append(str(answer["summary"]))
+        if self.last_observation_error:
+            lines.append("The watcher failed after recording this decision: "
+                         + self.last_observation_error)
+        return lines
+
+    def session_step(
+        self, action: Mapping[str, Any], provenance: Optional[Mapping[str, Any]],
+        fields: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Carry out one work-session action (see :meth:`session_action`) and
+        return what the operator reads: ``{"reply", "item_id", "decided",
+        "presented"}``. Decisions are recorded here, by the system, from the
+        action — never inferred from anything a model wrote. An action that
+        names an item which is no longer the pending one is refused: a card
+        that is out of date never decides the item now waiting."""
+        ws = self.config.work_session
+        if not ws.enabled:
+            raise DecisionRefused("work_session_off", "This goal's work session is switched off.")
+        kind = action.get("action")
+        if kind == "summary":
+            return {"reply": self.summary() + "\nScorecard and audit check: " + _portal("audit/"),
+                    "item_id": None, "decided": False, "presented": False}
+        if kind == "batch":
+            return self._batch_step(provenance, action.get("inputs_for"))
+        waiting = self.pending()
+        if waiting is None:
+            raise DecisionRefused("nothing_pending", "No decision is waiting for confirmation.")
+        named = action.get("item_id")
+        if named and named != waiting["item_id"]:
+            raise DecisionRefused("stale_card", "That card is out of date.")
+        if kind == "present":
+            return {"reply": self.card(waiting, fields), "item_id": waiting["item_id"],
+                    "decided": False, "presented": True}
+        if kind == "revise_prompt":
+            return {"reply": ws.revise_prompt, "item_id": waiting["item_id"],
+                    "decided": False, "presented": False}
+        before = self.value_text(waiting.get("output") or {})
+        if kind == "confirm":
+            self.decide(decision=DECISION_CONFIRM, provenance=provenance)
+            lead = f"Confirmed: {before}."
+        elif kind == "revise":
+            decided = self.decide(decision=DECISION_CORRECT,
+                                  corrected_output=action.get("output"), provenance=provenance)
+            lead = f"Revised: {before} → {self.value_text(decided['output'])}."
+        else:
+            raise DecisionRefused("unknown_action", f"Unknown work-session action {kind!r}.")
+        return {"reply": "\n".join([lead] + self.notices()), "item_id": waiting["item_id"],
+                "decided": True, "presented": False, "next_armed": self.next_armed}
+
+    def _batch_step(self, provenance: Optional[Mapping[str, Any]],
+                    inputs_for: Any) -> Dict[str, Any]:
+        """Run the keg pass and say what happened in one message; then the
+        items it left come to the operator one at a time, as usual."""
+        if inputs_for is None:
+            raise DecisionRefused(
+                "no_reader", "This goal's tool did not say how to read its items.")
+        result = self.batch_pass(provenance, inputs_for)
+        one, many = self.config.item_name
+        total, coded, left = result["total"], result["coded"], result["left"]
+        if result["reason"] == "no_keg":
+            lead = (f"No signed keg is serving, so nothing is decided in bulk. "
+                    f"Bringing all {total} {one if total == 1 else many} to you one at a time.")
+        elif result["reason"] == "not_green":
+            lead = (f"Keg v{result['keg']['version']} is not signed to act without review, "
+                    f"so nothing is decided in bulk. Bringing all {total} to you one at a time.")
+        else:
+            done = self.config.work_session.done_word.capitalize()
+            lead = (f"{done} {coded} of {total} · {coded} by the keg "
+                    f"v{result['keg']['version']} · 0 model calls.")
+            if left:
+                lead += (f"\n{left} {'needs' if left == 1 else 'need'} a model. "
+                         f"Bringing {'it' if left == 1 else 'them'} to you one at a time.")
+            else:
+                lead += "\n" + self.summary() + "\nScorecard and audit check: " + _portal("audit/")
+        # One presentation armed, exactly as after a decision: the next item
+        # is its own freshly routed turn.
+        armed = False
+        if left:
+            armed = self.present_next_after({"id": result["batch"]}, dict(provenance or {}))
+        return {"reply": lead, "item_id": None, "decided": False, "presented": False,
+                "next_armed": armed, "batch": result}
+
+    def tally(self, batch: Optional[str] = None) -> Dict[str, int]:
+        """How this run's decided items stand — or one batch's, when given.
+        Three outcomes, never merged: confirmed by the operator, accepted by
+        the keg without review, revised."""
+        proposed, decided = self._state()
+        done = [r for r in proposed.values()
+                if r["id"] in decided and (batch is None or r.get("batch") == batch)]
+        kinds = [decided[r["id"]].get("decision") for r in done]
+        return {
+            "decided": len(done),
+            "by_keg": sum(1 for r in done if r.get("keg")),
+            "confirmed": kinds.count(DECISION_CONFIRM),
+            "accepted": kinds.count(DECISION_ACCEPTED),
+            "revised": kinds.count(DECISION_CORRECT),
+        }
+
+    def summary(self) -> str:
+        """The work so far in one line. In a batch: how many the keg coded
+        and how many the operator reviewed. Otherwise: who decided, and how
+        many were revised. Accepted items are named as not reviewed."""
+        one, many = self.config.item_name
+        batch = self.current_batch()
+        t = self.tally(batch)
+        n = t["decided"]
+        if batch:
+            reviewed = t["confirmed"] + t["revised"]
+            return (
+                f"{n} {self.config.work_session.done_word}: {t['accepted']} by the keg, "
+                f"not reviewed; {reviewed} reviewed by you; {t['revised']} revised."
+            )
+        return (
+            f"Queue complete: {n} {one if n == 1 else many} decided — "
+            f"{t['by_keg']} by the keg, {n - t['by_keg']} by a model, {t['revised']} revised."
+        )
 
     def history(self) -> List[Dict[str, Any]]:
         """This run's decided items as replay cases: what standard work served
@@ -971,7 +1581,10 @@ class DecisionWork:
                 "label": str(inputs.get(label_key, "")) if label_key else "",
                 "inputs": inputs,
                 "served": dict(record["output"]),
-                "confirmed": dict(verdict["output"]),
+                # An item the keg accepted without review is not ground truth:
+                # the operator never ruled on it.
+                "confirmed": (None if verdict["decision"] == DECISION_ACCEPTED
+                              else dict(verdict["output"])),
                 "served_by_keg": bool(record.get("keg")),
                 "note": _note(inputs.get(label_key)) if label_key else "",
                 "decision": verdict["decision"],

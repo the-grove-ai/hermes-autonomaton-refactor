@@ -167,8 +167,10 @@ def _run_check(home: Path, turn_uids: set) -> Dict[str, Any]:
             "goal": log_path.stem, "run_number": run.get("run_number"),
             "label": run.get("label") or "", "decisions": len(proposed), "with_turn": found,
         })
-        corrected = {r.get("ref") for r in records
-                     if r.get("kind") == KIND_DECIDED and r.get("decision") == DECISION_CORRECT}
+        # The latest ruling on each item decides how its link is drawn.
+        latest = {r.get("ref"): r.get("decision") for r in records
+                  if r.get("kind") == KIND_DECIDED}
+        corrected = {ref for ref, decision in latest.items() if decision == DECISION_CORRECT}
         # One link per decision, in order: who decided it, whether the
         # operator corrected it, and whether its turn is on record.
         out["links"] += [{
@@ -449,7 +451,8 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
     removes the deciding turn's cost, and how often an operator confirms is a
     choice about the work, not a property of the tier."""
     from grove.decision_work import (
-        DECISION_CORRECT, KIND_DECIDED, KIND_PROPOSED, DecisionLog,
+        DECISION_ACCEPTED, DECISION_CONFIRM, DECISION_CORRECT, KIND_DECIDED,
+        KIND_PROPOSED, DecisionLog,
     )
 
     base = _home(home)
@@ -475,11 +478,28 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
         shown = _presentation(log_path.stem)
         decided = {r["ref"]: r for r in records if r.get("kind") == KIND_DECIDED}
         deciding_uids = {r.get("turn_uid") for r in records if r.get("kind") == KIND_PROPOSED}
+        # A batch decides many items in ONE turn. Each item's share of that
+        # turn is the turn divided by the items it decided — never the whole
+        # turn counted once per item.
+        shared: Dict[Any, int] = {}
+        for r in records:
+            if r.get("kind") == KIND_PROPOSED and r.get("turn_uid"):
+                shared[r["turn_uid"]] = shared.get(r["turn_uid"], 0) + 1
         units: List[Dict[str, Any]] = []
         for order, record in enumerate(
                 [r for r in records if r.get("kind") == KIND_PROPOSED], 1):
             verdict = decided.get(record["id"])
             deciding = _turn(intents.get(record.get("turn_uid")), prices)
+            split = shared.get(record.get("turn_uid"), 1)
+            if split > 1:
+                deciding = {
+                    **deciding,
+                    **{k: (deciding[k] / split if deciding[k] is not None else None)
+                       for k in ("seconds", "cost")},
+                    **{k: deciding[k] / split
+                       for k in ("model_calls", "input", "output", "cache_read")},
+                    "shared_with": split,
+                }
             confirm_uid = (verdict or {}).get("turn_uid")
             # A turn that both recorded a confirmation and decided the next
             # item is counted once, as that item's deciding turn.
@@ -505,6 +525,11 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
                 "keg": bool(keg),
                 "decision": (verdict or {}).get("decision"),
                 "corrected": (verdict or {}).get("decision") == DECISION_CORRECT,
+                # Decided under the keg's signed authority and not reviewed:
+                # never the operator's confirmation.
+                "accepted": (verdict or {}).get("decision") == DECISION_ACCEPTED,
+                "confirmed": (verdict or {}).get("decision") == DECISION_CONFIRM,
+                "batch": record.get("batch"),
                 "deciding": deciding,
                 "confirming": confirming,
             })
@@ -515,7 +540,8 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
             turns = [u["deciding"] for u in group]
             by_tier[tier] = {
                 "units": len(group),
-                "confirmed": sum(1 for u in group if u["decision"] and not u["corrected"]),
+                "confirmed": sum(1 for u in group if u["confirmed"]),
+                "accepted": sum(1 for u in group if u["accepted"]),
                 "corrected": sum(1 for u in group if u["corrected"]),
                 "model_calls": _mean([t["model_calls"] for t in turns]),
                 "seconds": _mean([t["seconds"] for t in turns]),
@@ -561,6 +587,7 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
                 (v["name"] for v in loop["versions"] if v["name"]), log_path.stem),
             "item_name": shown["item_name"],
             "traceable": sum(1 for u in units if u["deciding"]["on_record"]),
+            "periods": _periods(units, shown),
             "events": loop["events"],
             "versions": loop["versions"],
             "drafts_returned": loop["drafts_returned"],
@@ -587,6 +614,35 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
         })
     return {"goals": goals, "prices_source": prices["source"],
             "included": list(INCLUDED_COMPONENTS), "not_included": dict(NOT_INCLUDED)}
+
+
+def _periods(units: List[Dict[str, Any]], shown: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """The run before its batch and the batch itself, side by side: how much
+    the keg decided, what each item cost in model calls and time, and how the
+    operator ruled. Empty when the run has no batch — there is one period."""
+    if not any(u["batch"] for u in units):
+        return []
+
+    def _one(label: str, group: List[Dict[str, Any]]) -> Dict[str, Any]:
+        n = len(group)
+        keg = sum(1 for u in group if u["keg"])
+        return {
+            "label": label, "units": n, "keg_units": keg,
+            "keg_share": keg / n if n else 0.0,
+            "model_calls_per_unit": (
+                sum(u["deciding"]["model_calls"] for u in group) / n if n else None),
+            "seconds_per_unit": _mean([u["deciding"]["seconds"] for u in group]),
+            "cost_per_unit": _mean([u["deciding"]["cost"] for u in group]),
+            "confirmed": sum(1 for u in group if u["confirmed"]),
+            "accepted": sum(1 for u in group if u["accepted"]),
+            "revised": sum(1 for u in group if u["corrected"]),
+        }
+
+    return [
+        _one(shown.get("before_label") or "Before the batch",
+             [u for u in units if not u["batch"]]),
+        _one(shown.get("batch_label") or "Batch", [u for u in units if u["batch"]]),
+    ]
 
 
 def _coverage(goal: str, units: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -635,6 +691,8 @@ def _presentation(goal: str) -> Dict[str, Any]:
         "title": cfg.keg.name if cfg.keg else None,
         "item_name": tuple(cfg.item_name),
         "label_key": cfg.reference.key_input if cfg.reference else None,
+        "before_label": cfg.work_session.before_label,
+        "batch_label": cfg.work_session.batch_label,
     }
 
 

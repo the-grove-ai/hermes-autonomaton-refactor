@@ -937,6 +937,13 @@ class Dispatcher:
         # when it was.
         self._current_turn_escalation: Optional[Dict[str, Any]] = None
         self._current_turn_withheld: Optional[Dict[str, Any]] = None
+        # A work-session step the Dispatcher itself is carrying out for the
+        # goal this session is isolated to: "t0" (the whole turn, no model) or
+        # "review" (reading the pending item's card after a model turn).
+        self._current_turn_session_step: Optional[str] = None
+        # How this turn's message scored against the goal's declared
+        # work-session phrases, fired or not (recognition, stage summary).
+        self._current_turn_phrase_match: Optional[Dict[str, Any]] = None
         self._isolation_by_session: Dict[str, str] = {}
         self._last_applied_isolated_sections: Any = None
         # Sprint 48 — per-turn tool invocations (name + args) for the T0
@@ -2123,6 +2130,8 @@ class Dispatcher:
         self._current_turn_t0_handback = None
         self._current_turn_escalation = None
         self._current_turn_withheld = None
+        self._current_turn_session_step = None
+        self._current_turn_phrase_match = None
         # Sprint 35 — pre-construction classification + tier binding.
         # Fires AFTER the per-turn reset block above so the reset
         # cannot null out the captured classification. Pre-Sprint-35
@@ -2150,6 +2159,15 @@ class Dispatcher:
         # ``_t0_intercept`` finalizes the previous turn, records the hit,
         # writes telemetry + the intent record, and returns the result dict;
         # a miss returns None and falls through to the normal flow unchanged.
+        if isinstance(user_message, str) and self._current_turn_isolation:
+            # A work session's unambiguous messages (confirm, a valid revised
+            # value, "show me the item again") are carried out here with no
+            # model. Anything else falls through and is routed as usual.
+            _session_result = self._session_intercept(
+                agent, user_message, previous_turn_id,
+            )
+            if _session_result is not None:
+                return _session_result
         if isinstance(user_message, str) and pattern_cache_enabled():
             _t0_result = self._t0_intercept(
                 agent, user_message, previous_turn_id, kwargs,
@@ -2930,6 +2948,11 @@ class Dispatcher:
                 "intent_class": intent_class,
                 "complexity": complexity_signal,
                 "confidence": confidence,
+                # In a work session only: the declared phrase this message
+                # was closest to, its score, and whether the system acted on
+                # it with no model. Absent on every other turn.
+                **({"phrase_match": self._current_turn_phrase_match}
+                   if getattr(self, "_current_turn_phrase_match", None) else {}),
             },
             "compilation": {
                 "tier": tier,
@@ -3539,8 +3562,11 @@ class Dispatcher:
             if tier_override == "T0":
                 # No model ran. Name what answered instead of the model the
                 # agent happens to be bound to — a T0 trace must not suggest a
-                # model call that never happened.
+                # model call that never happened. A work-session step is the
+                # goal's signed session rule acting, not a compiled pattern.
                 model_used = "pattern_cache"
+                if getattr(self, "_current_turn_session_step", None) == "t0":
+                    model_used = "session_rule"
 
             # Sprint 48 — T0 pattern-compiler evidence (GATE-A decision 3).
             # response_content (capped) feeds STATIC compilation; a SINGLE
@@ -4156,6 +4182,129 @@ class Dispatcher:
         )
         self._persist_t0_turn(user_message, response_text)
         return self._t0_result_dict(agent, response_text)
+
+    def _run_session_step(
+        self, agent: Any, tool_name: str, action: Dict[str, Any], mode: str,
+    ) -> Dict[str, Any]:
+        """Run one work-session step on the goal's own tool, model-free.
+
+        Execution stage. The step goes through the agent's ``_invoke_tool``
+        primitive — the same call every tool takes — under a verified-internal
+        token, with ``session_step`` set on the turn's provenance so the tool
+        knows the Dispatcher, not a model, is asking. Returns the tool's
+        parsed result. Raises ValueError when the tool returns something that
+        is neither a step result nor a refusal: a goal that switches its work
+        session on must have a tool that implements the step."""
+        from grove.effect_signature import canonical_effect_signature
+
+        args = {"verb": "session", "action": dict(action)}
+        previous = self._current_turn_session_step
+        self._current_turn_session_step = mode
+        self._approval_gate.activate()
+        self._approval_gate.mint(canonical_effect_signature(tool_name, args))
+        try:
+            raw = agent._invoke_tool(tool_name, args, self._current_turn_id or "")
+        finally:
+            self._approval_gate.flush()
+            if mode != "t0":
+                self._current_turn_session_step = previous
+        try:
+            data = _json_mod.loads(raw if isinstance(raw, str) else str(raw))
+        except (ValueError, TypeError):
+            data = None
+        if not isinstance(data, dict) or not (data.get("session") or data.get("t0_refused")):
+            raise ValueError(
+                f"tool {tool_name!r} did not carry out the work-session step "
+                f"{action.get('action')!r}")
+        return data
+
+    def _session_intercept(
+        self, agent: Any, user_message: str, previous_turn_id: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Carry out an unambiguous work-session message with no model, or
+        return None so the turn is routed as usual.
+
+        Recognition is deterministic here (``DecisionWork.session_action``):
+        a declared confirm phrase, a message that is exactly a valid revised
+        value, a request for the work while an item is pending, or the end of
+        the queue. Everything else — a reason, a question, a new topic — is
+        ambiguous by definition and goes to the model. The decision is
+        recorded by the goal's tool from the action, never from model text;
+        when one is recorded, the tool arms a re-issue of the goal's request
+        and the gateway presents the next item as its own freshly routed
+        turn. A fault here is logged loud and the turn is routed normally."""
+        goal = self._current_turn_isolation
+        try:
+            from grove.decision_work import DecisionWork, config_for_goal
+
+            cfg = config_for_goal(str(goal))
+            if not cfg.work_session.enabled:
+                return None
+            work = DecisionWork(cfg)
+            action = work.session_action(user_message)
+            # Recorded whether it fired or fell through to the model.
+            self._current_turn_phrase_match = work.last_match
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "[grove.dispatcher] could not read work-session action for turn "
+                "%s: %r — routing the turn normally", self._current_turn_id, exc)
+            return None
+        if action is None:
+            return None
+
+        if previous_turn_id is not None:
+            self._finalize_previous_turn_pending(previous_turn_id)
+        try:
+            data = self._run_session_step(agent, cfg.tool, action, "t0")
+        except Exception as exc:  # noqa: BLE001 — stop loud; nothing was decided by guess
+            logger.error(
+                "[grove.dispatcher] work-session step %s failed on turn %s: %r",
+                action.get("action"), self._current_turn_id, exc)
+            response_text = (
+                f"⚠️ Stopped: that could not be carried out ({type(exc).__name__}). "
+                f"Nothing was recorded; the item is still pending.")
+            self._write_intent_record(
+                agent, outcome="error", final_response_chars=len(response_text),
+                intent_class_override="conversation", tier_override="T0",
+                failure_kind="session_step_failed", failure_summary=type(exc).__name__,
+            )
+            self._persist_t0_turn(user_message, response_text)
+            return self._session_result_dict(agent, response_text)
+
+        if data.get("t0_refused"):
+            message = str(data.get("message") or "That could not be done.")
+            abnormal = bool(data.get("andon_id"))
+            response_text = f"⚠️ Stopped: {message}" if abnormal else message
+            self._write_intent_record(
+                agent, outcome="error" if abnormal else "pending",
+                final_response_chars=len(response_text),
+                intent_class_override="conversation", tier_override="T0",
+                **({"failure_kind": "andon_stop",
+                    "failure_summary": str(data.get("reason") or "")[:120]}
+                   if abnormal else {}),
+            )
+            self._persist_t0_turn(user_message, response_text)
+            return self._session_result_dict(agent, response_text)
+
+        response_text = str(data.get("reply") or "")
+        logger.info(
+            "[grove.dispatcher] work-session %s on turn %s (goal %s, item %s) — "
+            "no model call%s", action.get("action"), self._current_turn_id, goal,
+            data.get("item_id"), "; next item armed" if data.get("next_armed") else "",
+        )
+        self._write_intent_record(
+            agent, outcome="pending", final_response_chars=len(response_text),
+            intent_class_override="conversation", tier_override="T0",
+        )
+        self._persist_t0_turn(user_message, response_text)
+        return self._session_result_dict(agent, response_text)
+
+    def _session_result_dict(self, agent: Any, response_text: str) -> Dict[str, Any]:
+        result = self._t0_result_dict(agent, response_text)
+        result.update(model="session_rule", turn_exit_reason="session_step",
+                      pattern_cache_hit=False, cost_status="session_step",
+                      cost_source="session_rule")
+        return result
 
     def _execute_t0_invocation(self, agent: Any, pattern: Any) -> str:
         """Fire an EXECUTABLE pattern's compiled tool invocation, model-free.
@@ -5464,7 +5613,7 @@ class Dispatcher:
             finally:
                 turn_provenance.reset(token)
             if refusal is None:
-                return None
+                return self._session_card_for(agent, work, turn_uid)
             answer = refusal.answer or {}
             escalating = (
                 answer.get("kind") == "remedy"
@@ -5511,6 +5660,20 @@ class Dispatcher:
         (``grove.turn_provenance``). Read-only over Dispatcher-owned state."""
         decision = self._current_turn_routing_decision
         t0_pattern = getattr(self, "_current_turn_t0_pattern", None)
+        session_step = getattr(self, "_current_turn_session_step", None)
+        if session_step == "t0":
+            # The Dispatcher is carrying out a work-session step itself: no
+            # prompt went to any model, so nothing was read.
+            return {
+                "session_id": self.session_id or getattr(agent, "session_id", None),
+                "turn_id": self._current_turn_id,
+                "turn_uid": self._current_turn_uid,
+                "tier": "T0", "model": "session_rule", "t0_pattern": None,
+                "request": getattr(self, "_current_turn_user_message", None),
+                "cellar_hits": 0, "sections": [], "tools_yielded": [],
+                "isolation_goal": self._current_turn_isolation,
+                "attempts": [], "session_step": "t0",
+            }
         if t0_pattern:
             # A T0 serve sends NO prompt to any model, so nothing was read.
             # The agent may still hold a prompt composed when it was built —
@@ -5540,7 +5703,25 @@ class Dispatcher:
             # Earlier attempts at this request, when this turn is a re-issue.
             "attempts": list(
                 (getattr(self, "_current_turn_escalation", None) or {}).get("attempts") or ()),
+            "session_step": session_step,
         }
+
+    def _session_card_for(self, agent: Any, work: Any, turn_uid: Any) -> Optional[str]:
+        """In a work session, the reply to a turn that PROPOSED an item is the
+        goal's item card — who decided, the value and why — not the model's
+        own prose, so a model-decided item reads exactly like a keg-decided
+        one. Returns None when the work session is off, or when this turn
+        proposed nothing (a clarifying question, an answer about the item):
+        that reply is the model's to give."""
+        if not work.config.work_session.enabled:
+            return None
+        waiting = work.pending()
+        if waiting is None or not turn_uid or waiting.get("turn_uid") != turn_uid:
+            return None
+        data = self._run_session_step(
+            agent, work.config.tool,
+            {"action": "present", "item_id": waiting["item_id"]}, "review")
+        return str(data.get("reply") or "") or None
 
     def _apply_tier_budget(self, agent: Any, tier: Optional[str]) -> None:
         """Resolve THIS turn's tier budget once and thread both carriers from

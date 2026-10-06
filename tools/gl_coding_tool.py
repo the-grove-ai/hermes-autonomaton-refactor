@@ -155,7 +155,7 @@ def _next(work: DecisionWork) -> Dict[str, Any]:
             "proposed_gl_code": waiting["output"].get("gl_code"),
             "message": (
                 f"{waiting['item_id']} is coded {waiting['output'].get('gl_code')} "
-                f"and is waiting for the operator to confirm or correct it."
+                f"and is waiting for the operator to confirm or revise it."
             ),
         }
     path = work.next_item()
@@ -181,7 +181,7 @@ def _next(work: DecisionWork) -> Dict[str, Any]:
             "Choose the GL code from chart_of_accounts using the invoice and "
             "the vendor guide row. Then call record with gl_code and one line "
             "of reasoning, tell the operator the code and why, and ask them to "
-            "confirm or correct it."
+            "confirm or revise it."
         ),
     }
 
@@ -215,7 +215,7 @@ def _record(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
         "tier": record.get("tier"),
         "message": (
             f"{record['item_id']} coded {record['output']['gl_code']}. Ask the "
-            f"operator to confirm or correct it."
+            f"operator to confirm or revise it."
         ),
     }
 
@@ -224,13 +224,21 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
     decision = str(args.get("decision") or "").strip().lower()
     corrected = str(args.get("corrected_gl_code") or "").strip()
     waiting = work.pending()
-    record = work.decide(
-        decision=decision,
-        corrected_output=(
-            {"gl_code": corrected} if decision == DECISION_CORRECT and corrected else None
-        ),
-        provenance=turn_provenance.current(),
-    )
+    named = str(args.get("item_id") or "").strip()
+    revised_to = {"gl_code": corrected} if decision == DECISION_CORRECT and corrected else None
+    if named and (waiting is None or named != waiting["item_id"]):
+        # The operator is ruling on an invoice the keg coded in a batch and
+        # nobody reviewed: a confirmation, or a revision — which is a miss.
+        proposed, _ = work._state()
+        waiting = proposed.get(named)
+        record = work.rule_on(
+            named, decision=decision, corrected_output=revised_to,
+            provenance=turn_provenance.current())
+    else:
+        record = work.decide(
+            decision=decision, corrected_output=revised_to,
+            provenance=turn_provenance.current(),
+        )
     keg = (waiting or {}).get("keg")
     # What Jidoka did when it saw this decision land. Stated here so the
     # agent's sentence about a halt or a proposal rests on a tool result.
@@ -254,7 +262,7 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
     ]
     if halted:
         parts.append(
-            f"That correction halted the keg {keg.get('name')} v{keg.get('version')}: "
+            f"That revision halted the keg {keg.get('name')} v{keg.get('version')}: "
             "it no longer codes invoices, and covered invoices go back to the "
             "model until the operator rules on a fix."
         )
@@ -277,7 +285,7 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
         )
     return {
         "success": True,
-        "status": "confirmed" if decision == DECISION_CONFIRM else "corrected",
+        "status": "confirmed" if decision == DECISION_CONFIRM else "revised",
         "item_id": record["item_id"],
         "final_gl_code": record["output"]["gl_code"],
         "proposed_gl_code": (waiting or {}).get("output", {}).get("gl_code"),
@@ -290,6 +298,40 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
             "operator signs a proposal or sends feedback; use those words."
         ),
     }
+
+
+def _item_fields(work: DecisionWork, item_id: str) -> Dict[str, Any]:
+    """What this adapter knows about one invoice, for the goal's item card."""
+    for path in work.queue_items():
+        if path.stem == item_id:
+            invoice = parse_invoice(path.read_text(encoding="utf-8"))
+            return {
+                "invoice_number": invoice.get("invoice_number") or item_id,
+                "amount": invoice.get("total") or "?",
+                "invoice_date": invoice.get("invoice_date") or "",
+                **item_inputs(invoice),
+            }
+    return {}
+
+
+def _session(work: DecisionWork, args: Dict[str, Any]) -> str:
+    """Dispatcher only: one work-session step (present the pending invoice,
+    record the operator's confirm or revision, summarize the queue). Not in
+    the model-facing schema, and refused unless the Dispatcher itself is
+    running the step — a model can never record a decision this way."""
+    prov = turn_provenance.current() or {}
+    if not prov.get("session_step"):
+        raise DecisionRefused(
+            "not_a_session_step", "This step runs only when the system carries it out.")
+    action = dict(args.get("action") or {})
+    if action.get("action") == "batch":
+        # How this adapter reads one queued invoice into the declared inputs.
+        action["inputs_for"] = lambda path: item_inputs(
+            parse_invoice(path.read_text(encoding="utf-8")))
+    waiting = work.pending()
+    fields = _item_fields(work, waiting["item_id"]) if waiting is not None else {}
+    out = work.session_step(action, prov, fields)
+    return json.dumps({"session": True, **out}, ensure_ascii=False, default=str)
 
 
 def _t0_stop(exc: DecisionRefused) -> str:
@@ -335,6 +377,10 @@ def _apply_keg(work: DecisionWork, args: Dict[str, Any]) -> str:
     )
     if record is None:
         return _decline("the keg does not cover this invoice")
+    if work.config.work_session.enabled:
+        # The work session's card, from the goal's own template: the same
+        # card a model-decided invoice gets.
+        return work.card(record, _item_fields(work, record["item_id"]))
     code = record["output"]["gl_code"]
     account = ""
     for domain in work.config.output_domains:
@@ -347,7 +393,7 @@ def _apply_keg(work: DecisionWork, args: Dict[str, Any]) -> str:
         f"${invoice.get('total') or '?'} — coded {code}"
         + (f" {account}" if account else "") + ".\n\n"
         f"Coded by the keg {keg_ref['name']} v{keg_ref['version']}, with no "
-        f"model call. Confirm or correct?"
+        f"model call. Confirm or revise?"
     )
 
 
@@ -374,6 +420,14 @@ def gl_coding(args: Dict[str, Any]) -> str:
                 return _t0_stop(work.abnormal(
                     "item_unreadable", f"The next invoice could not be read: {exc}",
                     {**prov, "item_id": item.stem if item else None}))
+        if verb == "session":
+            prov = turn_provenance.current() or {}
+            try:
+                return _session(work, args)
+            except DecisionRefused as exc:
+                if not prov.get("session_step"):
+                    raise
+                return _t0_stop(exc)
         if verb == "next":
             result = _next(work)
         elif verb == "record":
@@ -412,8 +466,9 @@ GL_CODING_SCHEMA = {
         "guide and the full chart of accounts. verb='record' stores your "
         "proposed gl_code with one line of reasoning. verb='decide' stores "
         "the operator's answer: decision='confirm', or decision='correct' "
-        "with corrected_gl_code. Always ask the operator to confirm or "
-        "correct each coding before moving on. One invoice per request: after "
+        "with corrected_gl_code when the operator revises the code. Always "
+        "ask the operator to confirm or revise each coding before moving on. "
+        "Say 'revise' and 'revised' to the operator, never 'correct'. One invoice per request: after "
         "decide, stop — never call next or record again in the same turn; the "
         "operator asks for each invoice. Use only what this tool "
         "returns to choose a code. If the tool refuses, relay its `message` "
@@ -440,6 +495,14 @@ GL_CODING_SCHEMA = {
             "corrected_gl_code": {
                 "type": "string",
                 "description": "decide with decision='correct': the code the operator gave.",
+            },
+            "item_id": {
+                "type": "string",
+                "description": (
+                    "decide only, and only when the operator names an invoice "
+                    "the keg already coded in a batch (not the one waiting): "
+                    "that invoice's id."
+                ),
             },
         },
         "required": ["verb"],

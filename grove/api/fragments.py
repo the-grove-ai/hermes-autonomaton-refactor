@@ -1208,7 +1208,7 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
         clause = ""
     feedback = [f for f in (keg.get("feedback") or []) if f]
     if anomaly:
-        why = (f"You corrected one {one} the keg decided. The keg stopped itself, and this "
+        why = (f"You revised one {one} the keg decided. The keg stopped itself, and this "
                f"is the smallest change that would have gotten it right, tested against "
                f"every {one} it has seen.")
     else:
@@ -1230,11 +1230,11 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
     if anomaly and miss:
         label = str((miss.get("inputs") or {}).get(ctx["label_key"], "")) if ctx["label_key"] else ""
         who = ", ".join(x for x in (_num(str(miss.get("item_id") or "")), label) if x)
-        flagged = (f'You corrected <strong>{_esc(who)}</strong>, from '
+        flagged = (f'You revised <strong>{_esc(who)}</strong>, from '
                    f'{_esc(_keg_value(miss.get("served")))} to '
                    f'{_esc(_keg_value(miss.get("corrected")))}.')
     elif anomaly:
-        flagged = _esc(keg.get("flag_detail") or "A decision was corrected.")
+        flagged = _esc(keg.get("flag_detail") or "A decision was revised.")
     else:
         flagged = _esc(keg.get("flag_detail") or
                        f"{len(view.evidence)} confirmed decisions matched the reference table.")
@@ -1333,7 +1333,7 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
                      if c.keg is not None else "<strong>sends it to the model</strong>")
             if c.confirmed is not None and c.confirmed != c.served:
                 before = (f'{_esc(prior_word)} answered <strong>'
-                          f'{_esc(_keg_value(c.served))}</strong> · you corrected it to '
+                          f'{_esc(_keg_value(c.served))}</strong> · you revised it to '
                           f'<strong>{_esc(_keg_value(c.confirmed))}</strong>')
             else:
                 before = (f'{_esc(prior_word)} answered <strong>'
@@ -1345,9 +1345,9 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
             elif c.keg is None:
                 # Handing a case back does not reproduce the correction; it
                 # stops the keg from getting it wrong.
-                verdict = "Consistent with your correction"
+                verdict = "Consistent with your revision"
             else:
-                verdict = "Matches your correction"
+                verdict = "Matches your revision"
             review += (
                 f'<div class="sc-case sc-case-change">{_case_head(c)}<div>{before}</div>'
                 f'<div>v{_esc(version)}: {after}</div><div class="sc-verdict">'
@@ -4485,7 +4485,7 @@ def _sc_tiers(units) -> str:
 def _sc_event_label(event) -> str:
     if event["kind"] == "signed":
         return f"v{event['version']} signed"
-    return "Corrected · keg halted" if event.get("corrected") else "Keg halted"
+    return "Revised · keg halted" if event.get("corrected") else "Keg halted"
 
 
 def _sc_unit_detail(u, one: str) -> str:
@@ -4494,9 +4494,11 @@ def _sc_unit_detail(u, one: str) -> str:
     who = (f"keg v{u['keg_version']} · no model call" if u["keg"]
            else f"model ({u['tier']})" if u["tier"] else "model")
     if u["corrected"]:
-        verdict = "operator corrected" + (f" {u['change']}" if u["change"] else "")
+        verdict = "operator revised" + (f" {u['change']}" if u["change"] else "")
         if u["halted_keg"]:
             verdict += " · andon raised · keg halted"
+    elif u.get("accepted"):
+        verdict = "decided by the keg, not reviewed"
     elif u["decision"]:
         verdict = "operator confirmed"
     else:
@@ -4562,8 +4564,9 @@ def _scorecard_chart_html(g, key: str) -> str:
             f'<span class="sc-n">{u["order"]}</span></button>')
     first = next((u for u in units if u["corrected"]),
                  next((u for u in units if u["keg"]), units[0]))
+    dense = " sc-dense" if len(units) > 30 else ""
     return (
-        f'<div class="sc-scroll"><div class="sc-bars">{"".join(bars)}</div></div>'
+        f'<div class="sc-scroll"><div class="sc-bars{dense}">{"".join(bars)}</div></div>'
         f'<div role="status" class="sc-status" id="{target}">'
         f'{_esc(_sc_unit_detail(first, one))}</div>')
 
@@ -4634,9 +4637,9 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                     if brake["resumed_version"] else "halted the keg; it is still halted.")
         else:
             tail = "was recorded."
-        text = f"caught. A correction on {where} {tail}"
+        text = f"caught. A revision on {where} {tail}"
     else:
-        text = "No keg decision was corrected."
+        text = "No keg decision was revised."
     brake_tile = _tile("THE BRAKE", f"{misses} miss" + ("" if misses == 1 else "es"), text)
     tiles = (f'<section class="sc-tiles" aria-label="Headline numbers">'
              f'{speed}{cost}{signed}{brake_tile}</section>')
@@ -4660,7 +4663,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         rows += (
             f'<tr><td><i class="sc-swatch {"sc-keg" if is_keg else "sc-model"}"></i>'
             f'{"Keg" if is_keg else "Model"} ({_esc(tier)})</td><td>{t["units"]}</td>'
-            f'<td>{t["confirmed"]}</td>'
+            f'<td>{t["confirmed"]}</td><td>{t.get("accepted", 0)}</td>'
             f'<td class="{"sc-event" if t["corrected"] else ""}">{t["corrected"]}</td>'
             f'<td>{_sc_seconds(t["seconds"])}</td><td>{_money(t["cost"])}</td></tr>')
     if chain is None:
@@ -4671,14 +4674,21 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     else:
         chain_line = (f'Audit chain intact: {chain["chained"]:,} intent records, '
                       f'{chain["ledger"]["chained"]:,} chained ledger events.')
+    unreviewed = sum(1 for u in units if u.get("accepted"))
+    not_reviewed = (
+        f' {unreviewed} {_esc(one if unreviewed == 1 else many)} '
+        f'{"was" if unreviewed == 1 else "were"} decided by the keg under its signed '
+        f'authority and not reviewed; {"it is" if unreviewed == 1 else "they are"} not '
+        f'counted as confirmed.' if unreviewed else "")
     on_record = ("Every decision has its turn on record." if g["traceable"] == total
                  else f"{g['traceable']} of {total} decisions have their turn on record.")
     who = (
         f'<div class="sc-panel"><h3>Who decided, and how it went</h3><div class="sc-scroll">'
         f'<table class="sc-table"><thead><tr><th>DECIDED BY</th><th>{_esc(many.upper())}</th>'
-        f'<th>CONFIRMED</th><th>CORRECTED</th><th>TIME EACH</th><th>COST EACH</th></tr></thead>'
+        f'<th>CONFIRMED BY YOU</th><th>NOT REVIEWED</th><th>REVISED</th><th>TIME EACH</th>'
+        f'<th>COST EACH</th></tr></thead>'
         f'<tbody>{rows}</tbody></table></div>'
-        f'<p class="sc-foot">{_esc(on_record)} {chain_line}</p></div>')
+        f'<p class="sc-foot">{_esc(on_record)} {chain_line}{not_reviewed}</p></div>')
     cards = ""
     for v in versions:
         text = [f"Decides {v['decides']} case{'' if v['decides'] == 1 else 's'} directly."]
@@ -4705,7 +4715,30 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         n = g["drafts_returned"]
         cards += (f'<p class="sc-foot">{n} draft{"" if n == 1 else "s"} went back to Kaizen '
                   f'with the operator\'s feedback before signing.</p>')
-    panels = (f'<section class="sc-pair">{who}<div class="sc-panel"><h3>Standard work, '
+    periods = ""
+    if g.get("periods"):
+        cols = ""
+        for period in g["periods"]:
+            n = period["units"]
+            cols += (
+                f'<div class="sc-version"><div class="sc-version-head"><strong>'
+                f'{_esc(period["label"])}</strong><span class="sc-eyebrow">{n} '
+                f'{_esc((one if n == 1 else many).upper())}</span></div>'
+                f'<div class="sc-period"><div><span class="sc-figure">'
+                f'{period["keg_share"]:.0%}</span><span class="sc-note">decided by the keg '
+                f'({period["keg_units"]} of {n})</span></div>'
+                f'<div><span class="sc-figure">{_compact(period["model_calls_per_unit"])}'
+                f'</span><span class="sc-note">model calls per {_esc(one)}</span></div>'
+                f'<div><span class="sc-figure">{_sc_seconds(period["seconds_per_unit"])}'
+                f'</span><span class="sc-note">to decide each {_esc(one)}</span></div></div>'
+                f'<div class="sc-note">{period["confirmed"]} confirmed by you · '
+                f'{period["accepted"]} decided by the keg, not reviewed · '
+                f'{period["revised"]} revised.</div></div>')
+        periods = (
+            f'<section class="sc-panel"><h3>{_esc(g["periods"][0]["label"])} against '
+            f'{_esc(g["periods"][1]["label"])}</h3><div class="sc-catches">{cols}</div>'
+            f'</section>')
+    panels = periods + (f'<section class="sc-pair">{who}<div class="sc-panel"><h3>Standard work, '
               f'as signed</h3><div class="sc-versions">{cards}</div></div></section>')
 
     # 5. At volume
@@ -4843,7 +4876,7 @@ def _audit_integrity_html(report) -> str:
                 classes.append("sc-missing")
             said = (f'Decision {link["order"]}, decided by '
                     f'{"the keg" if link["keg"] else "a model"}'
-                    + (", corrected by the operator" if link["corrected"] else "")
+                    + (", revised by the operator" if link["corrected"] else "")
                     + (", turn on record" if link["on_record"] else ", NO turn on record"))
             nodes += (
                 f'<div class="sc-link" role="img" aria-label="{_esc(said)}">'
@@ -4854,11 +4887,12 @@ def _audit_integrity_html(report) -> str:
             f'<section class="sc-panel"><div class="sc-panel-head"><h2>This run, link by '
             f'link</h2><div class="sc-lead"><strong>{run["with_turn"]} of '
             f'{run["decisions"]}</strong> decisions have their turn on record</div></div>'
-            f'<div class="sc-scroll"><div class="sc-chain"><span class="sc-chain-line"></span>'
+            f'<div class="sc-scroll"><div class="sc-chain{" sc-dense" if len(links) > 30 else ""}">'
+            f'<span class="sc-chain-line"></span>'
             f'{nodes}</div></div>'
             f'<div class="sc-legend"><span><i class="sc-dot sc-model"></i>Decided by a model'
             f'</span><span><i class="sc-dot sc-keg"></i>Decided by the keg</span>'
-            f'<span><i class="sc-dot sc-keg sc-ring"></i>Corrected by the operator</span>'
+            f'<span><i class="sc-dot sc-keg sc-ring"></i>Revised by the operator</span>'
             f'<span class="sc-quiet">Every check mark is a decision linked to the turn that '
             f'produced it.</span></div></section>')
 

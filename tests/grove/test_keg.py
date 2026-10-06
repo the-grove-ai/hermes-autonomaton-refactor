@@ -487,7 +487,7 @@ def test_keg_card_reads_in_review_order(env):
         "→ tag escalate",                         # the formal rule, beneath the sentence
         "Nothing removed. The other 2 rules from v1 are unchanged.",
         "Replayed on history: 6 items", "REVIEW THESE FIRST",
-        "Matches your correction", "Not covered by design",
+        "Matches your revision", "Not covered by design",
         "Show the 4 unchanged items",
         "What v2 covers", "ANSWERS DIRECTLY, NO MODEL", "ALWAYS SENDS TO THE MODEL",
         "Your 2 confirmed decisions are the evidence",
@@ -517,7 +517,7 @@ def test_handing_a_case_back_is_consistent_with_a_correction_not_a_match(env):
     assert "Keg v2: send items where channel is billing and urgent is true back to the model." in html
     assert "If channel is billing and urgent is true, send it to the model." in html
     assert "<strong>sends it to the model</strong>" in html
-    assert "Consistent with your correction" in html and "Matches your correction" not in html
+    assert "Consistent with your revision" in html and "Matches your revision" not in html
     assert "Handed back by rule: channel is billing and urgent is true." in html
 
 

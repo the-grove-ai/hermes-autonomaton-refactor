@@ -136,7 +136,7 @@ def test_code_confirm_then_correct(work):
     _call(verb="record", gl_code="6300", reasoning="supplies")
     corrected = _call(verb="decide", decision="correct", corrected_gl_code="6310")
     assert (corrected["status"], corrected["proposed_gl_code"], corrected["final_gl_code"]) == (
-        "corrected", "6300", "6310")
+        "revised", "6300", "6310")
     assert _call(verb="next")["status"] == "queue_empty"
     # Inputs came from the adapter's own parse, not from the model.
     first = [r for r in work.log.run_records() if r["kind"] == "proposed"][0]

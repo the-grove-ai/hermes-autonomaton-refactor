@@ -361,11 +361,11 @@ def test_scorecard_reads_the_loop_off_the_records(tmp_path, monkeypatch):
                  "3 of 6 messages decided with no model.",
                  "Under keg v2, 5 of these 6 would have run with no model at all.",
                  "v1 → v2", "v1 signed 2.0 min after it was proposed. v2 signed 1.5 min after.",
-                 "1 miss", "A correction on #4 halted the keg until v2 was signed.",
+                 "1 miss", "A revision on #4 halted the keg until v2 was signed.",
                  "Seconds to decide each message, in order",
-                 "v1 signed</span>", "Corrected · keg halted</span>", "v2 signed</span>",
+                 "v1 signed</span>", "Revised · keg halted</span>", "v2 signed</span>",
                  "KEG v1</span>", "KEG v2</span>", "↑ 61.0s",
-                 "#4 · chan-m4 · keg v1 · no model call · 0.10 s · operator corrected "
+                 "#4 · chan-m4 · keg v1 · no model call · 0.10 s · operator revised "
                  "finance → ops · andon raised · keg halted",
                  "hands back when channel == &#x27;chan-m4&#x27;", "SERVING", "REPLACED",
                  "At 10,000 messages a month, the keg avoids"):
@@ -416,3 +416,64 @@ def test_audit_page_reads_and_never_writes(home):
     after = {p: p.stat().st_mtime_ns for p in home.rglob("*") if p.is_file()}
     assert set(after) - set(before) <= {home / "pattern_cache.db"}   # opening creates an empty cache
     assert all(after[p] == before[p] for p in before)
+
+
+def test_a_batch_shares_its_turn_and_splits_the_scorecard_three_ways(tmp_path, monkeypatch):
+    from grove.api import fragments
+
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    monkeypatch.setattr(pc, "default_pattern_cache_path", lambda: tmp_path / "pattern_cache.db")
+    monkeypatch.setattr(audit, "_presentation", lambda goal: {
+        "title": "Message tagging", "item_name": ("message", "messages"),
+        "label_key": "channel", "before_label": "Month 1", "batch_label": "Month 2"})
+    log = DecisionLog(GOAL, directory=tmp_path / "decisions")
+    log.append({"kind": "run_started", "run_id": "r", "run_number": 1, "label": ""})
+
+    def item(name, uid, decision, batch=None, keg=False, tier="T1"):
+        p = log.append({"kind": "proposed", "run_id": "r", "item_id": name,
+                        "inputs": {"channel": name}, "output": {"tag": "finance"}, "tier": tier,
+                        "keg": {"name": "k", "version": 2, "pattern_id": "keg:k:v2"} if keg else None,
+                        "turn_uid": uid, **({"batch": batch} if batch else {})})
+        log.append({"kind": "decided", "run_id": "r", "ref": p["id"], "item_id": name,
+                    "decision": decision, "output": {"tag": "finance"}, "turn_uid": "c-" + name})
+        return p
+
+    _intent(tmp_path, "u-a", tier="T1", model="small", calls=2,
+            tokens={"input": 1000, "output": 100, "cache_read": 0}, ms=10000.0)
+    item("a", "u-a", "confirm")
+    # One batch turn decides four items in 0.4 s; one exception goes to a model.
+    _intent(tmp_path, "u-batch", tier="T0", model="session_rule", calls=0,
+            tokens={"input": 0, "output": 0, "cache_read": 0}, ms=400.0)
+    for name in ("b", "c", "d", "e"):
+        item(name, "u-batch", "accepted", batch="B", keg=True, tier="T0")
+    _intent(tmp_path, "u-f", tier="T1", model="small", calls=2,
+            tokens={"input": 1000, "output": 100, "cache_read": 0}, ms=20000.0)
+    f = item("f", "u-f", "confirm", batch="B")
+    # The operator later rules on one accepted item: it becomes confirmed.
+    b = [r for r in log.run_records() if r["kind"] == "proposed" and r["item_id"] == "b"][0]
+    log.append({"kind": "decided", "run_id": "r", "ref": b["id"], "item_id": "b",
+                "decision": "confirm", "output": {"tag": "finance"}, "after": "accepted"})
+
+    [g] = audit.economics(tmp_path)["goals"]
+    shared = g["units"][2]["deciding"]
+    assert (shared["seconds"], shared["shared_with"], shared["model_calls"]) == (0.1, 4, 0.0)
+    t0 = g["by_tier"]["T0"]
+    assert (t0["units"], t0["confirmed"], t0["accepted"], t0["corrected"]) == (4, 1, 3, 0)
+    assert t0["seconds"] == pytest.approx(0.1)               # per item, not the whole turn
+    before, batch = g["periods"]
+    assert (before["label"], before["units"], before["keg_share"]) == ("Month 1", 1, 0.0)
+    assert (batch["label"], batch["units"], batch["keg_units"]) == ("Month 2", 5, 4)
+    assert batch["model_calls_per_unit"] == pytest.approx(2 / 5)
+    assert (batch["confirmed"], batch["accepted"], batch["revised"]) == (2, 3, 0)
+
+    html = fragments._scorecard_html(g, 10_000, "0")
+    for text in ("CONFIRMED BY YOU", "NOT REVIEWED", "REVISED", "Month 1 against Month 2",
+                 "80%", "decided by the keg (4 of 5)",
+                 "2 confirmed by you · 3 decided by the keg, not reviewed · 0 revised.",
+                 "3 messages were decided by the keg under its signed authority and not "
+                 "reviewed; they are not counted as confirmed.",
+                 "decided by the keg, not reviewed"):
+        assert text in html, text
+    # A run with no batch has one period, and says nothing about periods.
+    assert "against" not in fragments._scorecard_html(
+        {**g, "periods": []}, 10_000, "0").split("Who decided")[0]
