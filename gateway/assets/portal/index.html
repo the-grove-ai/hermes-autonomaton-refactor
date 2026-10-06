@@ -168,6 +168,19 @@
         var xhr = evt.detail && evt.detail.xhr;
         if (xhr && xhr.status < 400) { _clearAlertBanner(); }
       });
+
+      // Scorecard chart — hovering, focusing or clicking a bar writes that
+      // item's record to the chart's status line. DELEGATED on document so it
+      // survives every fragment swap; the text is server-rendered on the bar.
+      function _scorecardPick(evt) {
+          var bar = evt.target.closest && evt.target.closest('[data-sc-detail]');
+          if (!bar) { return; }
+          var line = document.getElementById(bar.getAttribute('data-sc-target'));
+          if (line) { line.textContent = bar.getAttribute('data-sc-detail'); }
+      }
+      ['mouseover', 'focusin', 'click'].forEach(function(name) {
+          document.addEventListener(name, _scorecardPick);
+      });
     </script>
     <!-- portal-link-provider-v1 — hash router. Deep links use
          {base_url}/portal#fragments/... so the operator always lands in the

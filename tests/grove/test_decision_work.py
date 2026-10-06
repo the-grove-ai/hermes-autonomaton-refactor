@@ -476,3 +476,11 @@ def test_decision_work_carries_no_domain_vocabulary():
     src = inspect.getsource(dw).lower()
     for word in ("vendor", "invoice", "gl_code", "gl code", "chart of accounts"):
         assert word not in src, word
+
+
+def test_a_goal_names_its_items_or_they_are_plain_items(tmp_path):
+    assert dw.load_config(_goal(tmp_path)).item_name == ("item", "items")
+    named = dw.load_config(_goal(tmp_path, item_name={"one": "message", "many": "messages"}))
+    assert named.item_name == ("message", "messages")
+    with pytest.raises(ValueError, match="item_name"):
+        dw.load_config(_goal(tmp_path, item_name="messages"))

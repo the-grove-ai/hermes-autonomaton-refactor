@@ -193,24 +193,176 @@ def test_a_turn_that_confirmed_one_item_and_decided_the_next_is_counted_once(hom
     assert m5["deciding"]["model_calls"] == 1 and m4["confirming"] is None
 
 
+# ── the scorecard: the loop as the run saw it ─────────────────────────
+
+
+def _loop_home(tmp_path, monkeypatch, *, sign_v2=True):
+    """Six messages. A keg is signed after the second, serves the third and
+    fourth; the operator corrects the fourth, which halts it; v2 is signed
+    before the sixth. Every record is written with its own clock time."""
+    from grove.pattern_cache import CompiledPattern, PatternCacheStore
+
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    monkeypatch.setattr(pc, "default_pattern_cache_path", lambda: tmp_path / "pattern_cache.db")
+    monkeypatch.setattr(audit, "_presentation", lambda goal: {
+        "title": "Message tagging", "item_name": ("message", "messages"),
+        "label_key": "channel"})
+    log = DecisionLog(GOAL, directory=tmp_path / "decisions")
+    run = log.append({"kind": "run_started", "run_id": "run-a", "run_number": 3,
+                      "label": "", "ts": "2026-01-01T10:00:00+00:00"})
+
+    def keg(version):
+        return {"name": "Message tagging", "version": version, "pattern_id": f"keg:mt:v{version}"}
+
+    plan = [("m1", None, 9000.0, "10:01"), ("m2", None, 11000.0, "10:02"),
+            ("m3", 1, 100.0, "10:10"), ("m4", 1, 100.0, "10:11"),
+            ("m5", None, 61000.0, "10:13"), ("m6", 2 if sign_v2 else None, 100.0, "10:20")]
+    for item, version, ms, clock in plan:
+        _intent(tmp_path, f"u-{item}", tier="T0" if version else "T1",
+                model="pattern_cache" if version else "small", calls=0 if version else 2,
+                tokens={"input": 0 if version else 1000, "output": 0, "cache_read": 0}, ms=ms)
+        proposed = log.append({
+            "kind": "proposed", "run_id": "run-a", "item_id": item,
+            "inputs": {"channel": f"chan-{item}"}, "output": {"tag": "finance"},
+            "tier": "T0" if version else "T1", "keg": keg(version) if version else None,
+            "turn_uid": f"u-{item}", "ts": f"2026-01-01T{clock}:00+00:00"})
+        log.append({"kind": "decided", "run_id": "run-a", "ref": proposed["id"], "item_id": item,
+                    "decision": "correct" if item == "m4" else "confirm",
+                    "output": {"tag": "ops" if item == "m4" else "finance"},
+                    "turn_uid": f"c-{item}", "ts": f"2026-01-01T{clock}:30+00:00"})
+
+    store = PatternCacheStore()
+
+    def entry(version, status, rules, feedback=()):
+        spec = {"name": "Message tagging", "version": version, "dock_goal": GOAL,
+                "scope": "reserved", "reserve": "Any channel with two tags.",
+                "inputs": {"channel": {"data_type": "string"}},
+                "outputs": {"tag": {"data_type": "string"}}, "conditions": rules}
+        store.upsert(CompiledPattern(
+            pattern_id=f"keg:mt:v{version}", t0_key=f"keg:mt:v{version}",
+            intent_class="conversation", cacheable_type="executable", cached_response=None,
+            compiled_invocation=json.dumps({"tool": "tag_message", "args": {"keg": spec}}),
+            evidence_hash="e", status=status, created_at="2026-01-01T10:00:00+00:00",
+            promotion_evidence=json.dumps({
+                "keg": {"dock_goal": GOAL, "lineage": "run-a", "version": version},
+                "repetition_count": 2 + version, "feedback": list(feedback),
+                "signed": {"by": "operator", "at": "2026-01-01T10:05:00+00:00"}})))
+
+    always = {"if": "channel CONTAINS 'chan'", "then": {"tag": "finance"}}
+    events = [
+        {"event_type": "kaizen_proposal", "proposal_id": "p1", "pattern_id": "keg:mt:v1",
+         "timestamp": "2026-01-01T10:03:00+00:00"},
+        {"event_type": "new_standard_work", "proposal_id": "p1", "pattern_id": "keg:mt:v1",
+         "dock_goal": GOAL, "version": 1, "signed_by": "operator",
+         "timestamp": "2026-01-01T10:05:00+00:00"},
+        {"event_type": "andon_event", "goal": GOAL, "detector": "correction",
+         "halted": ["keg:mt:v1"], "timestamp": "2026-01-01T10:11:30+00:00",
+         "details": {"item_id": "m4", "served": {"tag": "finance"}, "corrected": {"tag": "ops"}}},
+    ]
+    if sign_v2:
+        entry(1, pc.STATUS_SUPERSEDED, [always])
+        entry(2, pc.STATUS_ACTIVE,
+              [{"if": "channel == 'chan-m4'", "defer": True}, always], feedback=["narrower"])
+        events += [
+            {"event_type": "kaizen_proposal", "proposal_id": "p2", "pattern_id": "keg:mt:v2",
+             "timestamp": "2026-01-01T10:14:00+00:00"},
+            {"event_type": "new_standard_work", "proposal_id": "p2", "pattern_id": "keg:mt:v2",
+             "dock_goal": GOAL, "version": 2, "signed_by": "operator",
+             "timestamp": "2026-01-01T10:15:30+00:00"}]
+    else:
+        entry(1, pc.STATUS_HALTED, [always])
+    ledger = tmp_path / ".kaizen_ledger"
+    ledger.mkdir()
+    (ledger / "s.jsonl").write_text("".join(json.dumps(e) + "\n" for e in events))
+    return tmp_path
+
+
+def test_loop_events_stand_before_the_first_item_each_one_affects(tmp_path, monkeypatch):
+    [g] = audit.economics(_loop_home(tmp_path, monkeypatch))["goals"]
+    assert [(e["kind"], e["before"]) for e in g["events"]] == [
+        ("signed", 3), ("halted", 5), ("signed", 6)]
+    assert [(s["version"], s["seconds"]) for s in g["signatures"]] == [(1, 120.0), (2, 90.0)]
+    m4 = g["units"][3]
+    assert (m4["label"], m4["keg_version"], m4["change"], m4["halted_keg"]) == (
+        "chan-m4", 1, "finance → ops", True)
+    assert g["brake"]["misses"] == [4] and g["brake"]["resumed_version"] == 2
+    assert [(v["version"], v["state"], v["decides"], len(v["hands_back"]))
+            for v in g["versions"]] == [(1, "replaced", 1, 0), (2, "serving", 1, 1)]
+    assert g["versions"][1]["feedback"] == ["narrower"]
+    assert (g["title"], g["item_name"], g["traceable"]) == (
+        "Message tagging", ("message", "messages"), 6)
+    assert (g["coverage"]["version"], g["coverage"]["covered"]) == (2, 5)   # m4 handed back
+
+
+def test_a_log_whose_goal_left_the_dock_still_reports_under_plain_names(home):
+    [g] = audit.economics(home)["goals"]
+    assert g["item_name"] == ("item", "items") and g["title"] == GOAL
+    assert g["events"] == [] and g["versions"] == [] and g["units"][0]["label"] == ""
+
+
 # ── the page ──────────────────────────────────────────────────────────
 
 
 def test_audit_page_shows_the_same_figures_and_its_limits(home):
     from grove.api import fragments
 
-    html = fragments._audit_integrity_html(audit.chain_report(home))
+    chain = audit.chain_report(home)
+    html = fragments._audit_integrity_html(chain)
     assert "CHAIN INTACT" in html and "4 decisions, 4 with a turn on record" in html
     assert "does not ask the gateway" in html              # the independence caveat
-    eco = fragments._audit_economics_html(audit.economics(home), 1_000_000)
-    for text in ("Decided by the keg: 0.10s, 0 tokens, $0 each", "100× faster",
-                 "1,000,000 items a month", "Every item decided by a model",
-                 "With the keg serving", "Avoided", "estimate:",
+    eco = fragments._audit_economics_html(audit.economics(home), 1_000_000, chain=chain)
+    for text in ("2 of 4 items decided with no model.", "Every one traceable.",
+                 "100×", "0.10 s with the keg, 10.0 s with a model",
+                 "At 1,000,000 items a month", "Every item decided by a model",
+                 "Avoided", "ESTIMATE · FRONTIER MODEL",
+                 "Audit chain intact: 8 intent records, 1 chained ledger events.",
                  "NOT priced", "Not included:", "confirmation turn is separate"):
         assert text in eco, text
-    assert 'hx-get="/portal/fragments/audit/economics"' in eco
-    assert [f"{n:,} items a month" in eco for n in audit.SCALES] == [True] * 4
+    assert eco.count("/portal/fragments/audit/economics?scale=") == len(audit.SCALES) == 3
+    assert eco.count('aria-pressed="true"') == 1 and "1M / mo" in eco
     assert "Audit</a>" in (REPO / "gateway" / "assets" / "portal" / "index.html").read_text()
+
+
+def test_scorecard_reads_the_loop_off_the_records(tmp_path, monkeypatch):
+    from grove.api import fragments
+
+    [g] = audit.economics(_loop_home(tmp_path, monkeypatch))["goals"]
+    html = fragments._scorecard_html(g, 10_000, "0")
+    for text in ("SCORECARD · MESSAGE TAGGING · RUN 3 · 6 MESSAGES",
+                 "3 of 6 messages decided with no model.",
+                 "Under keg v2, 5 of these 6 would have run with no model at all.",
+                 "v1 → v2", "v1 signed 2.0 min after it was proposed. v2 signed 1.5 min after.",
+                 "1 miss", "A correction on #4 halted the keg until v2 was signed.",
+                 "Seconds to decide each message, in order",
+                 "v1 signed</span>", "Corrected · keg halted</span>", "v2 signed</span>",
+                 "KEG v1</span>", "KEG v2</span>", "↑ 61.0s",
+                 "#4 · chan-m4 · keg v1 · no model call · 0.10 s · operator corrected "
+                 "finance → ops · andon raised · keg halted",
+                 "hands back when channel == &#x27;chan-m4&#x27;", "SERVING", "REPLACED",
+                 "At 10,000 messages a month, the keg avoids"):
+        assert text in html, text
+    assert html.count('<button type="button" class="sc-bar"') == 6      # each bar focusable
+    assert html.count("sc-fill sc-keg") == 3 and html.count("sc-ring") == 1
+    assert html.count("sc-cut") == 1 and html.count("sc-event-line") == 3
+    # A capped bar is drawn at the cap; a keg bar at its fixed visible height.
+    assert f'sc-cut" style="height:{fragments._SC_PLOT_PX}px"' in html
+    assert f'style="height:{fragments._SC_KEG_BAR_PX}px"' in html
+    # The shell carries the one listener that fills the status line.
+    assert "data-sc-detail" in (REPO / "gateway" / "assets" / "portal" / "index.html").read_text()
+
+
+def test_scorecard_says_so_when_the_keg_is_still_halted_or_none_is_signed(
+        tmp_path, monkeypatch, home):
+    from grove.api import fragments
+
+    bare = fragments._audit_economics_html(audit.economics(home), 10_000)
+    assert "No keg version has been signed in this run." in bare
+    assert "No keg is serving, so nothing is avoided yet." in bare
+    halted_home = tmp_path / "halted"
+    halted_home.mkdir()
+    [g] = audit.economics(_loop_home(halted_home, monkeypatch, sign_v2=False))["goals"]
+    html = fragments._scorecard_html(g, 10_000, "0")
+    assert "halted the keg; it is still halted." in html and "HALTED" in html
 
 
 def test_audit_page_reads_and_never_writes(home):
@@ -221,14 +373,3 @@ def test_audit_page_reads_and_never_writes(home):
     after = {p: p.stat().st_mtime_ns for p in home.rglob("*") if p.is_file()}
     assert set(after) - set(before) <= {home / "pattern_cache.db"}   # opening creates an empty cache
     assert all(after[p] == before[p] for p in before)
-
-
-def test_chart_marks_what_the_keg_decided_and_where_the_line_stopped(home):
-    from grove.api import fragments
-    [g] = audit.economics(home)["goals"]
-    svg = fragments._audit_time_chart_svg(g["units"])
-    assert svg.count(">keg</text>") == 2          # m3 and m4, each tagged
-    assert svg.count(">corrected</text>") == 1    # m4: where the operator corrected
-    assert "keg, no model call" in svg and "decided by a model" in svg
-    assert svg.count('fill="#3fb950" rx="1"') == 2 and ">0.1</text>" in svg   # real time shown
-    assert fragments._audit_time_chart_svg([]) == ""

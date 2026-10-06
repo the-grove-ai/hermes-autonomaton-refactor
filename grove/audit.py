@@ -50,7 +50,7 @@ NOT_INCLUDED = {
 }
 
 # Scales the Audit page can project a run to: units of work per month.
-SCALES = (1_000, 10_000, 100_000, 1_000_000)
+SCALES = (10_000, 100_000, 1_000_000)
 
 
 def _home(home: Optional[Path]) -> Path:
@@ -379,6 +379,7 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
         if run is None:
             continue
         records = log.run_records()
+        shown = _presentation(log_path.stem)
         decided = {r["ref"]: r for r in records if r.get("kind") == KIND_DECIDED}
         deciding_uids = {r.get("turn_uid") for r in records if r.get("kind") == KIND_PROPOSED}
         units: List[Dict[str, Any]] = []
@@ -394,9 +395,17 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
                 if confirm_uid and confirm_uid not in deciding_uids else None
             )
             keg = record.get("keg") or None
+            served = dict(record.get("output") or {})
+            final = dict((verdict or {}).get("output") or {})
             units.append({
                 "order": order,
                 "item_id": record["item_id"],
+                "label": str((record.get("inputs") or {}).get(shown["label_key"], ""))
+                         if shown["label_key"] else "",
+                "keg_version": keg.get("version") if keg else None,
+                "served": served,
+                "final": final,
+                "at": record.get("ts"),
                 "tier": record.get("tier") or deciding["tier"],
                 "by": (f"{keg.get('name')} v{keg.get('version')}" if keg
                        else deciding["model"] or record.get("model")),
@@ -452,8 +461,17 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
             ) / 1_000_000
 
         coverage = _coverage(log_path.stem, units, records)
+        loop = _loop(base, log_path.stem, run, units)
         goals.append({
             "goal": log_path.stem,
+            "title": shown["title"] or next(
+                (v["name"] for v in loop["versions"] if v["name"]), log_path.stem),
+            "item_name": shown["item_name"],
+            "traceable": sum(1 for u in units if u["deciding"]["on_record"]),
+            "events": loop["events"],
+            "versions": loop["versions"],
+            "drafts_returned": loop["drafts_returned"],
+            "brake": loop["brake"],
             "run_number": run.get("run_number"),
             "label": run.get("label") or "",
             "units": units,
@@ -465,7 +483,7 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
             "frontier": {"model": frontier_model, "cost": frontier_cost},
             "coverage": coverage,
             "cache_read_priced": any(u["deciding"]["cache_read_priced"] for u in model_units),
-            "signatures": _signature_times(base, log_path.stem, run.get("run_id")),
+            "signatures": loop["signatures"],
             "totals": {
                 "cost": sum(u["deciding"]["cost"] or 0.0 for u in units),
                 "seconds": sum(u["deciding"]["seconds"] or 0.0 for u in units),
@@ -495,58 +513,183 @@ def _coverage(goal: str, units: List[Dict[str, Any]], records: List[Dict[str, An
     except Exception:  # noqa: BLE001 — no cache yet means no keg serving
         serving = None
     if serving is None:
-        return {"keg": None, "covered": 0, "of": len(units), "share": 0.0}
+        return {"keg": None, "version": None, "covered": 0, "of": len(units), "share": 0.0}
     spec = keg_mod.keg_of(serving) or {}
     inputs = {r["item_id"]: r.get("inputs") or {} for r in records if r.get("kind") == "proposed"}
     covered = sum(
         1 for u in units if keg_mod.evaluate(spec, inputs.get(u["item_id"], {})) is not None)
     return {
         "keg": f"{spec.get('name')} v{spec.get('version')}",
+        "version": spec.get("version"),
         "covered": covered, "of": len(units),
         "share": covered / len(units) if units else 0.0,
     }
 
 
-def _signature_times(home: Path, goal: str, run_id: Optional[str]) -> List[Dict[str, Any]]:
-    """For each keg version signed IN THIS RUN: how long from Kaizen's
-    proposal to the operator's signature. Read off the ledger; a keg belongs
-    to the run whose lineage its cache entry carries."""
+def _presentation(goal: str) -> Dict[str, Any]:
+    """How the goal names its own work: a title, what one item is called, and
+    which input labels an item. Read from the goal's declaration. A log whose
+    goal is no longer in the Dock still reports, under plain defaults."""
+    from grove.decision_work import load_config
+    from grove.dock import load_dock
+
+    dock = load_dock()     # a malformed Dock raises: a defect to fix, not to paper over
+    cfg = next(
+        (load_config(g) for g in (getattr(dock, "goals", None) or ()) if g.id == goal), None)
+    if cfg is None:
+        return {"title": None, "item_name": ("item", "items"), "label_key": None}
+    return {
+        "title": cfg.keg.name if cfg.keg else None,
+        "item_name": tuple(cfg.item_name),
+        "label_key": cfg.reference.key_input if cfg.reference else None,
+    }
+
+
+def _when(value: Any):
     from datetime import datetime
-
-    from grove import keg as keg_mod
-    from grove.pattern_cache import PatternCacheStore
-
     try:
-        in_run = {
-            entry.pattern_id for entry in PatternCacheStore().all()
-            if (keg_mod.keg_record(entry).get("keg") or {}).get("lineage") == run_id
-        }
-    except Exception:  # noqa: BLE001
-        in_run = set()
+        return datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
 
+
+def _changed(served: Mapping[str, Any], final: Mapping[str, Any]) -> str:
+    """What a correction changed, e.g. ``a → b`` (the field is named only
+    when the work has more than one output)."""
+    parts = [
+        (k, served.get(k), final.get(k)) for k in sorted(set(served) | set(final))
+        if served.get(k) != final.get(k)
+    ]
+    if len(set(served) | set(final)) == 1:
+        return ", ".join(f"{a} → {b}" for _, a, b in parts)
+    return ", ".join(f"{k} {a} → {b}" for k, a, b in parts)
+
+
+def _loop(home: Path, goal: str, run: Mapping[str, Any],
+          units: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """The improvement loop as this run saw it, read off the Kaizen ledger and
+    the pattern cache: each keg version the operator signed (and how long
+    after Kaizen proposed it), each correction that halted a keg, and where in
+    the run's order each of those took effect. A keg belongs to the run whose
+    lineage its cache entry carries. Also annotates each unit with what a
+    correction changed and whether it halted the keg."""
+    from grove import keg as keg_mod
+    from grove.pattern_cache import PatternCacheStore, STATUS_REJECTED
+
+    run_id = run.get("run_id")
+    try:
+        entries = [
+            e for e in PatternCacheStore().all()
+            if (keg_mod.keg_record(e).get("keg") or {}).get("lineage") == run_id
+        ]
+    except Exception:  # noqa: BLE001 — no cache yet means no keg in this run
+        entries = []
+    in_run = {e.pattern_id: e for e in entries}
+
+    events: List[Dict[str, Any]] = []
+    directory = _ledger_dir(home)
+    if directory.is_dir():
+        for path in directory.glob("*.jsonl"):
+            events += _jsonl(path)
+    events.sort(key=lambda e: e.get("timestamp") or "")
+
+    def _takes_effect(at: Any) -> Optional[int]:
+        """The first item decided after ``at`` — where the event shows up."""
+        moment = _when(at)
+        if moment is None:
+            return None
+        for u in units:
+            decided_at = _when(u["at"])
+            if decided_at is not None and decided_at > moment:
+                return u["order"]
+        return None
+
+    started = _when(run.get("ts"))
+    by_item = {u["item_id"]: u for u in units}
     proposed: Dict[str, Dict[str, Any]] = {}
     signed: List[Dict[str, Any]] = []
-    directory = _ledger_dir(home)
-    if not directory.is_dir():
-        return signed
-    events: List[Dict[str, Any]] = []
-    for path in directory.glob("*.jsonl"):
-        events += _jsonl(path)
-    events.sort(key=lambda e: e.get("timestamp") or "")
+    marks: List[Dict[str, Any]] = []
+    halts: List[Dict[str, Any]] = []
     for e in events:
-        if e.get("event_type") == "kaizen_proposal" and e.get("proposal_id"):
+        kind = e.get("event_type")
+        if kind == "kaizen_proposal" and e.get("proposal_id"):
             proposed[e["proposal_id"]] = e
-        elif (e.get("event_type") == "new_standard_work" and e.get("dock_goal") == goal
+        elif (kind == "new_standard_work" and e.get("dock_goal") == goal
               and e.get("proposal_id") in proposed and e.get("pattern_id") in in_run):
             start = proposed[e["proposal_id"]]
-            try:
-                seconds = (datetime.fromisoformat(e["timestamp"])
-                           - datetime.fromisoformat(start["timestamp"])).total_seconds()
-            except (KeyError, ValueError):
-                seconds = None
-            signed.append({"version": e.get("version"), "seconds": seconds,
-                           "signed_at": e.get("timestamp"), "flag": start.get("flag")})
-    return signed
+            a, b = _when(start.get("timestamp")), _when(e.get("timestamp"))
+            signed.append({
+                "version": e.get("version"), "pattern_id": e.get("pattern_id"),
+                "seconds": (b - a).total_seconds() if a and b else None,
+                "signed_at": e.get("timestamp"), "flag": start.get("flag"),
+                "signed_by": e.get("signed_by"),
+            })
+            marks.append({"kind": "signed", "version": e.get("version"),
+                          "at": e.get("timestamp"),
+                          "before": _takes_effect(e.get("timestamp"))})
+        elif (kind == "andon_event" and e.get("goal") == goal
+              and set(e.get("halted") or ()) & set(in_run)):
+            moment = _when(e.get("timestamp"))
+            if started is not None and moment is not None and moment < started:
+                continue
+            details = e.get("details") or {}
+            unit = by_item.get(details.get("item_id"))
+            halts.append({"item": unit["order"] if unit else None,
+                          "at": e.get("timestamp"),
+                          "corrected": bool(details.get("corrected"))})
+            if unit is not None:
+                unit["halted_keg"] = True
+            marks.append({"kind": "halted", "corrected": bool(details.get("corrected")),
+                          "item": unit["order"] if unit else None,
+                          "at": e.get("timestamp"),
+                          "before": _takes_effect(e.get("timestamp"))})
+    for u in units:
+        u.setdefault("halted_keg", False)
+        u["change"] = _changed(u["served"], u["final"]) if u["corrected"] else ""
+
+    times = {s["pattern_id"]: s for s in signed}
+    versions: List[Dict[str, Any]] = []
+    for entry in entries:
+        record = keg_mod.keg_record(entry)
+        if not record.get("signed"):
+            continue
+        spec = keg_mod.keg_of(entry) or {}
+        rules = spec.get("conditions") or []
+        sig = times.get(entry.pattern_id) or {}
+        versions.append({
+            "version": spec.get("version"),
+            "name": spec.get("name"),
+            "pattern_id": entry.pattern_id,
+            "state": keg_mod.lifecycle(entry.status)["state"],
+            "serves": keg_mod.lifecycle(entry.status)["serves"],
+            "decides": sum(1 for r in rules if not r.get("defer")),
+            "hands_back": [str(r.get("if") or "") for r in rules if r.get("defer")],
+            "reserve": str(spec.get("reserve") or ""),
+            "scope": spec.get("scope"),
+            "evidence": record.get("repetition_count"),
+            "feedback": [str(f) for f in (record.get("feedback") or [])],
+            "signed_by": (record.get("signed") or {}).get("by"),
+            "signed_at": (record.get("signed") or {}).get("at"),
+            "seconds_to_signature": sig.get("seconds"),
+        })
+    versions.sort(key=lambda v: (v["version"] or 0, v["signed_at"] or ""))
+
+    misses = [u["order"] for u in units if u["keg"] and u["corrected"]]
+    resumed = None
+    if halts:
+        last = _when(halts[-1]["at"])
+        for s in signed:
+            at = _when(s["signed_at"])
+            if last is not None and at is not None and at > last:
+                resumed = s["version"]
+                break
+    return {
+        "signatures": signed,
+        "events": marks,
+        "versions": versions,
+        "drafts_returned": sum(1 for e in entries if e.status == STATUS_REJECTED),
+        "brake": {"misses": misses, "halts": halts, "resumed_version": resumed},
+    }
 
 
 def project(goal_report: Mapping[str, Any], units_per_month: int) -> Dict[str, Any]:
@@ -593,6 +736,8 @@ def project(goal_report: Mapping[str, Any], units_per_month: int) -> Dict[str, A
         "units": n, "share": share,
         "all_model": all_model, "with_keg": with_keg, "all_frontier": frontier,
         "avoided": {k: _saved(k) for k in ("cost", "hours", "model_calls", "tokens")},
+        "frontier_with_keg": (
+            None if frontier["cost"] is None else frontier["cost"] * (1.0 - share)),
         "avoided_vs_frontier": (
             None if frontier["cost"] is None or with_keg["cost"] is None
             else frontier["cost"] * share   # the covered share never reaches a frontier call

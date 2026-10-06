@@ -172,6 +172,9 @@ class DecisionWorkConfig:
     # clean: None (refuse) or "open_clean_session" (the gateway opens one and
     # re-issues the request). Part of the session rule the operator signs.
     on_unclean: Optional[str] = None
+    # What one unit of this work is called, singular and plural ("message",
+    # "messages"). Read by reports; plays no part in deciding anything.
+    item_name: Tuple[str, str] = ("item", "items")
 
     @property
     def isolated(self) -> bool:
@@ -265,6 +268,17 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
     if on_unclean not in (None, ON_UNCLEAN_OPEN_CLEAN):
         raise ValueError(f"goal {goal.id!r}: unknown on_unclean {on_unclean!r}")
 
+    item_name = ("item", "items")
+    name_raw = raw.get("item_name")
+    if name_raw is not None:
+        if not isinstance(name_raw, Mapping) or not all(
+            isinstance(name_raw.get(k), str) and name_raw[k].strip() for k in ("one", "many")
+        ):
+            raise ValueError(
+                f"goal {goal.id!r}: item_name must give 'one' and 'many' as words"
+            )
+        item_name = (name_raw["one"].strip(), name_raw["many"].strip())
+
     keg = None
     keg_raw = raw.get("keg")
     if keg_raw is not None:
@@ -305,6 +319,7 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         sources=tuple(resolved()) if callable(resolved) else (),
         keg=keg,
         on_unclean=on_unclean,
+        item_name=item_name,
     )
 
 

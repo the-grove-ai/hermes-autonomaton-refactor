@@ -4140,91 +4140,350 @@ def _money(value) -> str:
     return f"${value:.5f}"
 
 
-def _count(value, unit: str = "") -> str:
+def _compact(value, unit: str = "") -> str:
+    """A count for a headline: 214K, 2.5M, 1.88M, 214B."""
     if value is None:
         return "—"
-    if abs(value) >= 1_000_000_000:
-        text = f"{value / 1_000_000_000:,.1f}B"
-    elif abs(value) >= 1_000_000:
-        text = f"{value / 1_000_000:,.1f}M"
-    elif abs(value) >= 10_000:
-        text = f"{value / 1_000:,.0f}K"
-    elif abs(value) >= 100 or float(value).is_integer():
-        text = f"{value:,.0f}"
+    for size, suffix in ((1e9, "B"), (1e6, "M"), (1e3, "K")):
+        if abs(value) >= size:
+            scaled = value / size
+            break
     else:
-        text = f"{value:,.1f}"
-    return f"{text}{unit}"
+        scaled, suffix = float(value), ""
+    digits = 0 if abs(scaled) >= 100 else 1 if abs(scaled) >= 10 else 2
+    text = f"{round(scaled, digits):,.{digits}f}".rstrip("0").rstrip(".") if digits else f"{scaled:,.0f}"
+    return f"{text}{suffix}{unit}"
 
 
-def _seconds(value) -> str:
+def _sc_seconds(value) -> str:
     if value is None:
         return "—"
-    return f"{value:.2f}s" if value < 10 else f"{value:.1f}s"
+    return f"{value:.2f} s" if value < 1 else f"{value:.1f} s"
 
 
-def _hours(value) -> str:
-    if value is None:
+def _span(seconds) -> str:
+    """How long something took, in the largest unit that reads well."""
+    if seconds is None:
         return "—"
-    if value < 1:
-        return f"{value * 60:,.1f} min"
-    if value < 48:
-        return f"{value:,.1f} hours"
-    return f"{value / 24:,.0f} days"
+    if seconds < 90:
+        return f"{seconds:.0f} s"
+    if seconds < 2 * 3600:
+        return f"{seconds / 60:.1f} min"
+    if seconds < 48 * 3600:
+        return f"{seconds / 3600:.1f} hours"
+    return f"{seconds / 86400:,.0f} days"
 
 
-def _audit_time_chart_svg(units, width: int = 760, height: int = 250) -> str:
-    """Seconds to decide each item, in order. A keg's bar is a fraction of a
-    second against a model's ten or more, so it would vanish at true scale:
-    every keg-decided item gets a green stub tall enough to see, with its real
-    time above it and a "keg" tag beneath. A corrected item is tagged too —
-    that is where the line stopped. Inline SVG, no script."""
+def _model_time(hours) -> str:
+    if hours is None:
+        return "—"
+    days = hours / 24.0
+    if days >= 10:
+        return f"{days:,.0f} days"
+    if days >= 1:
+        return f"{days:.1f} days"
+    return f"{hours:.1f} hours"
+
+
+# The chart's vertical scale stops here; a slower item's bar is cut and
+# labeled with its real time, so one slow item cannot flatten the rest.
+SCORECARD_CAP_SECONDS = 40.0
+_SC_PLOT_PX = 300
+_SC_KEG_BAR_PX = 8
+
+
+def _sc_tiers(units) -> str:
+    tiers = sorted({u["tier"] for u in units if not u["keg"] and u["tier"]})
+    return f" ({', '.join(tiers)})" if tiers else ""
+
+
+def _sc_event_label(event) -> str:
+    if event["kind"] == "signed":
+        return f"v{event['version']} signed"
+    return "Corrected · keg halted" if event.get("corrected") else "Keg halted"
+
+
+def _sc_unit_detail(u, one: str) -> str:
+    """One item's record as a line: which, who decided, how long, verdict."""
+    seconds = u["deciding"]["seconds"]
+    who = (f"keg v{u['keg_version']} · no model call" if u["keg"]
+           else f"model ({u['tier']})" if u["tier"] else "model")
+    if u["corrected"]:
+        verdict = "operator corrected" + (f" {u['change']}" if u["change"] else "")
+        if u["halted_keg"]:
+            verdict += " · andon raised · keg halted"
+    elif u["decision"]:
+        verdict = "operator confirmed"
+    else:
+        verdict = "awaiting the operator"
+    parts = [f"#{u['order']}"] + ([u["label"]] if u["label"] else [f"{one} {u['item_id']}"])
+    return " · ".join(parts + [who, _sc_seconds(seconds), verdict])
+
+
+def _scorecard_chart_html(g, key: str) -> str:
+    """Seconds to decide each item, in order: one focusable bar per item.
+
+    Linear to SCORECARD_CAP_SECONDS. A keg's bar would vanish at true scale,
+    so it is drawn at a fixed visible height with its real time above and a
+    version chip beneath. A dashed marker stands before the first item each
+    loop event affects. Hovering or focusing a bar writes its record to the
+    status line (one delegated listener in the portal shell)."""
+    units = g["units"]
+    one = g["item_name"][0]
     if not units:
         return ""
-    pad_l, pad_r, top, base = 16, 16, 34, height - 46
-    span = (width - pad_l - pad_r) / len(units)
-    bar_w = max(6.0, span * 0.62)
-    tallest = max((u["deciding"]["seconds"] or 0.0) for u in units) or 1.0
-    colors = {"T1": "#58a6ff", "T2": "#d29922", "T3": "#f85149"}
-    parts = [
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {width} {height}" '
-        f'width="100%" role="img" aria-label="Seconds to decide each item, in order">',
-        f'<rect width="{width}" height="{height}" fill="#161b22" rx="4"/>',
-        f'<text x="{pad_l}" y="18" fill="#e6edf3" font-size="12" font-weight="600">'
-        f'Seconds to decide each item, in order</text>',
-        f'<rect x="{width - 290}" y="9" width="10" height="10" fill="#3fb950"/>'
-        f'<text x="{width - 275}" y="18" fill="#8b949e" font-size="11">keg, no model call</text>'
-        f'<rect x="{width - 150}" y="9" width="10" height="10" fill="#58a6ff"/>'
-        f'<text x="{width - 135}" y="18" fill="#8b949e" font-size="11">decided by a model</text>',
-        f'<line x1="{pad_l}" y1="{base}" x2="{width - pad_r}" y2="{base}" stroke="#30363d"/>',
-    ]
-    for i, u in enumerate(units):
+    before = {}
+    for event in g["events"]:
+        if event["before"] is not None:
+            before.setdefault(event["before"], []).append(_sc_event_label(event))
+    target = f"sc-detail-{key}"
+    bars, row = [], 0
+    for u in units:
         seconds = u["deciding"]["seconds"] or 0.0
-        x = pad_l + i * span + (span - bar_w) / 2
-        cx = x + bar_w / 2
+        cut = seconds > SCORECARD_CAP_SECONDS
         if u["keg"]:
-            bar_h, color = 7.0, "#3fb950"     # a visible stub; the label carries the truth
+            height = _SC_KEG_BAR_PX
         else:
-            bar_h = max(2.0, (base - top) * seconds / tallest)
-            color = colors.get(u["tier"] or "", "#8b949e")
-        label = f"{seconds:.1f}" if seconds < 100 else f"{seconds:.0f}"
-        parts.append(
-            f'<rect x="{x:.1f}" y="{base - bar_h:.1f}" width="{bar_w:.1f}" '
-            f'height="{bar_h:.1f}" fill="{color}" rx="1"/>'
-            f'<text x="{cx:.1f}" y="{base - bar_h - 4:.1f}" fill="#e6edf3" font-size="10" '
-            f'text-anchor="middle">{label}</text>'
-            f'<text x="{cx:.1f}" y="{base + 14}" fill="#8b949e" font-size="10" '
-            f'text-anchor="middle">{u["order"]}</text>'
-        )
-        if u["keg"]:
-            parts.append(
-                f'<text x="{cx:.1f}" y="{base + 27}" fill="#3fb950" font-size="10" '
-                f'font-weight="600" text-anchor="middle">keg</text>')
+            height = max(2, round(min(seconds, SCORECARD_CAP_SECONDS)
+                                  / SCORECARD_CAP_SECONDS * _SC_PLOT_PX))
+        classes = ["sc-fill", "sc-keg" if u["keg"] else "sc-model"]
+        if cut:
+            classes.append("sc-cut")
         if u["corrected"]:
-            parts.append(
-                f'<text x="{cx:.1f}" y="{base + 40}" fill="#f85149" font-size="10" '
-                f'font-weight="600" text-anchor="middle">corrected</text>')
-    parts.append("</svg>")
-    return "".join(parts)
+            classes.append("sc-ring")
+        marker = ""
+        if u["order"] in before:
+            # Labels sit left of the marker in the chart's right half so they
+            # never run off the edge; successive markers step down a row so
+            # neighbors never collide.
+            side = "sc-left" if u["order"] > len(units) / 2 else "sc-right"
+            labels = ""
+            for text in before[u["order"]]:
+                labels += (f'<span class="sc-event-label {side}" '
+                           f'style="top:{6 + (row % 3) * 18}px">{_esc(text)}</span>')
+                row += 1
+            marker = f'<span class="sc-event-line"></span>{labels}'
+        chip = (f'<span class="sc-chip">KEG v{_esc(u["keg_version"])}</span>'
+                if u["keg"] else "")
+        detail = _sc_unit_detail(u, one)
+        bars.append(
+            f'<button type="button" class="sc-bar" aria-label="{_esc(detail)}" '
+            f'data-sc-detail="{_esc(detail)}" data-sc-target="{target}">'
+            f'{marker}<span class="sc-band"></span>'
+            f'<span class="sc-plot"><span class="sc-value">'
+            f'{"↑ " if cut else ""}{seconds:.1f}s</span>'
+            f'<span class="{" ".join(classes)}" style="height:{height}px"></span></span>'
+            f'<span class="sc-axis"></span><span class="sc-chip-row">{chip}</span>'
+            f'<span class="sc-n">{u["order"]}</span></button>')
+    first = next((u for u in units if u["corrected"]),
+                 next((u for u in units if u["keg"]), units[0]))
+    return (
+        f'<div class="sc-scroll"><div class="sc-bars">{"".join(bars)}</div></div>'
+        f'<div role="status" class="sc-status" id="{target}">'
+        f'{_esc(_sc_unit_detail(first, one))}</div>')
+
+
+def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "") -> str:
+    """One goal's run as a scorecard. Every figure and every sentence is
+    filled from the report; nothing here knows what kind of work it is."""
+    from grove import audit as audit_mod
+
+    units = g["units"]
+    one, many = g["item_name"]
+    total, keg_n = len(units), g["keg_units"]
+    model, keg, cov = g["model_avg"], g["keg_avg"], g["coverage"]
+    versions = g["versions"]
+    tiers = _sc_tiers(units)
+
+    # 1. Header
+    traceable = ("Every one traceable." if total and g["traceable"] == total
+                 else f"{g['traceable']} of {total} have a turn on record.")
+    if versions:
+        loop = (f"The operator confirmed the first decisions. Mylo proposed a keg, the "
+                f"operator signed it, and covered {many} stopped calling a model.")
+    else:
+        loop = (f"No keg has been signed in this run yet, so every {one} went to a model.")
+    under = (f" Under keg v{cov['version']}, {cov['covered']} of these {cov['of']} would "
+             f"have run with no model at all." if cov["keg"] else "")
+    header = (
+        f'<header class="sc-header"><div class="sc-eyebrow sc-event">SCORECARD · '
+        f'{_esc(str(g["title"]).upper())} · RUN {_esc(g["run_number"])} · {total} '
+        f'{_esc(many.upper())}</div>'
+        f'<h1>{keg_n} of {total} {_esc(many)} decided with no model. '
+        f'<span class="sc-event">{_esc(traceable)}</span></h1>'
+        f'<p>{_esc(loop + under)}</p></header>')
+
+    # 2. Tiles
+    def _tile(eyebrow, figure, text):
+        return (f'<div class="sc-tile"><div class="sc-eyebrow">{_esc(eyebrow)}</div>'
+                f'<div class="sc-figure">{_esc(figure)}</div><div class="sc-note">'
+                f'{_esc(text)}</div></div>')
+
+    if model["seconds"] and keg["seconds"]:
+        speed = _tile("SPEED", f"{model['seconds'] / keg['seconds']:,.0f}×",
+                      f"faster. {_sc_seconds(keg['seconds'])} with the keg, "
+                      f"{_sc_seconds(model['seconds'])} with a model.")
+    else:
+        speed = _tile("SPEED", "—", "No keg decision to compare yet.")
+    cost = _tile(
+        "COST PER KEG DECISION", _money(keg["cost"]) if keg_n else "—",
+        (f"and 0 tokens. " if keg_n else "No keg decision yet. ")
+        + f"A model decision averaged {_money(model['cost'])} and "
+          f"{_compact(model['tokens'])} tokens.")
+    signed_rows = [s for s in g["signatures"]]
+    if signed_rows:
+        figure = " → ".join(f"v{s['version']}" for s in signed_rows)
+        text = " ".join(
+            f"v{s['version']} signed {_span(s['seconds'])} after"
+            + (" it was proposed." if i == 0 else ".")
+            for i, s in enumerate(signed_rows))
+    else:
+        figure, text = "—", "No keg version signed in this run."
+    signed = _tile("SIGNED BY THE OPERATOR", figure, text)
+    brake = g["brake"]
+    misses = len(brake["misses"])
+    if misses:
+        where = ", ".join(f"#{n}" for n in brake["misses"])
+        if brake["halts"]:
+            tail = (f"halted the keg until v{brake['resumed_version']} was signed."
+                    if brake["resumed_version"] else "halted the keg; it is still halted.")
+        else:
+            tail = "was recorded."
+        text = f"caught. A correction on {where} {tail}"
+    else:
+        text = "No keg decision was corrected."
+    brake_tile = _tile("THE BRAKE", f"{misses} miss" + ("" if misses == 1 else "es"), text)
+    tiles = (f'<section class="sc-tiles" aria-label="Headline numbers">'
+             f'{speed}{cost}{signed}{brake_tile}</section>')
+
+    # 3. Chart
+    chart = (
+        f'<section class="sc-panel" aria-labelledby="sc-chart-{key}">'
+        f'<div class="sc-panel-head"><div><h2 id="sc-chart-{key}">Seconds to decide each '
+        f'{_esc(one)}, in order</h2><div class="sc-sub">Hover or tab to a bar for its '
+        f'record. Bars above {SCORECARD_CAP_SECONDS:.0f} s are cut and labeled.</div></div>'
+        f'<div class="sc-legend">'
+        f'<span><i class="sc-swatch sc-model"></i>Decided by a model{_esc(tiers)}</span>'
+        f'<span><i class="sc-swatch sc-keg"></i>Decided by the keg (T0, no model)</span>'
+        f'<span><i class="sc-dash"></i>Loop event</span></div></div>'
+        f'{_scorecard_chart_html(g, key)}</section>')
+
+    # 4. Two panels
+    rows = ""
+    for tier, t in g["by_tier"].items():
+        is_keg = tier == "T0"
+        rows += (
+            f'<tr><td><i class="sc-swatch {"sc-keg" if is_keg else "sc-model"}"></i>'
+            f'{"Keg" if is_keg else "Model"} ({_esc(tier)})</td><td>{t["units"]}</td>'
+            f'<td>{t["confirmed"]}</td>'
+            f'<td class="{"sc-event" if t["corrected"] else ""}">{t["corrected"]}</td>'
+            f'<td>{_sc_seconds(t["seconds"])}</td><td>{_money(t["cost"])}</td></tr>')
+    if chain is None:
+        chain_line = ""
+    elif chain["result"] == "broken":
+        chain_line = (f'<span class="sc-event">Audit chain BROKEN: {len(chain["problems"])} '
+                      f'problem(s). See the check below.</span>')
+    else:
+        chain_line = (f'Audit chain intact: {chain["chained"]:,} intent records, '
+                      f'{chain["ledger"]["chained"]:,} chained ledger events.')
+    on_record = ("Every decision has its turn on record." if g["traceable"] == total
+                 else f"{g['traceable']} of {total} decisions have their turn on record.")
+    who = (
+        f'<div class="sc-panel"><h3>Who decided, and how it went</h3><div class="sc-scroll">'
+        f'<table class="sc-table"><thead><tr><th>DECIDED BY</th><th>{_esc(many.upper())}</th>'
+        f'<th>CONFIRMED</th><th>CORRECTED</th><th>TIME EACH</th><th>COST EACH</th></tr></thead>'
+        f'<tbody>{rows}</tbody></table></div>'
+        f'<p class="sc-foot">{_esc(on_record)} {chain_line}</p></div>')
+    cards = ""
+    for v in versions:
+        text = [f"Decides {v['decides']} case{'' if v['decides'] == 1 else 's'} directly."]
+        if v["reserve"]:
+            text.append(f"Reserved for a model: {v['reserve'].rstrip('.')}.")
+        if v["evidence"]:
+            text.append(f"Evidence: {v['evidence']} confirmed decisions.")
+        if v["feedback"]:
+            text.append("Operator feedback: " + "; ".join(f"“{f}”" for f in v["feedback"]) + ".")
+        if v["seconds_to_signature"] is not None:
+            text.append(f"Signed by the {v['signed_by'] or 'operator'} "
+                        f"{_span(v['seconds_to_signature'])} after proposal.")
+        back = "".join(f'<code class="sc-rule">hands back when {_esc(c)}</code>'
+                       for c in v["hands_back"])
+        cards += (
+            f'<div class="sc-version{" sc-serving" if v["serves"] else ""}">'
+            f'<div class="sc-version-head"><strong>Keg v{_esc(v["version"])}</strong>'
+            f'<span class="sc-eyebrow{" sc-on" if v["serves"] else ""}">'
+            f'{_esc(str(v["state"]).upper())}</span></div>'
+            f'<div class="sc-note">{_esc(" ".join(text))}</div>{back}</div>')
+    if not cards:
+        cards = '<div class="sc-note">No keg version has been signed in this run.</div>'
+    if g["drafts_returned"]:
+        n = g["drafts_returned"]
+        cards += (f'<p class="sc-foot">{n} draft{"" if n == 1 else "s"} went back to Kaizen '
+                  f'with the operator\'s feedback before signing.</p>')
+    panels = (f'<section class="sc-pair">{who}<div class="sc-panel"><h3>Standard work, '
+              f'as signed</h3><div class="sc-versions">{cards}</div></div></section>')
+
+    # 5. At volume
+    proj = audit_mod.project(g, scale)
+    toggles = "".join(
+        f'<button type="button" aria-pressed="{"true" if n == scale else "false"}" '
+        f'hx-get="/portal/fragments/audit/economics?scale={n}" '
+        f'hx-target="#sc-volume-{key}" hx-select="#sc-volume-{key}" hx-swap="outerHTML">'
+        f'{_compact(n)} / mo</button>' for n in audit_mod.SCALES)
+
+    def _row(label, row, basis, strong=False):
+        return (f'<tr class="{"sc-strong" if strong else ""}"><td>{_esc(label)}</td>'
+                f'<td>{_money(row["cost"])}</td><td>{_compact(row["model_calls"])}</td>'
+                f'<td>{_compact(row["tokens"])}</td><td>{_model_time(row["hours"])}</td>'
+                f'<td class="sc-basis">{_esc(basis)}</td></tr>')
+
+    if cov["keg"]:
+        avoided = proj["avoided"]
+        hero = (
+            f'<div class="sc-hero"><div class="sc-lead">At {scale:,} {_esc(many)} a month, '
+            f'the keg avoids</div><div class="sc-big">{_money(avoided["cost"])} '
+            f'<span>a month</span></div><div class="sc-lead">'
+            f'{_compact(avoided["model_calls"])} model calls and '
+            f'{_model_time(avoided["hours"])} of model time. Keg v{_esc(cov["version"])} '
+            f'would have answered {cov["covered"]} of these {cov["of"]} {_esc(many)} '
+            f'({cov["share"]:.0%}).</div></div>')
+        with_label = f"With keg v{cov['version']} serving"
+    else:
+        hero = (f'<div class="sc-hero"><div class="sc-lead">At {scale:,} {_esc(many)} a '
+                f'month. No keg is serving, so nothing is avoided yet.</div></div>')
+        with_label = "With a keg serving"
+    frontier = ""
+    if proj["all_frontier"]["cost"] is not None:
+        frontier = (
+            f'<div class="sc-estimate"><div class="sc-eyebrow sc-event">ESTIMATE · FRONTIER '
+            f'MODEL</div><div>Every {_esc(one)} on a frontier model '
+            f'({_esc(g["frontier"]["model"])}): <strong>'
+            f'{_money(proj["all_frontier"]["cost"])}</strong> a month. With the keg serving '
+            f'{cov["share"]:.0%}: <strong>{_money(proj["frontier_with_keg"])}</strong>.'
+            f'</div></div>')
+    volume = (
+        f'<section class="sc-panel" id="sc-volume-{key}" aria-labelledby="sc-vol-{key}">'
+        f'<div class="sc-panel-head"><h2 id="sc-vol-{key}">At volume</h2>'
+        f'<div class="sc-toggle" role="group" aria-label="{_esc(many.capitalize())} per month">'
+        f'{toggles}</div></div>{hero}<div class="sc-scroll"><table class="sc-table sc-wide">'
+        f'<thead><tr><th></th><th>COST</th><th>MODEL CALLS</th><th>TOKENS</th>'
+        f'<th>TIME DECIDING</th><th>BASIS</th></tr></thead><tbody>'
+        + _row(f"Every {one} decided by a model", proj["all_model"], "measured")
+        + _row(with_label, proj["with_keg"], "measured")
+        + _row("Avoided", proj["avoided"], "difference", strong=True)
+        + f'</tbody></table></div>{frontier}</section>')
+
+    # 6. Footer — the methodology caveats, unchanged in substance.
+    footer = (
+        '<footer class="sc-footer">Costs use the prices declared in the routing config. '
+        + ("Cached context re-read is priced. " if g["cache_read_priced"] else
+           "Cached context re-read is counted in tokens but NOT priced (no price is "
+           "declared for it), so model cost is understated. ")
+        + f'Not included: {_esc(not_included)}. Both make the keg\'s saving larger than '
+        f'shown. Each {_esc(one)}\'s confirmation turn is separate and not counted here. '
+        f'Volume rows scale this run\'s measured per-{_esc(one)} figures. The frontier '
+        f'estimate prices this run\'s fresh tokens at that model\'s declared rates.</footer>')
+    return f'<div class="sc">{header}{tiles}{chart}{panels}{volume}{footer}</div>'
 
 
 def _audit_integrity_html(report) -> str:
@@ -4270,101 +4529,17 @@ def _audit_integrity_html(report) -> str:
     )
 
 
-def _audit_integrity_idle_html() -> str:
-    return (
-        '<div class="card" id="audit-integrity">'
-        '<h4>Is the record intact?</h4>'
-        '<p>Recomputes every hash chain — each turn record, each Kaizen ledger '
-        'event — and checks every decision has its turn on record. Read-only.</p>'
-        '<button class="btn btn-approve" hx-get="/portal/fragments/audit/check" '
-        'hx-target="#audit-integrity" hx-swap="outerHTML">Run audit check</button>'
-        '</div>'
-    )
-
-
-def _audit_economics_html(report, scale: int) -> str:
-    """What the work cost, by tier, and what it comes to at a monthly volume."""
-    from grove import audit as audit_mod
-
+def _audit_economics_html(report, scale: int, chain=None) -> str:
+    """The run's scorecard, one per goal with decision work. ``chain`` is the
+    integrity report, when the caller ran it, for the audit-chain line."""
     if not report["goals"]:
-        return ('<div id="audit-economics"><div class="card"><h4>What did the work cost?</h4>'
+        return ('<div id="audit-economics"><div class="card"><h4>Scorecard</h4>'
                 '<p>No decision work has run yet.</p></div></div>')
-    blocks = []
-    for g in report["goals"]:
-        units = g["units"]
-        chart = _audit_time_chart_svg(units)
-        tier_rows = "".join(
-            f"<tr><td>{_esc(tier)}</td><td>{t['units']}</td>"
-            f"<td>{_count(t['model_calls'])}</td><td>{_seconds(t['seconds'])}</td>"
-            f"<td>{_count(t['fresh_tokens'])}</td><td>{_count(t['cached_tokens'])}</td>"
-            f"<td>{_money(t['cost'])}</td>"
-            f"<td>{t['confirmed']} confirmed · {t['corrected']} corrected</td></tr>"
-            for tier, t in g["by_tier"].items())
-        model, keg = g["model_avg"], g["keg_avg"]
-        speed = (
-            f"{model['seconds'] / keg['seconds']:,.0f}× faster"
-            if model["seconds"] and keg["seconds"] else "—")
-        proj = audit_mod.project(g, scale)
-        cov = g["coverage"]
-
-        def _proj_row(label, row, note=""):
-            return (
-                f"<tr><td>{_esc(label)}</td><td>{_money(row['cost'])}</td>"
-                f"<td>{_count(row['model_calls'])}</td><td>{_count(row['tokens'])}</td>"
-                f"<td>{_hours(row['hours'])}</td><td>{_esc(note)}</td></tr>")
-
-        options = "".join(
-            f'<option value="{n}"{" selected" if n == scale else ""}>'
-            f'{n:,} items a month</option>'
-            for n in audit_mod.SCALES)
-        signed = " · ".join(
-            f"v{s['version']} signed {_hours((s['seconds'] or 0) / 3600.0)} after it was proposed"
-            for s in g["signatures"]) or "no keg signed yet"
-        not_included = "; ".join(report["not_included"].values())
-        blocks.append(
-            f'<div class="card">'
-            f'<h4>What did the work cost? · {_esc(g["goal"])} · run {_esc(g["run_number"])}</h4>'
-            f'<p><strong>Decided by a model: {_seconds(model["seconds"])}, '
-            f'{_count(model["tokens"])} tokens, {_money(model["cost"])} each. '
-            f'Decided by the keg: {_seconds(keg["seconds"])}, 0 tokens, $0 each '
-            f'({_esc(speed)}).</strong></p>'
-            f'<div class="meta">{g["keg_units"]} of {len(units)} items in this run were '
-            f'decided with no model call. Deciding all {len(units)} took '
-            f'{_count(g["totals"]["model_calls"])} model calls, '
-            f'{_count(g["totals"]["tokens"])} tokens and {_money(g["totals"]["cost"])}. '
-            f'{_esc(signed)}.</div>'
-            f'{chart}'
-            f'<table class="audit-table"><tr><th>Tier</th><th>Items</th><th>Model calls</th>'
-            f'<th>Time</th><th>Fresh tokens</th><th>Cached tokens re-read</th>'
-            f'<th>Cost</th><th>Operator\'s verdict</th></tr>{tier_rows}</table>'
-            f'<h4>At volume</h4>'
-            f'<div class="proposal-actions"><label for="audit-scale">Scale to&nbsp;</label>'
-            f'<select id="audit-scale" name="scale" hx-get="/portal/fragments/audit/economics" '
-            f'hx-target="#audit-economics" hx-swap="outerHTML" hx-trigger="change">{options}'
-            f'</select></div>'
-            + (
-                f'<p>At {scale:,} items a month. {_esc(cov["keg"])} would have answered '
-                f'{cov["covered"]} of this run\'s {cov["of"]} items ({cov["share"]:.0%}); '
-                f'the rest still go to a model.</p>' if cov["keg"] else
-                '<p>No keg is serving, so nothing is avoided yet.</p>')
-            + f'<table class="audit-table"><tr><th></th><th>Cost</th><th>Model calls</th>'
-            f'<th>Tokens</th><th>Time spent deciding</th><th></th></tr>'
-            + _proj_row("Every item decided by a model", proj["all_model"], "measured")
-            + _proj_row("With the keg serving", proj["with_keg"], "measured")
-            + _proj_row("Avoided", proj["avoided"], "the difference")
-            + f'<tr><td>Every item at the frontier tier ({_esc(g["frontier"]["model"])})</td>'
-            f'<td>{_money(proj["all_frontier"]["cost"])}</td><td colspan="3"></td>'
-            f'<td>estimate: this run\'s fresh tokens at that model\'s declared prices '
-            f'(cached re-read not priced)</td></tr>'
-            f'</table>'
-            f'<div class="meta">Costs use the prices declared in the routing config. '
-            + ("Cached context re-read is priced. " if g["cache_read_priced"] else
-               "Cached context re-read is counted in tokens but NOT priced (no price is "
-               "declared for it), so model cost is understated. ")
-            + f'Not included: {_esc(not_included)}. Both make the keg\'s saving larger '
-            f'than shown. Each item\'s confirmation turn is separate and not counted here.</div>'
-            f'</div>'
-        )
+    not_included = "; ".join(report["not_included"].values())
+    blocks = [
+        _scorecard_html(g, scale, str(i), chain=chain, not_included=not_included)
+        for i, g in enumerate(report["goals"])
+    ]
     return f'<div id="audit-economics">{"".join(blocks)}</div>'
 
 
@@ -4378,17 +4553,32 @@ def _audit_scale(request: web.Request) -> int:
 
 
 async def handle_audit(request: web.Request) -> web.Response:
-    """The Audit page: integrity (run on demand) and economics (current run)."""
+    """The Audit page: the current run's scorecard, then the integrity check
+    it rests on. Both read the same records; neither writes."""
     from grove import audit as audit_mod
+    chain = None
     try:
-        economics_html = _audit_economics_html(audit_mod.economics(), _audit_scale(request))
+        chain = audit_mod.chain_report()
+        integrity_html = _audit_integrity_html(chain)
+    except Exception as exc:  # noqa: BLE001 — visible error fragment, never a blank panel
+        logger.error("[portal] audit check failed: %r", exc)
+        integrity_html = _audit_check_failed_html(exc)
+    try:
+        economics_html = _audit_economics_html(
+            audit_mod.economics(), _audit_scale(request), chain=chain)
     except Exception as exc:  # noqa: BLE001 — visible error fragment, never a blank panel
         logger.error("[portal] audit economics failed: %r", exc)
-        economics_html = (f'<div id="audit-economics"><div class="error-card"><h3>Economics '
+        economics_html = (f'<div id="audit-economics"><div class="error-card"><h3>Scorecard '
                           f'unavailable</h3><p>{_esc(type(exc).__name__)}: {_esc(exc)}</p></div></div>')
     return _html_fragment(
-        '<div id="audit-page"><h2>Audit</h2>'
-        + _audit_integrity_idle_html() + economics_html + '</div>')
+        '<div id="audit-page">' + economics_html + integrity_html + '</div>')
+
+
+def _audit_check_failed_html(exc) -> str:
+    return (
+        f'<div class="card" id="audit-integrity"><h4><span class="badge badge-red">'
+        f'not run</span> Is the record intact?</h4><p class="error">The check could not '
+        f'run: {_esc(type(exc).__name__)}: {_esc(exc)}</p></div>')
 
 
 async def handle_audit_check(request: web.Request) -> web.Response:
@@ -4397,10 +4587,7 @@ async def handle_audit_check(request: web.Request) -> web.Response:
         return _html_fragment(_audit_integrity_html(audit_mod.chain_report()))
     except Exception as exc:  # noqa: BLE001
         logger.error("[portal] audit check failed: %r", exc)
-        return _html_fragment(
-            f'<div class="card" id="audit-integrity"><h4><span class="badge badge-red">'
-            f'not run</span> Is the record intact?</h4><p class="error">The check could not '
-            f'run: {_esc(type(exc).__name__)}: {_esc(exc)}</p></div>')
+        return _html_fragment(_audit_check_failed_html(exc))
 
 
 async def handle_audit_economics(request: web.Request) -> web.Response:
