@@ -216,15 +216,34 @@ def _clause_holds(clause: Tuple[str, str, Any], values: Mapping[str, Any]) -> bo
     return (actual in members) if op == "IN" else (actual not in members)
 
 
-def evaluate(spec: Mapping[str, Any], values: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
-    """The outputs of the first condition that matches ``values``, or None
-    when the keg does not cover this input. Deterministic; no model call."""
+def match(spec: Mapping[str, Any], values: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    """The first condition that matches ``values``, or None."""
     inputs = spec.get("inputs") or {}
     for cond in spec.get("conditions") or []:
         groups = parse_condition(cond.get("if"), inputs)
         if any(all(_clause_holds(c, values) for c in group) for group in groups):
-            return dict(cond.get("then") or {})
+            return cond
     return None
+
+
+def evaluate(spec: Mapping[str, Any], values: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """The outputs of the first condition that matches ``values``, or None
+    when the keg does not answer this input. Deterministic; no model call.
+
+    A keg does not answer an input in two ways, and both send the work back to
+    the interpreter: no condition matches, or the first matching condition is
+    a DEFER — a rule that says "this case is not mine". A defer is how a keg
+    is narrowed after a miss without teaching it a new answer."""
+    cond = match(spec, values)
+    if cond is None or cond.get("defer"):
+        return None
+    return dict(cond.get("then") or {})
+
+
+def defers(spec: Mapping[str, Any], values: Mapping[str, Any]) -> bool:
+    """True when the first matching condition explicitly defers."""
+    cond = match(spec, values)
+    return bool(cond is not None and cond.get("defer"))
 
 
 # ── spec validation ───────────────────────────────────────────────────
@@ -281,8 +300,16 @@ def validate_spec(spec: Any) -> None:
             raise ValueError("each keg condition must be a mapping")
         parse_condition(cond.get("if"), inputs)
         then = cond.get("then")
+        if cond.get("defer"):
+            if then:
+                raise ValueError(
+                    f"condition {cond.get('if')!r} both defers and assigns outputs"
+                )
+            continue
         if not isinstance(then, Mapping) or not then:
-            raise ValueError(f"condition {cond.get('if')!r} has no 'then' outputs")
+            raise ValueError(
+                f"condition {cond.get('if')!r} needs 'then' outputs or 'defer: true'"
+            )
         unknown = [k for k in then if k not in outputs]
         if unknown:
             raise ValueError(
@@ -291,15 +318,17 @@ def validate_spec(spec: Any) -> None:
             )
 
 
-def rules_digest(spec: Mapping[str, Any], evidence: Any) -> str:
+def rules_digest(spec: Mapping[str, Any], evidence: Any, lineage: Any = None) -> str:
     """Identity digest for one drafted keg: its interface plus the evidence it
     rests on. Identical rules on identical evidence are the identical keg (never
-    re-proposed); a revised rule or new evidence is a different draft."""
+    re-proposed); a revised rule or new evidence is a different draft, and
+    so is the same keg earned again in a later run (``lineage``)."""
     body = {
         "inputs": spec.get("inputs"),
         "outputs": spec.get("outputs"),
         "conditions": spec.get("conditions"),
         "trigger": spec.get("trigger"),
+        "lineage": lineage,
         "evidence": sorted(str(e) for e in (evidence or ())),
     }
     return hashlib.sha256(

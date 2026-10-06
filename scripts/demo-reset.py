@@ -10,8 +10,10 @@ current run" (the evidence rule, the verifier's run count, the scorecard) stops
 seeing earlier decisions. Earlier records stay in the log, and the audit trail
 is never touched.
 
-What it does not do yet: retire the goal's kegs and pending keg proposals.
-That arrives with keg execution; until then no keg exists to retire.
+It also retires the previous run's standard work for this goal: any keg that
+was drafted, serving or halted is revoked (it stops serving and stays on
+record as revoked), and any keg proposal still waiting is withdrawn from the
+queue with a recorded disposition. The new run's first keg is v1 again.
 
 After a reset, start a fresh chat session with /new before coding: an isolated
 goal only records decisions in a session that began with its own work.
@@ -52,9 +54,39 @@ def main() -> int:
     print(f"current run   : {run.get('run_number') if run else 'none yet'}"
           + (f" ({run['label']})" if run and run.get("label") else ""))
     print(f"decisions in it: {len(decided)} of {queued} queued items")
+
+    from grove import keg as keg_mod
+    from grove.eval import proposal_queue
+    from grove.pattern_cache import (
+        PatternCacheStore, STATUS_ACTIVE, STATUS_DEMOTED, STATUS_HALTED,
+        STATUS_SUSPENDED,
+    )
+
+    store = PatternCacheStore()
+    kegs = [
+        entry for entry in store.all()
+        if (keg_mod.keg_record(entry).get("keg") or {}).get("dock_goal") == args.goal
+        and entry.status in (STATUS_ACTIVE, STATUS_HALTED, STATUS_SUSPENDED)
+    ]
+    waiting = [
+        p for p in proposal_queue.read_all()
+        if ((p.payload or {}).get("keg") or {}).get("dock_goal") == args.goal
+    ]
+    print(f"kegs to revoke : {len(kegs)}"
+          + "".join(f"\n    {e.pattern_id} ({e.status})" for e in kegs))
+    print(f"proposals to withdraw: {len(waiting)}")
     if not args.apply:
         print("dry run — nothing written. Re-run with --apply to open a new run.")
         return 0
+    from grove.flywheel_cli import _record_kaizen_disposition
+
+    for proposal in waiting:
+        proposal_queue.remove(proposal.proposal_id)
+        _record_kaizen_disposition(
+            proposal, disposition="withdrawn", reason=args.label or "demo reset",
+        )
+    for entry in kegs:
+        store.set_status(entry.pattern_id, STATUS_DEMOTED)
     new = work.log.start_run(args.label or "demo reset")
     print(f"✓ opened run {new['run_number']} ({new['label']}); the queue starts "
           f"again at {work.next_item().stem if work.next_item() else 'nothing'}.")

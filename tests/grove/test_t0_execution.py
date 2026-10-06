@@ -274,8 +274,11 @@ def test_auto_demotion_on_correction(_grove_home, monkeypatch):
     d.dispatch_turn(agent, user_message="no, that's wrong",
                     already_routed=True)
 
-    # Pattern suspended; no longer served; demotion proposal queued.
-    assert store.get(key).status == STATUS_SUSPENDED
+    # Pattern HALTED; no longer served; demotion proposal queued. (Operator
+    # decision, 2026-10-05: a correction halts an approved pattern — its
+    # approval stands until the operator rules. "Suspended" now means only a
+    # draft that was never approved. One state on this path, not two.)
+    assert store.get(key).status == "halted"
     assert store.get_active_for_message(msg) is None
     import grove.eval.proposal_queue as pq
     from grove.eval.proposal_queue import PROPOSAL_TYPE_PATTERN_DEMOTION

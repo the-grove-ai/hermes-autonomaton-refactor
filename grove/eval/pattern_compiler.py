@@ -381,6 +381,7 @@ def propose_pattern_promotions(
     queue_path: Optional[Path] = None,
     now_iso: Optional[str] = None,
     config: Optional[Dict[str, Any]] = None,
+    ledger: Any = None,
 ) -> "PromotionResult":
     """Scan → compile → queue, returning a :class:`PromotionResult` with one
     :class:`CandidateDisposition` per scanned candidate.
@@ -398,6 +399,7 @@ def propose_pattern_promotions(
         PROPOSAL_TYPE_PATTERN_PROMOTION,
         compute_proposal_id,
         append as _queue_append,
+        read_all as _queue_read_all,
     )
 
     cfg = config or load_pattern_cache_config()
@@ -488,7 +490,19 @@ def propose_pattern_promotions(
             created_at=now,
             proposer="pattern_compiler",  # proposal-proposer-attribution-v1 (#8)
         )
+        # The scanner is a Jidoka detector: repetition. It flags and pulls the
+        # andon cord like every other detector, and the proposal answers that
+        # event. Only for a proposal that is new — a rescan of a pattern already
+        # waiting in the queue saw nothing new and flags nothing.
+        already_queued = any(
+            p.proposal_id == proposal.proposal_id for p in _queue_read_all(path=queue_path)
+        )
+        andon = None
+        if not already_queued:
+            andon = _flag_repetition(cand, ledger=ledger)
         if _queue_append(proposal, path=queue_path):
+            if andon is not None:
+                _record_kaizen_answer(andon, proposal, cand, ledger=ledger)
             dispositions.append(_disp(
                 cand, DISPOSITION_PROPOSED, "queued for operator approval",
                 proposal_id=proposal.proposal_id,
@@ -503,6 +517,57 @@ def propose_pattern_promotions(
             ))
 
     return PromotionResult(dispositions=tuple(dispositions))
+
+
+def _goal_for_request(request: str) -> Optional[str]:
+    """The Dock goal a repeated request relates to, by the goal's own declared
+    keywords, or None. A Dock fault means "no goal", never a failed scan."""
+    try:
+        from grove.decision_work import _keyword_matches
+        from grove.dock import load_dock
+
+        dock = load_dock()
+        for goal in (getattr(dock, "goals", None) or ()):
+            if _keyword_matches(request, goal.keywords):
+                return goal.id
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _flag_repetition(cand: Candidate, *, ledger: Any = None) -> Dict[str, Any]:
+    from grove import jidoka
+    from grove.keg import FLAG_TIER_DOWN_PATTERN
+
+    request = cand.sample_queries[0] if cand.sample_queries else ""
+    return jidoka.flag(
+        FLAG_TIER_DOWN_PATTERN, detector=jidoka.DETECTOR_REPETITION,
+        goal=_goal_for_request(request),
+        summary=(
+            f"the same {cand.intent_class} request was answered the same way "
+            f"{cand.repetition_count} times"
+        ),
+        evidence=[{"turn_id": t} for t in cand.evidence_turn_ids],
+        details={"t0_key": cand.t0_key, "cacheable_type": cand.cacheable_type},
+        ledger=ledger,
+    )
+
+
+def _record_kaizen_answer(
+    andon: Dict[str, Any], proposal: Any, cand: Candidate, *, ledger: Any = None,
+) -> None:
+    from grove import jidoka
+    from grove.keg import LOOP_KAIZEN_PROPOSAL
+
+    jidoka._ledger(ledger).record(
+        LOOP_KAIZEN_PROPOSAL,
+        loop_step=LOOP_KAIZEN_PROPOSAL,
+        proposal_id=proposal.proposal_id,
+        pattern_id=cand.t0_key,
+        flag=andon["flag"],
+        andon_id=andon["andon_id"],
+        evidence_count=len(cand.evidence_turn_ids),
+    )
 
 
 # ── keg proposals (GRV-004 executable kegs on the T0 cache) ───────────
@@ -547,16 +612,28 @@ def backtest_keg(spec: Dict[str, Any], history: List[Dict[str, Any]]) -> Dict[st
     * ``not_covered`` — the keg does not answer it; it stays with the
       interpreter, so nothing changes for it either.
 
+    A case marked ``served_by_keg`` that this keg would NOT answer (it defers,
+    or no rule matches) is a ``would_change``: work standard work used to
+    answer goes back to the interpreter.
+
     Cases come back changed-first, so a reviewer reads the edge cases before
     the routine ones."""
-    from grove.keg import evaluate
+    from grove.keg import defers, evaluate
 
     cases: List[Dict[str, Any]] = []
     for index, case in enumerate(history):
         served = dict(case.get("served") or {})
         confirmed = case.get("confirmed")
         answer = evaluate(spec, case.get("inputs") or {})
-        if answer is None:
+        deferred = answer is None and defers(spec, case.get("inputs") or {})
+        if answer is None and case.get("served_by_keg"):
+            # Standard work answered this case before; this keg would hand it
+            # back to the interpreter. That IS a change. It agrees with the
+            # operator when they corrected the old answer; handing back an
+            # answer they confirmed loses good coverage and is a conflict.
+            result = BACKTEST_WOULD_CHANGE
+            agrees = None if confirmed is None else dict(confirmed) != served
+        elif answer is None:
             result, agrees = BACKTEST_NOT_COVERED, None
         else:
             same = all(answer.get(k) == served.get(k) for k in answer)
@@ -571,6 +648,7 @@ def backtest_keg(spec: Dict[str, Any], history: List[Dict[str, Any]]) -> Dict[st
             "served": served,
             "confirmed": None if confirmed is None else dict(confirmed),
             "keg": answer,
+            "deferred": bool(deferred),
             "result": result,
             "agrees_with_confirmed": agrees,
             "_order": index,
@@ -611,6 +689,8 @@ def propose_keg(
     evidence_turn_ids: Any,
     history: List[Dict[str, Any]],
     feedback: Optional[List[str]] = None,
+    lineage: Optional[str] = None,
+    andon_id: Optional[str] = None,
     queue_path: Optional[Path] = None,
     ledger: Any = None,
     now_iso: Optional[str] = None,
@@ -630,7 +710,10 @@ def propose_keg(
 
     ``flag`` is what Jidoka flagged (``tier_down_pattern`` or ``anomaly``).
     The version is the next one after the last SIGNED version of this keg; a
-    draft the operator sent back does not consume a number.
+    draft the operator sent back does not consume a number. ``lineage`` scopes
+    that count: versions are numbered within one lineage (a decision-work run),
+    so a fresh run starts again at v1 while earlier runs' kegs stay on record.
+    ``andon_id`` is the andon event this proposal answers.
     """
     from grove import keg as keg_mod
     from grove.effect_signature import canonical_effect_signature
@@ -657,6 +740,8 @@ def propose_keg(
         record = keg_mod.keg_record(existing).get("keg") or {}
         if record.get("slug") != slug or not existing.promoted_at:
             continue
+        if record.get("lineage") != lineage:
+            continue
         if int(record.get("version") or 0) > prior_version:
             prior_version, prior_id = int(record["version"]), existing.pattern_id
     version = prior_version + 1
@@ -677,8 +762,10 @@ def propose_keg(
     }
     keg_mod.validate_spec(spec)
 
-    digest = keg_mod.rules_digest(spec, evidence_ids)
+    digest = keg_mod.rules_digest(spec, evidence_ids, lineage)
     pattern_id = f"keg:{slug}:v{version}:{digest[:12]}"
+    # The slug in a keg's bookkeeping is what ties versions together; read it
+    # with its lineage (see keg_record) rather than by parsing this id.
     backtest = backtest_keg(spec, history)
 
     def _result(status: str, detail: str, proposal_id: Optional[str] = None):
@@ -712,7 +799,9 @@ def propose_keg(
     }
     key = t0_key(intent_class, normalize_message_stem(request))
     record = {
-        "keg": {"name": name, "slug": slug, "version": version},
+        "keg": {"name": name, "slug": slug, "version": version, "lineage": lineage,
+                "dock_goal": dock_goal},
+        "andon_id": andon_id,
         "repetition_count": len(evidence_ids),
         "flag": flag,
         "supersedes": prior_id,
@@ -743,6 +832,8 @@ def propose_keg(
             **spec,
             "flag": flag,
             "flag_detail": flag_detail,
+            "andon_id": andon_id,
+            "lineage": lineage,
             "supersedes": prior_id,
             "supersedes_version": prior_version or None,
             "feedback": list(feedback or []),
@@ -781,6 +872,7 @@ def propose_keg(
         keg=name,
         version=version,
         flag=flag,
+        andon_id=andon_id,
         supersedes=prior_id,
         dock_goal=dock_goal,
         replayed=backtest["replayed"],

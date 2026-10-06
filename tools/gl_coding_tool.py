@@ -200,28 +200,112 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
         provenance=turn_provenance.current(),
     )
     keg = (waiting or {}).get("keg")
+    # What Jidoka did when it saw this decision land. Stated here so the
+    # agent's sentence about a halt or a proposal rests on a tool result.
+    halted: List[str] = []
+    proposals: List[Dict[str, Any]] = []
+    for event in work.last_observations:
+        halted += event.get("halted") or []
+        kaizen = event.get("kaizen") or {}
+        if kaizen:
+            proposals.append({
+                "flag": event.get("flag"), "status": kaizen.get("status"),
+                "version": kaizen.get("version"), "detail": kaizen.get("detail"),
+                "proposal_id": kaizen.get("proposal_id"),
+            })
+    parts = [
+        "No keg was involved in this coding." if not keg
+        else f"Coded by the keg {keg.get('name')} v{keg.get('version')}."
+    ]
+    if halted:
+        parts.append(
+            f"That correction halted the keg {keg.get('name')} v{keg.get('version')}: "
+            "it no longer codes invoices, and covered invoices go back to the "
+            "model until the operator rules on a fix."
+        )
+    for p in proposals:
+        if p["status"] == "proposed":
+            parts.append(
+                f"A proposal for v{p['version']} is waiting in the portal for "
+                "the operator's signature. It changes nothing until signed."
+            )
+        elif p["status"] == "draft_failed":
+            parts.append(
+                "No fix could be drafted that passed its checks; nothing was proposed."
+            )
+    if work.last_observation_error:
+        parts.append(
+            "The watcher failed after recording this decision: "
+            + work.last_observation_error
+        )
     return {
         "success": True,
         "status": "confirmed" if decision == DECISION_CONFIRM else "corrected",
         "item_id": record["item_id"],
         "final_gl_code": record["output"]["gl_code"],
         "proposed_gl_code": (waiting or {}).get("output", {}).get("gl_code"),
-        # Whether a keg produced the proposed code, and whether this decision
-        # halted it. Stated here so the agent's sentence rests on a tool result.
         "keg": keg,
-        "keg_halted": False,
-        "message": (
-            "No keg was involved in this coding."
-            if not keg else
-            f"Coded by keg {keg.get('name')} v{keg.get('version')}."
-        ),
+        "keg_halted": bool(halted),
+        "proposals": proposals,
+        "message": " ".join(parts),
     }
+
+
+def _apply_keg(work: DecisionWork, args: Dict[str, Any]) -> str:
+    """T0 only: code the next invoice with a signed keg — no model. Returns
+    the reply the operator reads, or a decline that hands the turn back to the
+    interpreter. The verb is not in the model-facing schema, and it refuses
+    any turn that is not a T0 serve of a compiled pattern."""
+    prov = turn_provenance.current() or {}
+    if prov.get("tier") != "T0" or not prov.get("t0_pattern"):
+        raise DecisionRefused(
+            "not_t0", "apply_keg runs only when a signed keg serves the request.")
+
+    def _decline(reason: str) -> str:
+        return json.dumps({"t0_declined": True, "reason": reason}, ensure_ascii=False)
+
+    spec = args.get("keg")
+    if not isinstance(spec, dict):
+        raise DecisionRefused("no_keg", "apply_keg was called without a keg.")
+    work.check_turn(prov)
+    if work.pending() is not None:
+        return _decline("a prior coding is waiting for the operator")
+    path = work.next_item()
+    if path is None:
+        return _decline("the queue is empty")
+    invoice = parse_invoice(path.read_text(encoding="utf-8"))
+    keg_ref = {
+        "name": spec.get("name"), "version": spec.get("version"),
+        "pattern_id": prov.get("t0_pattern"),
+    }
+    record = work.apply_keg(
+        spec, item_id=path.stem, inputs=item_inputs(invoice),
+        keg_ref=keg_ref, provenance=prov,
+    )
+    if record is None:
+        return _decline("the keg does not cover this invoice")
+    code = record["output"]["gl_code"]
+    account = ""
+    for domain in work.config.output_domains:
+        if domain.output == "gl_code":
+            for row in _read_rows(domain.path):
+                if row.get(domain.column) == code:
+                    account = row.get("Account Name", "")
+    return (
+        f"Next invoice: {invoice['vendor']} {invoice.get('invoice_number') or path.stem}, "
+        f"${invoice.get('total') or '?'} — coded {code}"
+        + (f" {account}" if account else "") + ".\n\n"
+        f"Coded by the keg {keg_ref['name']} v{keg_ref['version']}, with no "
+        f"model call. Confirm or correct?"
+    )
 
 
 def gl_coding(args: Dict[str, Any]) -> str:
     verb = str((args or {}).get("verb") or "").strip().lower()
     try:
         work = _work()
+        if verb == "apply_keg":
+            return _apply_keg(work, args)
         if verb == "next":
             result = _next(work)
         elif verb == "record":

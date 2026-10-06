@@ -180,3 +180,48 @@ def test_tool_is_declared_at_every_wiring_point():
 def inspect_core_tools(toolsets_module):
     import inspect
     return inspect.getsource(toolsets_module)
+
+
+# ── T0: a signed keg codes the invoice, with no model ─────────────────
+
+KEG = {
+    "protocol": "GRV-004", "name": "Invoice GL coding", "version": 1,
+    "inputs": {"vendor": {"data_type": "string"}, "description": {"data_type": "string"}},
+    "outputs": {"gl_code": {"data_type": "string"}},
+    "conditions": [{"if": "vendor == 'Alder Cloud Hosting'", "then": {"gl_code": "6110"}}],
+}
+
+
+def _t0(pattern="keg:invoice-gl-coding:v1:abc"):
+    turn_provenance.set_current({
+        "isolation_goal": gl.GOAL_ID, "sections": [], "tools_yielded": [], "cellar_hits": 0,
+        "session_id": "s", "turn_id": "s#9", "turn_uid": "u9", "tier": "T0",
+        "model": "pattern_cache", "t0_pattern": pattern,
+    })
+
+
+def test_keg_codes_the_invoice_at_t0_and_says_so(work):
+    _t0()
+    reply = gl.gl_coding({"verb": "apply_keg", "keg": KEG})
+    assert reply.startswith("Next invoice: Alder Cloud Hosting AC-0001, $1,300.50 — coded 6110")
+    assert "keg Invoice GL coding v1, with no model call" in reply
+    record = work.pending()
+    assert record["tier"] == "T0" and record["model"] == "pattern_cache"
+    assert record["keg"] == {"name": "Invoice GL coding", "version": 1,
+                             "pattern_id": "keg:invoice-gl-coding:v1:abc"}
+    confirmed = _call(verb="decide", decision="confirm")
+    assert confirmed["message"].startswith("Coded by the keg Invoice GL coding v1.")
+
+
+def test_keg_hands_back_an_invoice_it_does_not_cover(work):
+    _t0()
+    gl.gl_coding({"verb": "apply_keg", "keg": KEG})
+    _call(verb="decide", decision="confirm")
+    declined = json.loads(gl.gl_coding({"verb": "apply_keg", "keg": KEG}))   # Birch: two codes
+    assert declined["t0_declined"] is True and work.pending() is None
+
+
+def test_keg_verb_is_refused_outside_a_t0_serve(work):
+    out = _call(verb="apply_keg", keg=KEG)        # the fixture's turn is T1
+    assert out["refused"] == "not_t0" and work.log.records() == []
+    assert "apply_keg" not in gl.GL_CODING_SCHEMA["parameters"]["properties"]["verb"]["enum"]

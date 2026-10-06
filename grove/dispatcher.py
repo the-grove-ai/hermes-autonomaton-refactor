@@ -567,6 +567,21 @@ def _run_guarded_producer(
         _file_producer_failure(producer, exc)
 
 
+def _t0_declined(response_text: Any) -> bool:
+    """Whether an executable T0 pattern's tool handed the request back.
+
+    The contract is one JSON key: a tool that cannot answer returns an object
+    with ``"t0_declined": true``. Anything else — including plain text — is
+    the served answer."""
+    if not isinstance(response_text, str) or not response_text.lstrip().startswith("{"):
+        return False
+    try:
+        data = _json_mod.loads(response_text)
+    except (ValueError, TypeError):
+        return False
+    return isinstance(data, dict) and data.get("t0_declined") is True
+
+
 def _guarantee_turn_record(dispatch_turn):
     """failed-turn-records-v1 — guarantee every turn leaves an intent record.
 
@@ -3843,11 +3858,12 @@ class Dispatcher:
         if previous_turn_id is not None:
             self._finalize_previous_turn_pending(previous_turn_id)
 
-        store.record_hit(pattern.pattern_id)
-
         if pattern.cacheable_type == "static":
             response_text = pattern.cached_response or ""
         else:
+            # The tool sees this turn as T0 (grove.turn_provenance): what it
+            # records is attributed to the pattern, not to a model.
+            self._current_turn_t0_pattern = pattern.pattern_id
             try:
                 response_text = self._execute_t0_invocation(agent, pattern)
             except _T0SignatureMismatch as _mismatch:
@@ -3860,6 +3876,26 @@ class Dispatcher:
                     _mismatch,
                 )
                 return None
+            finally:
+                self._current_turn_t0_pattern = None
+            if _t0_declined(response_text):
+                # The pattern's own tool says this request is not its to
+                # answer (a keg that does not cover the item, or defers it).
+                # Not a hit: the interpreter takes the turn.
+                log_pattern_cache_event(
+                    event_type="t0_declined",
+                    pattern_id=pattern.pattern_id,
+                    t0_key=pattern.t0_key,
+                    intent_class=pattern.intent_class,
+                    cacheable_type=pattern.cacheable_type,
+                )
+                logger.info(
+                    "[grove.dispatcher] T0 pattern %s declined this request — "
+                    "falling through to the classified path.", pattern.pattern_id,
+                )
+                return None
+
+        store.record_hit(pattern.pattern_id)
 
         elapsed_ms = 0.0
         if self._current_turn_start is not None:
@@ -4143,15 +4179,40 @@ class Dispatcher:
         classification = self._current_turn_classification
         if not bool(getattr(classification, "is_correction", False)):
             return
-        from grove.pattern_cache import STATUS_SUSPENDED
+        from grove.pattern_cache import STATUS_HALTED
         from grove.telemetry import log_pattern_cache_event
 
         store = self._t0_store()
         pattern = store.get(pattern_id)
         if pattern is None or pattern.status != "active":
-            # Already demoted / suspended / gone — nothing to pull.
+            # Already demoted / halted / gone — nothing to pull.
             return
-        store.set_status(pattern_id, STATUS_SUSPENDED)
+        from grove import keg as _keg_mod
+        if _keg_mod.keg_of(pattern) is not None:
+            # A keg's miss is read off its goal's decision feed, where the
+            # operator's corrected value is on record: Jidoka halts it there
+            # (grove.jidoka.observe_decision) and Kaizen drafts the fix. One
+            # watcher, one halt — not a second one here.
+            return
+        # A miss stops the line. Halted, not "suspended": suspended means a
+        # draft that was never approved; this pattern was approved and its
+        # approval stands until the operator rules.
+        store.set_status(pattern_id, STATUS_HALTED)
+        try:
+            from grove import jidoka as _jidoka
+            _jidoka.flag(
+                _keg_mod.FLAG_ANOMALY, detector=_jidoka.DETECTOR_CORRECTION, goal=None,
+                summary="the operator corrected an answer served from the T0 cache",
+                evidence=[{"turn_id": self._current_turn_id,
+                           "turn_uid": self._current_turn_uid}],
+                details={"pattern_id": pattern_id, "intent_class": pattern.intent_class},
+                ledger=getattr(self, "_ledger", None),
+            )
+        except Exception as _flag_exc:  # noqa: BLE001 — the halt already holds
+            logger.error(
+                "[grove.dispatcher] could not record the Jidoka flag for "
+                "halted pattern %s: %r", pattern_id, _flag_exc,
+            )
         log_pattern_cache_event(
             event_type="pattern_drift_detected",
             pattern_id=pattern_id,
@@ -4159,7 +4220,7 @@ class Dispatcher:
             correction_turn_id=self._current_turn_id,
         )
         logger.info(
-            "[grove.dispatcher] T0 pattern %s auto-suspended — correction on "
+            "[grove.dispatcher] T0 pattern %s halted — correction on "
             "turn %s (intent_class=%s). Demotion proposal queued for operator "
             "review.",
             pattern_id, self._current_turn_id, pattern.intent_class,
@@ -5248,12 +5309,16 @@ class Dispatcher:
         composed = getattr(agent, "_composed_prompt", None)
         sections = sorted((getattr(composed, "sections", None) or {}).keys())
         decision = self._current_turn_routing_decision
+        t0_pattern = getattr(self, "_current_turn_t0_pattern", None)
         return {
             "session_id": self.session_id or getattr(agent, "session_id", None),
             "turn_id": self._current_turn_id,
             "turn_uid": self._current_turn_uid,
-            "tier": getattr(decision, "tier", None) or getattr(agent, "_tier_name", None),
-            "model": getattr(agent, "model", None),
+            "tier": "T0" if t0_pattern else (
+                getattr(decision, "tier", None) or getattr(agent, "_tier_name", None)
+            ),
+            "model": "pattern_cache" if t0_pattern else getattr(agent, "model", None),
+            "t0_pattern": t0_pattern,
             "cellar_hits": int(getattr(agent, "_cellar_retrieval_hits", 0) or 0),
             "sections": sections,
             "tools_yielded": list(self._current_turn_tools_yielded),

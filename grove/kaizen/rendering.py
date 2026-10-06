@@ -122,7 +122,8 @@ def _diff_keg(proposal: RoutingProposal) -> Dict[str, Any]:
             "dock_goal": keg.get("dock_goal", "?"),
             "does_not_cover": keg.get("reserve", "?"),
             "rules": [
-                {"if": c.get("if"), "then": c.get("then")}
+                {"if": c.get("if"), "defer": True} if c.get("defer")
+                else {"if": c.get("if"), "then": c.get("then")}
                 for c in keg.get("conditions") or []
             ],
         },

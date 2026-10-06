@@ -107,6 +107,20 @@ class EvidenceRule:
 
 
 @dataclass(frozen=True)
+class KegDeclaration:
+    """The standard work this goal's decisions may compile into: its name, the
+    operator request it answers (the T0 trigger), its GRV-004 scope and
+    authority level, and the tiers Kaizen may use to draft a revision, cheapest
+    first — a draft that fails its checks is retried one tier up, never
+    guessed at."""
+    name: str
+    request: str
+    scope: str = "reserved"
+    authority_level: str = "green"
+    revision_tiers: Tuple[str, ...] = ("T1", "T2")
+
+
+@dataclass(frozen=True)
 class DecisionWorkConfig:
     goal_id: str
     tool: str
@@ -118,6 +132,7 @@ class DecisionWorkConfig:
     evidence: Optional[EvidenceRule]
     isolation: Optional[str]
     sources: Tuple[Path, ...] = field(default_factory=tuple)
+    keg: Optional[KegDeclaration] = None
 
     @property
     def isolated(self) -> bool:
@@ -196,6 +211,24 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
     if isolation not in (None, ISOLATION_SOURCES_ONLY):
         raise ValueError(f"goal {goal.id!r}: unknown isolation {isolation!r}")
 
+    keg = None
+    keg_raw = raw.get("keg")
+    if keg_raw is not None:
+        if reference is None or evidence is None:
+            raise ValueError(
+                f"goal {goal.id!r}: a keg needs a reference_table and an evidence rule"
+            )
+        tiers = keg_raw.get("revision_tiers") or ("T1", "T2")
+        if not isinstance(tiers, (list, tuple)) or not all(isinstance(t, str) for t in tiers):
+            raise ValueError(f"goal {goal.id!r}: keg revision_tiers must be a list of tier names")
+        keg = KegDeclaration(
+            name=str(_need(keg_raw, "name", "keg")),
+            request=str(_need(keg_raw, "request", "keg")),
+            scope=str(keg_raw.get("scope", "reserved")),
+            authority_level=str(keg_raw.get("authority_level", "green")),
+            revision_tiers=tuple(tiers),
+        )
+
     resolved = getattr(goal, "resolved_sources", None)
     return DecisionWorkConfig(
         goal_id=str(goal.id),
@@ -208,6 +241,7 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         evidence=evidence,
         isolation=isolation,
         sources=tuple(resolved()) if callable(resolved) else (),
+        keg=keg,
     )
 
 
@@ -410,6 +444,9 @@ class DecisionWork:
     def __init__(self, config: DecisionWorkConfig, *, log: Optional[DecisionLog] = None) -> None:
         self.config = config
         self.log = log or DecisionLog(config.goal_id)
+        # What Jidoka did about the most recent decision (andon events raised).
+        self.last_observations: List[Dict[str, Any]] = []
+        self.last_observation_error: Optional[str] = None
 
     # -- reading ----------------------------------------------------------
 
@@ -584,7 +621,7 @@ class DecisionWork:
         else:
             final = dict(waiting["output"])
         prov = dict(provenance or {})
-        return self.log.append({
+        decided = self.log.append({
             "kind": KIND_DECIDED,
             "run_id": waiting["run_id"],
             "ref": waiting["id"],
@@ -595,6 +632,70 @@ class DecisionWork:
             "turn_id": prov.get("turn_id"),
             "turn_uid": prov.get("turn_uid"),
         })
+        # Jidoka observes the feed write. The decision is already on record;
+        # a watcher fault is logged loud and kept for the caller to report,
+        # and never un-records what the operator decided.
+        self.last_observations = []
+        self.last_observation_error = None
+        try:
+            from grove import jidoka
+            self.last_observations = jidoka.observe_decision(self, waiting, decided)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+            logging.getLogger(__name__).error(
+                "[decision_work] Jidoka could not observe decision %s for %s: %r",
+                decided.get("id"), self.config.goal_id, exc,
+            )
+            self.last_observation_error = f"{type(exc).__name__}: {exc}"
+        return decided
+
+    def history(self) -> List[Dict[str, Any]]:
+        """This run's decided items as replay cases: what standard work served
+        at the time, what the operator settled on, and whether a keg served
+        it. Kaizen backtests a drafted keg over this."""
+        proposed, decided = self._state()
+        label_key = self.config.reference.key_input if self.config.reference else None
+        cases = []
+        for record in proposed.values():
+            verdict = decided.get(record["id"])
+            if verdict is None:
+                continue
+            inputs = dict(record.get("inputs") or {})
+            cases.append({
+                "ref": record["item_id"],
+                "label": str(inputs.get(label_key, "")) if label_key else "",
+                "inputs": inputs,
+                "served": dict(record["output"]),
+                "confirmed": dict(verdict["output"]),
+                "served_by_keg": bool(record.get("keg")),
+                "decision": verdict["decision"],
+                "turn_id": record.get("turn_id"),
+            })
+        return cases
+
+    def apply_keg(
+        self,
+        spec: Mapping[str, Any],
+        *,
+        item_id: str,
+        inputs: Mapping[str, Any],
+        keg_ref: Mapping[str, Any],
+        provenance: Optional[Mapping[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Decide the next item with a keg — no model. Returns the proposed
+        record, or None when the keg does not answer this item (no rule
+        matches, or the matching rule defers); the caller then hands the item
+        back to the interpreter. The same turn checks apply as for a model."""
+        from grove import keg as keg_mod
+
+        output = keg_mod.evaluate(spec, inputs)
+        if output is None:
+            return None
+        return self.record(
+            item_id=item_id, inputs=inputs, output=output,
+            reasoning=f"keg {keg_ref.get('name')} v{keg_ref.get('version')}",
+            provenance=provenance, keg=keg_ref,
+        )
 
     # -- Jidoka's evidence ------------------------------------------------
 

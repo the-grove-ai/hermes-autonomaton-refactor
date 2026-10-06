@@ -1880,7 +1880,8 @@ def _sign_keg(
     for other in store.all():
         if other.pattern_id == pattern_id:
             continue
-        if (keg_mod.keg_record(other).get("keg") or {}).get("slug") != slug:
+        other_keg = keg_mod.keg_record(other).get("keg") or {}
+        if other_keg.get("slug") != slug or other_keg.get("lineage") != keg.get("lineage"):
             continue
         if other.status in (STATUS_ACTIVE, STATUS_HALTED):
             store.set_status(other.pattern_id, STATUS_SUPERSEDED)
@@ -1944,11 +1945,36 @@ def _keg_feedback(proposal: RoutingProposal, reason: Optional[str]) -> None:
         "reason": (reason or "").strip(),
     }
     store.set_promotion_evidence(pattern_id, json.dumps(record, sort_keys=True))
+    # The feedback goes back to Kaizen now: it revises the draft with the
+    # operator's reason and proposes again, answering the SAME andon event.
+    # Best-effort — the rejection itself is already recorded.
+    try:
+        from grove.decision_work import DecisionWork, config_for_goal
+        from grove.kaizen import standard_work
+
+        if not (reason or "").strip() or not keg.get("dock_goal"):
+            return
+        work = DecisionWork(config_for_goal(str(keg["dock_goal"])))
+        outcome = standard_work.answer(work, {
+            "andon_id": keg.get("andon_id"), "flag": keg.get("flag"),
+            "summary": keg.get("flag_detail"), "provenance": [], "details": {},
+        }, store=store)
+        logger.info(
+            "[flywheel] Kaizen answered feedback on %s: %s (%s)",
+            keg.get("name"), outcome.get("status"), outcome.get("detail"),
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "[flywheel] Kaizen could not revise %s from feedback: %r",
+            keg.get("name"), exc,
+        )
 
 
-def keg_feedback_history(name: str, *, store: Any = None) -> List[str]:
-    """Every reason the operator gave when sending back a draft of this keg,
-    oldest first — what Kaizen reads before it revises."""
+def keg_feedback_history(
+    name: str, *, lineage: Optional[str] = None, store: Any = None,
+) -> List[str]:
+    """Every reason the operator gave when sending back a draft of this keg
+    in this lineage, oldest first — what Kaizen reads before it revises."""
     from grove import keg as keg_mod
     from grove.pattern_cache import PatternCacheStore
 
@@ -1956,7 +1982,8 @@ def keg_feedback_history(name: str, *, store: Any = None) -> List[str]:
     reasons: List[Tuple[str, str]] = []
     for entry in (store or PatternCacheStore()).all():
         record = keg_mod.keg_record(entry)
-        if (record.get("keg") or {}).get("slug") != slug:
+        entry_keg = record.get("keg") or {}
+        if entry_keg.get("slug") != slug or entry_keg.get("lineage") != lineage:
             continue
         rejected = record.get("rejected") or {}
         if rejected.get("reason"):

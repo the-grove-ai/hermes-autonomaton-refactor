@@ -1122,10 +1122,11 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
                     else "" if c.agrees_with_confirmed is None
                     else " (conflicts with your confirmation)"
                 )
-                text = (
-                    f"{_keg_outputs_text(c.served)} → "
-                    f"{_keg_outputs_text(c.keg)}{verdict}"
+                after = (
+                    _keg_outputs_text(c.keg) if c.keg is not None
+                    else "handed back to the interpreter"
                 )
+                text = f"{_keg_outputs_text(c.served)} → {after}{verdict}"
             elif c.result == "not_covered":
                 text = "not covered — stays with the interpreter"
             else:
@@ -1149,7 +1150,12 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
         )
 
     rules = "".join(
-        f"<div>if {_esc(c.get('if'))} → {_esc(_keg_outputs_text(c.get('then')))}</div>"
+        f"<div>if {_esc(c.get('if'))} → "
+        + (
+            "hand back to the interpreter" if c.get("defer")
+            else _esc(_keg_outputs_text(c.get("then")))
+        )
+        + "</div>"
         for c in keg.get("conditions") or []
     )
     replaces = keg.get("supersedes")
