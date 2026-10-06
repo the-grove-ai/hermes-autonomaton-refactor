@@ -187,6 +187,15 @@ class KaizenLedger:
         # + evidence_count, and for applied the applied_result dict, for
         # rejected the optional reason.
         "kaizen_disposition",
+        # The improvement loop, named by role (grove/keg.py LOOP_*): Jidoka
+        # flags, the andon event carries the issue and its provenance, Kaizen
+        # proposes, and a signed proposal becomes new standard work. The
+        # expert's own step (signed / feedback) is the kaizen_disposition
+        # above, labeled with ``loop_step``.
+        "jidoka_flag",
+        "andon_event",
+        "kaizen_proposal",
+        "new_standard_work",
         # binding-governance-surfaces-v1 — a model_binding write through the
         # sanctioned CapabilityBindingWriter (capability_registry.
         # set_model_binding). The writer files this ITSELF on success

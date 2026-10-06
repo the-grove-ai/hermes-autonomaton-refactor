@@ -65,6 +65,7 @@ from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_MODEL_BINDING,
     compute_proposal_id,
     file_agentless,
+    PROPOSAL_TYPE_PATTERN_PROMOTION,
 )
 from grove.flywheel_cli import (
     _handler_for,
@@ -98,6 +99,22 @@ _SCOPE_DEFINING_REFUSED_TYPES = frozenset({
     PROPOSAL_TYPE_DOCK_GOAL_STATUS,
     PROPOSAL_TYPE_DOCK_DETACH,
 })
+
+
+def _is_scope_defining_proposal(proposal) -> bool:
+    """Whether approving ``proposal`` is a scope-defining act the portal gates.
+
+    The six types above are scope-defining by TYPE. A keg grant is the seventh
+    case, decided by content: a ``pattern_promotion`` that carries a keg is the
+    operator signing new standard work, so it takes the same gate — the demo
+    stamp while ``portal.demo_tokenless_approve`` is on, a signed operator
+    grant token once it is off. An ordinary cached-pattern promotion (no keg)
+    is unchanged. The agent tool refuses keg proposals by its own check."""
+    if proposal.type in _SCOPE_DEFINING_REFUSED_TYPES:
+        return True
+    return proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION and bool(
+        (proposal.payload or {}).get("keg")
+    )
 
 
 def _demo_tokenless_approve() -> bool:
@@ -348,8 +365,9 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
         # unforgeably. reject/dismiss for these types are UNCHANGED this sprint
         # (they write no scope-defining file — approve is the gated verb).
         grant = None
+        scope_defining = _is_scope_defining_proposal(proposal)
         demo_tokenless = (
-            proposal.type in _SCOPE_DEFINING_REFUSED_TYPES
+            scope_defining
             and not token
             and _demo_tokenless_approve()
         )
@@ -359,7 +377,7 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
                 "— portal.demo_tokenless_approve is not false; no operator grant token",
                 proposal.type, proposal.proposal_id,
             )
-        elif proposal.type in _SCOPE_DEFINING_REFUSED_TYPES:
+        elif scope_defining:
             from grove.gate import GrantVerificationError, verify_grant_token
             from grove.red_pending_store import get_red_pending_store
 
@@ -585,6 +603,16 @@ async def _apply_routing(proposal, action: str, full_id: str, short_id: str,
             logger.warning(
                 "[portal.actions] reject_callback failed for %s %s: %r — "
                 "proceeding with dequeue",
+                proposal.type, proposal.proposal_id, cb_exc,
+            )
+    if reject_handler is not None and reject_handler.feedback_callback is not None:
+        try:
+            reject_handler.feedback_callback(proposal, reason)
+        except Exception as cb_exc:  # noqa: BLE001 — dequeue must still succeed
+            logger.warning(
+                "[portal.actions] feedback_callback failed for %s %s: %r — "
+                "proceeding with dequeue (the reason is still on the "
+                "disposition event)",
                 proposal.type, proposal.proposal_id, cb_exc,
             )
     proposal_queue.remove(proposal.proposal_id)

@@ -445,9 +445,16 @@ class RoutingProposal:
     @property
     def requires_portal_review(self) -> bool:
         """Consolidation (policy-graduation) proposals review in the portal, not
-        in chat (portal-reader-contract-fix-v1). Routing/zone/skill/pattern and
-        dock-mutation proposals keep their in-chat approve/dismiss affordance."""
-        return self.type == PROPOSAL_TYPE_CONSOLIDATION
+        in chat (portal-reader-contract-fix-v1), and so does a keg proposal.
+        Routing/zone/skill, ordinary cached-pattern and dock-mutation proposals
+        keep their in-chat approve/dismiss affordance."""
+        if self.type == PROPOSAL_TYPE_CONSOLIDATION:
+            return True
+        # A keg grant is the operator's signature on new standard work: it is
+        # signed in the portal, where the backtest is on screen, never in chat.
+        return self.type == PROPOSAL_TYPE_PATTERN_PROMOTION and bool(
+            (self.payload or {}).get("keg")
+        )
 
     @property
     def offers_approve(self) -> bool:

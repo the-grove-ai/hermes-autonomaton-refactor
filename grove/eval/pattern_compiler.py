@@ -402,7 +402,13 @@ def propose_pattern_promotions(
 
     cfg = config or load_pattern_cache_config()
     candidates = scan_candidates(store, cfg)
-    known = {p.pattern_id for p in pattern_store.all()}  # compiled / active / rejected
+    # compiled / active / rejected. A keg's pattern_id is not its t0_key, so
+    # match on both: a request a keg already answers is never also compiled as a
+    # plain replay of one cached tool call.
+    known = set()
+    for p in pattern_store.all():
+        known.add(p.pattern_id)
+        known.add(p.t0_key)
     now = now_iso or datetime.now(timezone.utc).isoformat()
     # Fetch the evidence once and index by turn id so the per-candidate
     # disposition and the compile read the SAME records.
@@ -497,3 +503,292 @@ def propose_pattern_promotions(
             ))
 
     return PromotionResult(dispositions=tuple(dispositions))
+
+
+# ── keg proposals (GRV-004 executable kegs on the T0 cache) ───────────
+#
+# Kaizen's half of the improvement loop. Jidoka flags (a tier-down pattern or
+# an anomaly) and pulls the andon cord; the caller hands that flag here with
+# the drafted rules and the history to replay. This writes the DRAFT cache
+# entry (suspended — a draft never serves) and queues the proposal. It never
+# activates anything: only the operator's signature does.
+
+BACKTEST_UNCHANGED = "unchanged"
+BACKTEST_WOULD_CHANGE = "would_change"
+BACKTEST_NOT_COVERED = "not_covered"
+_BACKTEST_ORDER = {BACKTEST_WOULD_CHANGE: 0, BACKTEST_NOT_COVERED: 1, BACKTEST_UNCHANGED: 2}
+
+DISPOSITION_DROPPED_BACKTEST_CONFLICT = "dropped_backtest_conflict"
+
+
+@dataclass(frozen=True)
+class KegProposalResult:
+    """What happened to one drafted keg: proposed, skipped because the
+    identical keg is already known, or dropped because its replay contradicts
+    a coding the operator confirmed."""
+    status: str
+    detail: str
+    pattern_id: str
+    version: int
+    proposal_id: Optional[str] = None
+    backtest: Optional[Dict[str, Any]] = None
+
+
+def backtest_keg(spec: Dict[str, Any], history: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Replay ``spec`` over ``history`` and return the backtest envelope.
+
+    Each history case is ``{"ref", "label", "inputs", "served", "confirmed"}``:
+    ``served`` is what standard work produced at the time, ``confirmed`` is the
+    operator's ground truth for that case (None when never confirmed). A case is
+
+    * ``unchanged`` — the keg answers exactly what was served;
+    * ``would_change`` — the keg answers differently (``agrees_with_confirmed``
+      says whether the new answer matches the operator's ground truth);
+    * ``not_covered`` — the keg does not answer it; it stays with the
+      interpreter, so nothing changes for it either.
+
+    Cases come back changed-first, so a reviewer reads the edge cases before
+    the routine ones."""
+    from grove.keg import evaluate
+
+    cases: List[Dict[str, Any]] = []
+    for index, case in enumerate(history):
+        served = dict(case.get("served") or {})
+        confirmed = case.get("confirmed")
+        answer = evaluate(spec, case.get("inputs") or {})
+        if answer is None:
+            result, agrees = BACKTEST_NOT_COVERED, None
+        else:
+            same = all(answer.get(k) == served.get(k) for k in answer)
+            result = BACKTEST_UNCHANGED if same else BACKTEST_WOULD_CHANGE
+            agrees = None if confirmed is None else all(
+                answer.get(k) == confirmed.get(k) for k in answer
+            )
+        cases.append({
+            "ref": str(case.get("ref") or ""),
+            "label": str(case.get("label") or ""),
+            "inputs": dict(case.get("inputs") or {}),
+            "served": served,
+            "confirmed": None if confirmed is None else dict(confirmed),
+            "keg": answer,
+            "result": result,
+            "agrees_with_confirmed": agrees,
+            "_order": index,
+        })
+    cases.sort(key=lambda c: (_BACKTEST_ORDER[c["result"]], c["_order"]))
+    for c in cases:
+        del c["_order"]
+    counts = collections.Counter(c["result"] for c in cases)
+    return {
+        "kind": "keg_backtest",
+        "replayed": len(cases),
+        # "not covered" changes nothing: the interpreter keeps that work.
+        "unchanged": counts[BACKTEST_UNCHANGED] + counts[BACKTEST_NOT_COVERED],
+        "would_change": counts[BACKTEST_WOULD_CHANGE],
+        "not_covered": counts[BACKTEST_NOT_COVERED],
+        "cases": cases,
+    }
+
+
+def propose_keg(
+    pattern_store: Any,
+    *,
+    name: str,
+    request: str,
+    intent_class: str,
+    tool_name: str,
+    tool_args: Optional[Dict[str, Any]] = None,
+    inputs: Dict[str, Any],
+    outputs: Dict[str, Any],
+    conditions: List[Dict[str, Any]],
+    scope_text: str,
+    reserve: str,
+    dock_goal: str,
+    scope: str,
+    authority_level: str,
+    flag: str,
+    flag_detail: str,
+    evidence_turn_ids: Any,
+    history: List[Dict[str, Any]],
+    feedback: Optional[List[str]] = None,
+    queue_path: Optional[Path] = None,
+    ledger: Any = None,
+    now_iso: Optional[str] = None,
+) -> KegProposalResult:
+    """Draft a keg, backtest it on history and propose it.
+
+    ``request`` is the operator request the keg answers (the T0 lookup key);
+    ``tool_name`` / ``tool_args`` are the model-free invocation that applies
+    the keg. The whole keg — scope, authority level and the rule table — rides
+    INSIDE that invocation's arguments, which the bind-and-verify signature
+    covers: what the operator signs is byte-for-byte what T0 runs.
+
+    Nothing here knows the domain. The field names, the rules, the scope and
+    authority level, the request and the tool all arrive from the caller, which
+    reads them from the Dock goal's config and its skill; a new kind of work is
+    a new goal and a new skill, not a change to this function.
+
+    ``flag`` is what Jidoka flagged (``tier_down_pattern`` or ``anomaly``).
+    The version is the next one after the last SIGNED version of this keg; a
+    draft the operator sent back does not consume a number.
+    """
+    from grove import keg as keg_mod
+    from grove.effect_signature import canonical_effect_signature
+    from grove.eval.proposal_queue import (
+        RoutingProposal,
+        PROPOSAL_TYPE_PATTERN_PROMOTION,
+        compute_proposal_id,
+        append as _queue_append,
+    )
+    from grove.intent_store import normalize_message_stem
+
+    if flag not in keg_mod.FLAGS:
+        raise ValueError(f"keg flag must be one of {keg_mod.FLAGS}, got {flag!r}")
+    evidence_ids = tuple(str(t) for t in evidence_turn_ids)
+    if not evidence_ids:
+        raise ValueError("a keg proposal needs evidence turn ids")
+    now = now_iso or datetime.now(timezone.utc).isoformat()
+    slug = keg_mod.keg_slug(name)
+
+    # Version lineage: the last signed version of this keg, if any.
+    prior_id: Optional[str] = None
+    prior_version = 0
+    for existing in pattern_store.all():
+        record = keg_mod.keg_record(existing).get("keg") or {}
+        if record.get("slug") != slug or not existing.promoted_at:
+            continue
+        if int(record.get("version") or 0) > prior_version:
+            prior_version, prior_id = int(record["version"]), existing.pattern_id
+    version = prior_version + 1
+
+    spec = {
+        "protocol": keg_mod.KEG_PROTOCOL,
+        "protocolVersion": keg_mod.KEG_PROTOCOL_VERSION,
+        "name": name,
+        "version": version,
+        "scope": scope,
+        "authority_level": authority_level,   # what it may do once granted
+        "dock_goal": dock_goal,
+        "reserve": reserve,
+        "trigger": {"request": request, "intent_class": intent_class},
+        "inputs": inputs,
+        "outputs": outputs,
+        "conditions": conditions,
+    }
+    keg_mod.validate_spec(spec)
+
+    digest = keg_mod.rules_digest(spec, evidence_ids)
+    pattern_id = f"keg:{slug}:v{version}:{digest[:12]}"
+    backtest = backtest_keg(spec, history)
+
+    def _result(status: str, detail: str, proposal_id: Optional[str] = None):
+        return KegProposalResult(
+            status=status, detail=detail, pattern_id=pattern_id, version=version,
+            proposal_id=proposal_id, backtest=backtest,
+        )
+
+    if pattern_store.get(pattern_id) is not None:
+        return _result(
+            DISPOSITION_SKIPPED_KNOWN,
+            "this exact keg (same rules, same evidence) was already drafted",
+        )
+    conflicts = [
+        c for c in backtest["cases"] if c["agrees_with_confirmed"] is False
+    ]
+    if conflicts:
+        # Kaizen never proposes an update that contradicts ground truth.
+        return _result(
+            DISPOSITION_DROPPED_BACKTEST_CONFLICT,
+            f"replay contradicts {len(conflicts)} confirmed case(s): "
+            + ", ".join(c["ref"] or c["label"] for c in conflicts),
+        )
+
+    args = dict(tool_args or {})
+    args["keg"] = spec
+    invocation = {
+        "tool": tool_name,
+        "args": args,
+        "approved_signature": canonical_effect_signature(tool_name, args),
+    }
+    key = t0_key(intent_class, normalize_message_stem(request))
+    record = {
+        "keg": {"name": name, "slug": slug, "version": version},
+        "repetition_count": len(evidence_ids),
+        "flag": flag,
+        "supersedes": prior_id,
+        "feedback": list(feedback or []),
+    }
+    pattern_store.upsert(CompiledPattern(
+        pattern_id=pattern_id,
+        t0_key=key,
+        intent_class=intent_class,
+        cacheable_type="executable",
+        cached_response=None,
+        compiled_invocation=json.dumps(invocation, sort_keys=True),
+        evidence_hash=_evidence_hash(evidence_ids),
+        status=STATUS_SUSPENDED,     # a draft never serves
+        created_at=now,
+        promotion_evidence=json.dumps(record, sort_keys=True),
+    ))
+
+    payload = {
+        "pattern_id": pattern_id,
+        "t0_key": key,
+        "intent_class": intent_class,
+        "cacheable_type": "executable",
+        "evidence_hash": _evidence_hash(evidence_ids),
+        "promotion_evidence": {"repetition_count": len(evidence_ids)},
+        "sample_queries": [request],
+        "keg": {
+            **spec,
+            "flag": flag,
+            "flag_detail": flag_detail,
+            "supersedes": prior_id,
+            "supersedes_version": prior_version or None,
+            "feedback": list(feedback or []),
+        },
+    }
+    proposal = RoutingProposal(
+        proposal_id=compute_proposal_id(
+            type=PROPOSAL_TYPE_PATTERN_PROMOTION, payload=payload,
+            evidence=evidence_ids,
+        ),
+        type=PROPOSAL_TYPE_PATTERN_PROMOTION,
+        payload=payload,
+        evidence=evidence_ids,
+        eval_hash=_synth_pattern_eval_hash(pattern_id),
+        created_at=now,
+        semantic_justification=scope_text,
+        proposer="kaizen",
+        detail=backtest,
+    )
+    if not _queue_append(proposal, path=queue_path):
+        return _result(
+            DISPOSITION_SKIPPED_KNOWN,
+            "an identical proposal is already in the queue",
+            proposal_id=proposal.proposal_id,
+        )
+    if ledger is None:
+        from grove.kaizen_ledger import KaizenLedger
+        ledger = KaizenLedger(
+            "kaizen-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        )
+    ledger.record(
+        keg_mod.LOOP_KAIZEN_PROPOSAL,
+        loop_step=keg_mod.LOOP_KAIZEN_PROPOSAL,
+        proposal_id=proposal.proposal_id,
+        pattern_id=pattern_id,
+        keg=name,
+        version=version,
+        flag=flag,
+        supersedes=prior_id,
+        dock_goal=dock_goal,
+        replayed=backtest["replayed"],
+        unchanged=backtest["unchanged"],
+        would_change=backtest["would_change"],
+        evidence_count=len(evidence_ids),
+    )
+    return _result(
+        DISPOSITION_PROPOSED, "queued for operator signature",
+        proposal_id=proposal.proposal_id,
+    )

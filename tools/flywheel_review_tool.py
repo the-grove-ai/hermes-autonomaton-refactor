@@ -487,6 +487,23 @@ def approve_proposal(
                 },
                 ensure_ascii=False,
             )
+        # A keg grant is signed in the portal, where its backtest is on
+        # screen — never from chat. (Scoped to keg proposals; other
+        # portal-review types keep their existing chat behavior.)
+        if _resolved.requires_portal_review and (_resolved.payload or {}).get("keg"):
+            return json.dumps(
+                {
+                    "success": False,
+                    "proposal_id": pid,
+                    "kind": "routing",
+                    "error": (
+                        "This is a keg proposal — it is signed in the Operator "
+                        "Portal (Proposals), not in chat. The agent tool cannot "
+                        "apply it."
+                    ),
+                },
+                ensure_ascii=False,
+            )
         rc, message = _capture(
             lambda: flywheel_cli.cli_approve(
                 pid, queue_path=queue_path, machine_path=machine_path,

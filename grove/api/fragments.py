@@ -1072,6 +1072,141 @@ def _fault_triage_card_html(p: dict, view: "_RenderView",
     )
 
 
+def _keg_outputs_text(outputs) -> str:
+    if not outputs:
+        return "—"
+    return ", ".join(f"{k} {v}" for k, v in outputs.items())
+
+
+def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str:
+    """The keg proposal card — Kaizen's step in the improvement loop, laid out
+    for the operator's signature. Order is the review order: what Jidoka
+    flagged, what the keg covers and does NOT cover, the backtest (changed
+    cases first), the rule table, then GRV-004 classification and evidence.
+    Deterministic over the structured payload + the ``detail`` backtest
+    envelope; no inference and no writes from this path. A malformed backtest
+    is shown AS malformed and the card offers no Approve — the operator never
+    signs standard work whose replay cannot be read."""
+    from grove import keg as keg_mod
+    from grove.kaizen import rendering as kaizen_rendering
+
+    keg = view.payload.get("keg") or {}
+    name = keg.get("name") or "keg"
+    version = keg.get("version", "?")
+    flag = keg.get("flag")
+    flag_label = {
+        keg_mod.FLAG_TIER_DOWN_PATTERN: "tier-down pattern",
+        keg_mod.FLAG_ANOMALY: "anomaly",
+    }.get(flag, str(flag or "?"))
+
+    backtest = None
+    backtest_error = ""
+    try:
+        backtest = kaizen_rendering.decode_detail(view)
+    except ValueError as exc:
+        backtest_error = repr(exc)
+        logger.warning("[portal] keg backtest malformed for %s: %r", pid, exc)
+
+    if backtest is None:
+        backtest_html = (
+            '<div class="meta error">Backtest unreadable — this proposal '
+            'cannot be signed.'
+            + (f' {_esc(backtest_error)}' if backtest_error else '')
+            + '</div>'
+        )
+    else:
+        def _case_row(c) -> str:
+            if c.result == "would_change":
+                verdict = (
+                    " (matches your correction)" if c.agrees_with_confirmed
+                    else "" if c.agrees_with_confirmed is None
+                    else " (conflicts with your confirmation)"
+                )
+                text = (
+                    f"{_keg_outputs_text(c.served)} → "
+                    f"{_keg_outputs_text(c.keg)}{verdict}"
+                )
+            elif c.result == "not_covered":
+                text = "not covered — stays with the interpreter"
+            else:
+                text = f"{_keg_outputs_text(c.served)} (unchanged)"
+            return f"<div>{_esc(c.ref)} · {_esc(c.label)} · {_esc(text)}</div>"
+
+        changed = [c for c in backtest.cases if c.result == "would_change"]
+        rest = [c for c in backtest.cases if c.result != "would_change"]
+        changed_html = (
+            '<div class="keg-changed">' + "".join(_case_row(c) for c in changed)
+            + '</div>'
+        ) if changed else ""
+        rest_html = (
+            f'<details class="card-evidence"><summary>unchanged cases '
+            f'({len(rest)})</summary>{"".join(_case_row(c) for c in rest)}'
+            f'</details>'
+        ) if rest else ""
+        backtest_html = (
+            f'<p><strong>{_esc(backtest.headline)}</strong></p>'
+            f'{changed_html}{rest_html}'
+        )
+
+    rules = "".join(
+        f"<div>if {_esc(c.get('if'))} → {_esc(_keg_outputs_text(c.get('then')))}</div>"
+        for c in keg.get("conditions") or []
+    )
+    replaces = keg.get("supersedes")
+    feedback = [f for f in (keg.get("feedback") or []) if f]
+    feedback_html = (
+        '<div class="meta">Revised after your feedback: '
+        + _esc(" · ".join(feedback)) + '</div>'
+    ) if feedback else ""
+    evidence = "".join(f"<div>{_esc(t)}</div>" for t in view.evidence)
+
+    approve = (
+        f'<button class="btn btn-approve" '
+        f'hx-post="/portal/actions/proposals/{_esc(pid)}/approve" '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML" '
+        f'hx-confirm="Sign {_esc(name)} v{_esc(version)} as standard work?">'
+        f'Sign</button>'
+    ) if backtest is not None else ""
+    actions = (
+        f'<div class="proposal-actions">{approve}'
+        f'<input type="text" name="reason" id="keg-feedback-{short_id}" '
+        f'style="flex:1;min-width:16rem" placeholder="Feedback for Kaizen (optional)">'
+        f'<button class="btn btn-reject" '
+        f'hx-post="/portal/actions/proposals/{_esc(pid)}/reject" '
+        f'hx-include="#keg-feedback-{short_id}" '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML">'
+        f'Send feedback</button></div>'
+    )
+    return (
+        f'<div class="card" id="proposal-{short_id}">'
+        f'<h4><span class="badge">Kaizen proposal</span> '
+        f'{_esc(name)} · v{_esc(version)} '
+        f'<span class="badge badge-yellow">draft</span></h4>'
+        f'<div class="meta">Jidoka flag: {_esc(flag_label)}'
+        + (f' — {_esc(keg.get("flag_detail"))}' if keg.get("flag_detail") else '')
+        + '</div>'
+        + (
+            f'<div class="meta">Replaces v{_esc(keg.get("supersedes_version") or "?")} '
+            f'({_esc(replaces)})</div>' if replaces else ''
+        )
+        + feedback_html
+        + f'<p>{_esc(view.semantic_justification)}</p>'
+        f'<p>Does not cover: {_esc(keg.get("reserve"))}</p>'
+        f'{backtest_html}'
+        f'<details class="card-evidence" open><summary>rules '
+        f'({len(keg.get("conditions") or [])})</summary>{rules}</details>'
+        f'<div class="meta">GRV-004 keg · scope {_esc(keg.get("scope"))} · '
+        f'authority {_esc(keg.get("authority_level"))} · '
+        f'standard work for {_esc(keg.get("dock_goal"))} · serves at T0 once '
+        f'signed</div>'
+        f'<details class="card-evidence"><summary>evidence '
+        f'({len(view.evidence)})</summary>{evidence}</details>'
+        f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
+        f'{actions}'
+        f'</div>'
+    )
+
+
 def _proposal_card_html(request: web.Request, p: dict) -> str:
     """Render ONE routing/kaizen proposal card — RED bespoke or generic. Shared by
     the flat feed and the grouped-by-proposer view (proposal-proposer-attribution-v1
@@ -1102,6 +1237,7 @@ def _proposal_card_html(request: web.Request, p: dict) -> str:
 
     from grove.eval.proposal_queue import (
         PROPOSAL_TYPE_FAULT_TRIAGE,
+        PROPOSAL_TYPE_PATTERN_PROMOTION,
         PROPOSAL_VERBS,
     )
     from grove.kaizen import rendering as kaizen_rendering
@@ -1111,6 +1247,10 @@ def _proposal_card_html(request: web.Request, p: dict) -> str:
     # composition (samples from the Phase 2 detail envelope).
     if ptype == PROPOSAL_TYPE_FAULT_TRIAGE:
         return _fault_triage_card_html(p, view, pid, short_id)
+    # A keg proposal has its own review order (flag → scope → backtest →
+    # rules); an ordinary cached-pattern promotion keeps the generic card.
+    if ptype == PROPOSAL_TYPE_PATTERN_PROMOTION and view.payload.get("keg"):
+        return _keg_card_html(p, view, pid, short_id)
 
     offers_approve = _type_offers_approve(ptype)
     if offers_approve:

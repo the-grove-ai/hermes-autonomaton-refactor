@@ -36,6 +36,10 @@ STATUS_ACTIVE = "active"
 STATUS_SUSPENDED = "suspended"   # compiled, not yet operator-approved
 STATUS_DEMOTED = "demoted"       # was active, demoted back to T1
 STATUS_REJECTED = "rejected"     # operator rejected — never re-propose
+# Keg states (grove/keg.py maps every status onto GRV-004's lifecycle). Only
+# STATUS_ACTIVE serves, so neither of these is ever returned by ``get_active``.
+STATUS_HALTED = "halted"         # signed keg stopped after a miss; grant stands
+STATUS_SUPERSEDED = "superseded" # signed keg version replaced by a later one
 
 # Small, unambiguous contraction expansions. Each preserves meaning exactly —
 # no abbreviation guessing ("fav" → "favorite" is intentionally NOT here).
@@ -290,6 +294,16 @@ class PatternCacheStore:
                     "UPDATE t0_patterns SET status = ? WHERE pattern_id = ?",
                     (status, pattern_id),
                 )
+            return cur.rowcount > 0
+
+    def set_promotion_evidence(self, pattern_id: str, promotion_evidence: str) -> bool:
+        """Replace the entry's ``promotion_evidence`` JSON (a keg keeps its
+        version lineage, signer and operator feedback there)."""
+        with self._connect() as con:
+            cur = con.execute(
+                "UPDATE t0_patterns SET promotion_evidence = ? WHERE pattern_id = ?",
+                (promotion_evidence, pattern_id),
+            )
             return cur.rowcount > 0
 
     @staticmethod

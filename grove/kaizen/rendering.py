@@ -37,6 +37,7 @@ from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_ROUTING_ADJUSTMENT,
     PROPOSAL_VERBS,
     RoutingProposal,
+    PROPOSAL_TYPE_PATTERN_PROMOTION,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,7 +105,33 @@ def _diff_pattern_demotion(proposal: RoutingProposal) -> Dict[str, Any]:
     }
 
 
+def _diff_keg(proposal: RoutingProposal) -> Dict[str, Any]:
+    # A keg proposal's "diff" is the standard work the operator would sign:
+    # the version step, its GRV-004 classification and the rule table.
+    keg = proposal.payload.get("keg") or {}
+    version = keg.get("version", "?")
+    return {
+        "keg": {
+            "name": keg.get("name", "?"),
+            "version": f"v{version}" + (
+                f" (replaces {keg['supersedes']})" if keg.get("supersedes") else ""
+            ),
+            "tier": "T0 (deterministic; no model call)",
+            "scope": keg.get("scope", "?"),
+            "authority_level": keg.get("authority_level", "?"),
+            "dock_goal": keg.get("dock_goal", "?"),
+            "does_not_cover": keg.get("reserve", "?"),
+            "rules": [
+                {"if": c.get("if"), "then": c.get("then")}
+                for c in keg.get("conditions") or []
+            ],
+        },
+    }
+
+
 def _diff_pattern_promotion(proposal: RoutingProposal) -> Dict[str, Any]:
+    if proposal.payload.get("keg"):
+        return _diff_keg(proposal)
     # Sprint 48 — the "diff" is retiring a stable pattern to the
     # deterministic T0 cache (the compiled entry already exists,
     # suspended, in pattern_cache.db; approve flips it to active).
@@ -172,6 +199,13 @@ def _summary_routing_adjustment(proposal: RoutingProposal) -> str:
 
 
 def _summary_pattern_promotion(proposal: RoutingProposal) -> str:
+    keg = proposal.payload.get("keg")
+    if keg:
+        rules = len(keg.get("conditions") or [])
+        return (
+            f"keg “{keg.get('name', '?')}” v{keg.get('version', '?')} — "
+            f"{rules} rule{'' if rules == 1 else 's'}, serves at T0 once signed"
+        )
     ic = proposal.payload.get("intent_class", "?")
     ct = proposal.payload.get("cacheable_type", "?")
     samples = proposal.payload.get("sample_queries") or []
@@ -1049,3 +1083,80 @@ def decode_detail(proposal: Any) -> Optional[Any]:
 
 
 register_detail_codec(PROPOSAL_TYPE_FAULT_TRIAGE, FaultTriageDetail.from_dict)
+
+
+@dataclass(frozen=True)
+class KegBacktestCase:
+    """One replayed history case. ``result`` is unchanged / would_change /
+    not_covered; ``agrees_with_confirmed`` is None when the operator never
+    confirmed that case."""
+
+    ref: str
+    label: str
+    served: Dict[str, Any]
+    confirmed: Optional[Dict[str, Any]]
+    keg: Optional[Dict[str, Any]]
+    result: str
+    agrees_with_confirmed: Optional[bool]
+
+
+_KEG_BACKTEST_RESULTS = ("would_change", "not_covered", "unchanged")
+
+
+@dataclass(frozen=True)
+class KegBacktestDetail:
+    """The keg backtest envelope (built by ``pattern_compiler.backtest_keg``):
+    Kaizen's replay of the drafted keg over history, changed cases first."""
+
+    replayed: int
+    unchanged: int
+    would_change: int
+    not_covered: int
+    cases: List[KegBacktestCase]
+
+    @property
+    def headline(self) -> str:
+        return (
+            f"Replayed on history: {self.unchanged} unchanged · "
+            f"{self.would_change} would change"
+        )
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "KegBacktestDetail":
+        if not isinstance(data, dict) or data.get("kind") != "keg_backtest":
+            raise ValueError("keg backtest detail must be a 'keg_backtest' dict")
+        raw = data.get("cases")
+        if not isinstance(raw, list):
+            raise ValueError("keg backtest detail has no 'cases' list")
+        cases = []
+        for c in raw:
+            if not isinstance(c, dict) or c.get("result") not in _KEG_BACKTEST_RESULTS:
+                raise ValueError(f"keg backtest case is malformed: {c!r}")
+            cases.append(KegBacktestCase(
+                ref=str(c.get("ref") or ""),
+                label=str(c.get("label") or ""),
+                served=dict(c.get("served") or {}),
+                confirmed=(
+                    None if c.get("confirmed") is None else dict(c["confirmed"])
+                ),
+                keg=None if c.get("keg") is None else dict(c["keg"]),
+                result=c["result"],
+                agrees_with_confirmed=c.get("agrees_with_confirmed"),
+            ))
+        try:
+            return cls(
+                replayed=int(data["replayed"]),
+                unchanged=int(data["unchanged"]),
+                would_change=int(data["would_change"]),
+                not_covered=int(data.get("not_covered", 0)),
+                cases=cases,
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"keg backtest detail has bad counts: {exc!r}")
+
+
+def _decode_pattern_promotion_detail(data: Dict[str, Any]) -> Any:
+    return KegBacktestDetail.from_dict(data)
+
+
+register_detail_codec(PROPOSAL_TYPE_PATTERN_PROMOTION, _decode_pattern_promotion_detail)

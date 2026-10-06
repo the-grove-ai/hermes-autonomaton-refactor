@@ -26,7 +26,7 @@ import logging
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -1830,6 +1830,9 @@ def _approve_pattern_promotion(
         "cacheable_type=%s — now active at T0",
         pattern_id, intent_class, cacheable_type,
     )
+    keg = proposal.payload.get("keg")
+    if isinstance(keg, dict):
+        return _sign_keg(proposal, store, pattern_id, keg, now)
     applied = {
         "pattern_id": pattern_id,
         "sample_query": sample,
@@ -1854,6 +1857,111 @@ def _approve_pattern_promotion(
             f"Next matching query executes the tool model-free."
         )
     return label, applied
+
+
+def _sign_keg(
+    proposal: RoutingProposal, store: Any, pattern_id: str,
+    keg: Dict[str, Any], now: str,
+) -> Tuple[str, Dict[str, Any]]:
+    """The operator signed a keg: it is now standard work.
+
+    The entry is already active (the caller flipped it). This replaces the
+    version it supersedes — whether that one was serving or halted after a
+    miss — and writes who signed onto the entry. A halted keg's grant stood
+    until this ruling; the new version resumes serving."""
+    from grove import keg as keg_mod
+    from grove.pattern_cache import (
+        STATUS_ACTIVE, STATUS_HALTED, STATUS_SUPERSEDED,
+    )
+
+    slug = keg_mod.keg_slug(str(keg.get("name") or ""))
+    version = keg.get("version")
+    replaced: List[str] = []
+    for other in store.all():
+        if other.pattern_id == pattern_id:
+            continue
+        if (keg_mod.keg_record(other).get("keg") or {}).get("slug") != slug:
+            continue
+        if other.status in (STATUS_ACTIVE, STATUS_HALTED):
+            store.set_status(other.pattern_id, STATUS_SUPERSEDED)
+            replaced.append(other.pattern_id)
+    signed = store.get(pattern_id)
+    record = keg_mod.keg_record(signed)
+    record["signed"] = {
+        "by": "operator", "at": now, "proposal_id": proposal.proposal_id,
+    }
+    store.set_promotion_evidence(pattern_id, json.dumps(record, sort_keys=True))
+    logger.info(
+        "[flywheel] keg signed: %s v%s (pattern_id=%s, replaces=%s) — "
+        "standard work, serving at T0",
+        keg.get("name"), version, pattern_id, replaced or "nothing",
+    )
+    applied = {
+        "pattern_id": pattern_id,
+        "status": STATUS_ACTIVE,
+        "tier": "T0",
+        "effect": "covered requests resolve from T0 — no model call",
+        "new_standard_work": {
+            "keg": keg.get("name"),
+            "version": version,
+            "pattern_id": pattern_id,
+            "replaces": replaced,
+            "dock_goal": keg.get("dock_goal"),
+            "scope": keg.get("scope"),
+            "authority_level": keg.get("authority_level"),
+            "signed_by": "operator",
+            "signed_at": now,
+        },
+    }
+    label = (
+        f"keg “{keg.get('name')}” v{version} — standard work, serving at T0"
+        + (f" (replaces {', '.join(replaced)})" if replaced else "")
+    )
+    return label, applied
+
+
+def _keg_feedback(proposal: RoutingProposal, reason: Optional[str]) -> None:
+    """The operator sent a keg proposal back. Keep the reason on the drafted
+    entry so Kaizen revises WITH it: a rejection is feedback, not a block. The
+    rejected draft itself stays a tombstone — that exact keg is never proposed
+    again — while a revised keg is a new draft."""
+    keg = proposal.payload.get("keg")
+    pattern_id = proposal.payload.get("pattern_id")
+    if not isinstance(keg, dict) or not isinstance(pattern_id, str):
+        return
+    from datetime import datetime, timezone
+    from grove import keg as keg_mod
+    from grove.pattern_cache import PatternCacheStore
+
+    store = PatternCacheStore()
+    entry = store.get(pattern_id)
+    if entry is None:
+        return
+    record = keg_mod.keg_record(entry)
+    record["rejected"] = {
+        "at": datetime.now(timezone.utc).isoformat(),
+        "proposal_id": proposal.proposal_id,
+        "reason": (reason or "").strip(),
+    }
+    store.set_promotion_evidence(pattern_id, json.dumps(record, sort_keys=True))
+
+
+def keg_feedback_history(name: str, *, store: Any = None) -> List[str]:
+    """Every reason the operator gave when sending back a draft of this keg,
+    oldest first — what Kaizen reads before it revises."""
+    from grove import keg as keg_mod
+    from grove.pattern_cache import PatternCacheStore
+
+    slug = keg_mod.keg_slug(name)
+    reasons: List[Tuple[str, str]] = []
+    for entry in (store or PatternCacheStore()).all():
+        record = keg_mod.keg_record(entry)
+        if (record.get("keg") or {}).get("slug") != slug:
+            continue
+        rejected = record.get("rejected") or {}
+        if rejected.get("reason"):
+            reasons.append((str(rejected.get("at") or ""), rejected["reason"]))
+    return [reason for _at, reason in sorted(reasons)]
 
 
 def _approve_pattern_demotion(
@@ -2111,7 +2219,28 @@ def _record_kaizen_disposition(
     if extra:
         for key, value in extra.items():
             fields.setdefault(key, value)
+    # A keg proposal's disposition is the expert's step in the improvement
+    # loop: signed, or feedback back to Kaizen. A signature is then followed
+    # by its own event — the new version of standard work.
+    keg = (proposal.payload or {}).get("keg")
+    standard_work = None
+    if isinstance(keg, dict):
+        from grove import keg as keg_mod
+        fields["keg"] = keg.get("name")
+        fields["version"] = keg.get("version")
+        if disposition == "applied":
+            fields["loop_step"] = keg_mod.LOOP_SIGNED
+            standard_work = (applied_result or {}).get("new_standard_work")
+        elif disposition == "rejected":
+            fields["loop_step"] = keg_mod.LOOP_FEEDBACK
     ledger.record("kaizen_disposition", **fields)
+    if standard_work:
+        ledger.record(
+            keg_mod.LOOP_NEW_STANDARD_WORK,
+            loop_step=keg_mod.LOOP_NEW_STANDARD_WORK,
+            proposal_id=proposal.proposal_id,
+            **standard_work,
+        )
 
 
 def cli_approve(
@@ -2459,6 +2588,8 @@ def cli_reject(
         handler = None
     if handler is not None and handler.reject_callback is not None:
         handler.reject_callback(proposal)
+    if handler is not None and handler.feedback_callback is not None:
+        handler.feedback_callback(proposal, reason)
 
     target = queue_path or default_queue_path()
     removed = remove(proposal.proposal_id, path=target)
@@ -2513,6 +2644,9 @@ class ProposalHandler:
       ``cli_approve`` "Applied/Promoted/Demoted/Staged" line.
     * ``reject_callback`` — OPTIONAL pre-removal cleanup on reject (None for
       types whose reject is a plain queue removal).
+    * ``feedback_callback`` — OPTIONAL ``(proposal, reason)`` hook on reject,
+      for a type whose rejection reason goes back to its producer to revise
+      (a keg proposal). Runs after ``reject_callback``.
     * ``strict_gate`` — OPTIONAL ``--strict`` gate; return False to abort the
       approve (only skill_promotion declares one).
     * ``requires_source_patterns`` — B2 no-cluster-no-proposal gate. When True,
@@ -2527,6 +2661,9 @@ class ProposalHandler:
     apply_callback: Callable[..., Tuple[Any, Dict[str, Any]]]
     apply_label_prefix: str
     reject_callback: Optional[Callable[[RoutingProposal], None]] = None
+    feedback_callback: Optional[
+        Callable[[RoutingProposal, Optional[str]], None]
+    ] = None
     strict_gate: Optional[Callable[[RoutingProposal], bool]] = None
     requires_source_patterns: bool = False
 
@@ -2712,6 +2849,7 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
         apply_callback=_approve_pattern_promotion,
         apply_label_prefix="Promoted to T0: ",
         reject_callback=_reject_pattern_promotion,
+        feedback_callback=_keg_feedback,
     ),
     PROPOSAL_TYPE_PATTERN_DEMOTION: ProposalHandler(
         summary_renderer=_summary_pattern_demotion,
