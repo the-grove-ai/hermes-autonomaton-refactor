@@ -746,3 +746,11 @@ dl.model-detail dd { margin: 0.1rem 0 0; color: var(--text); }
 @media (max-width: 900px) {
     .disposition-dock { position: sticky; top: auto; bottom: 0; }
 }
+
+/* Audit page — figures in aligned columns. */
+.audit-table { width: 100%; border-collapse: collapse; margin: 0.5rem 0 0.75rem; font-size: 0.9rem; }
+.audit-table th, .audit-table td { text-align: left; padding: 0.3rem 0.6rem 0.3rem 0;
+    border-bottom: 1px solid var(--border, #30363d); vertical-align: top; }
+.audit-table th { color: var(--text-dim, #8b949e); font-weight: 600; }
+.audit-table td:not(:first-child) { font-variant-numeric: tabular-nums; }
+#audit-page select { padding: 0.25rem 0.4rem; }

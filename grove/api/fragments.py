@@ -4120,6 +4120,246 @@ async def handle_admission_state(request: web.Request) -> web.Response:
     )
 
 
+# ── Audit page — integrity and economics ──────────────────────────────
+#
+# Read-only over what turns already recorded: no model call, no write. Both
+# halves call grove.audit, the same code the command-line check runs.
+
+
+def _money(value) -> str:
+    if value is None:
+        return "—"
+    if value == 0:
+        return "$0"
+    if abs(value) >= 100:
+        return f"${value:,.0f}"
+    if abs(value) >= 1:
+        return f"${value:,.2f}"
+    if abs(value) >= 0.01:
+        return f"${value:.3f}"
+    return f"${value:.5f}"
+
+
+def _count(value, unit: str = "") -> str:
+    if value is None:
+        return "—"
+    if abs(value) >= 1_000_000_000:
+        text = f"{value / 1_000_000_000:,.1f}B"
+    elif abs(value) >= 1_000_000:
+        text = f"{value / 1_000_000:,.1f}M"
+    elif abs(value) >= 10_000:
+        text = f"{value / 1_000:,.0f}K"
+    elif abs(value) >= 100 or float(value).is_integer():
+        text = f"{value:,.0f}"
+    else:
+        text = f"{value:,.1f}"
+    return f"{text}{unit}"
+
+
+def _seconds(value) -> str:
+    if value is None:
+        return "—"
+    return f"{value:.2f}s" if value < 10 else f"{value:.1f}s"
+
+
+def _hours(value) -> str:
+    if value is None:
+        return "—"
+    if value < 1:
+        return f"{value * 60:,.1f} min"
+    if value < 48:
+        return f"{value:,.1f} hours"
+    return f"{value / 24:,.0f} days"
+
+
+def _audit_integrity_html(report) -> str:
+    """The chain check as a card: the same figures the terminal prints."""
+    from grove.audit import RESULT_TEXT
+
+    ok = report["result"] != "broken"
+    rows = [
+        ("Turn records checked", f"{report['records']:,}"),
+        ("Hash-chained", f"{report['chained']:,} in {report['chained_sessions']:,} session(s)"),
+        ("Older, pre-chain", f"{report['unchained']:,} (counted, not chained)"),
+        ("Sessions tail-checked", f"{report['anchored']:,} (newest record still present)"),
+        ("Kaizen ledger events",
+         f"{report['ledger']['chained']:,} chained in {report['ledger']['files']:,} file(s)"
+         + (f"; {report['ledger']['unchained']:,} older, pre-chain"
+            if report["ledger"]["unchained"] else "")),
+    ]
+    for run in report["runs"]:
+        label = f" ({run['label']})" if run["label"] else ""
+        rows.append((
+            f"Run {run['run_number']}{label} · {run['goal']}",
+            f"{run['decisions']:,} decisions, {run['with_turn']:,} with a turn on record"))
+    table = "".join(
+        f"<tr><td>{_esc(k)}</td><td>{_esc(v)}</td></tr>" for k, v in rows)
+    problems = "".join(
+        f"<div>{_esc(p['where'])} · {_esc(p['subject'])} · {_esc(p['problem'])}</div>"
+        for p in report["problems"])
+    verdict = RESULT_TEXT[report["result"]] + (
+        f" — {len(report['problems'])} problem(s)" if not ok else "")
+    return (
+        f'<div class="card" id="audit-integrity">'
+        f'<h4><span class="badge {"badge-green" if ok else "badge-red"}">'
+        f'{"intact" if ok else "broken"}</span> Is the record intact?</h4>'
+        f'<p><strong>{_esc(verdict)}</strong></p>'
+        f'<table class="audit-table">{table}</table>'
+        + (f'<div class="meta error">{problems}</div>' if problems else "")
+        + '<div class="meta">This is the gateway checking its own records. For an '
+        'independent check, run <code>scripts/verify-intent-chain.py</code> on the '
+        'machine: it reads the files directly and does not ask the gateway.</div>'
+        '<button class="btn" hx-get="/portal/fragments/audit/check" '
+        'hx-target="#audit-integrity" hx-swap="outerHTML">Run the check again</button>'
+        '</div>'
+    )
+
+
+def _audit_integrity_idle_html() -> str:
+    return (
+        '<div class="card" id="audit-integrity">'
+        '<h4>Is the record intact?</h4>'
+        '<p>Recomputes every hash chain — each turn record, each Kaizen ledger '
+        'event — and checks every decision has its turn on record. Read-only.</p>'
+        '<button class="btn btn-approve" hx-get="/portal/fragments/audit/check" '
+        'hx-target="#audit-integrity" hx-swap="outerHTML">Run audit check</button>'
+        '</div>'
+    )
+
+
+def _audit_economics_html(report, scale: int) -> str:
+    """What the work cost, by tier, and what it comes to at a monthly volume."""
+    from grove import audit as audit_mod
+    from grove.api import svg_charts
+
+    if not report["goals"]:
+        return ('<div id="audit-economics"><div class="card"><h4>What did the work cost?</h4>'
+                '<p>No decision work has run yet.</p></div></div>')
+    blocks = []
+    for g in report["goals"]:
+        units = g["units"]
+        tier_color = {"T0": "#3fb950", "T1": "#58a6ff", "T2": "#d29922", "T3": "#f85149"}
+        chart = svg_charts.bar_chart_svg(
+            [{"label": str(u["order"]), "value": round(u["deciding"]["seconds"] or 0.0, 2),
+              "color": tier_color.get(u["tier"] or "", "#8b949e")} for u in units],
+            "Seconds to decide each item, in order (green = no model call)",
+            width=760, height=230,
+        )
+        tier_rows = "".join(
+            f"<tr><td>{_esc(tier)}</td><td>{t['units']}</td>"
+            f"<td>{_count(t['model_calls'])}</td><td>{_seconds(t['seconds'])}</td>"
+            f"<td>{_count(t['fresh_tokens'])}</td><td>{_count(t['cached_tokens'])}</td>"
+            f"<td>{_money(t['cost'])}</td>"
+            f"<td>{t['confirmed']} confirmed · {t['corrected']} corrected</td></tr>"
+            for tier, t in g["by_tier"].items())
+        model, keg = g["model_avg"], g["keg_avg"]
+        speed = (
+            f"{model['seconds'] / keg['seconds']:,.0f}× faster"
+            if model["seconds"] and keg["seconds"] else "—")
+        proj = audit_mod.project(g, scale)
+        cov = g["coverage"]
+
+        def _proj_row(label, row, note=""):
+            return (
+                f"<tr><td>{_esc(label)}</td><td>{_money(row['cost'])}</td>"
+                f"<td>{_count(row['model_calls'])}</td><td>{_count(row['tokens'])}</td>"
+                f"<td>{_hours(row['hours'])}</td><td>{_esc(note)}</td></tr>")
+
+        options = "".join(
+            f'<option value="{n}"{" selected" if n == scale else ""}>'
+            f'{n:,} items a month</option>'
+            for n in audit_mod.SCALES)
+        signed = " · ".join(
+            f"v{s['version']} signed {_hours((s['seconds'] or 0) / 3600.0)} after it was proposed"
+            for s in g["signatures"]) or "no keg signed yet"
+        not_included = "; ".join(report["not_included"].values())
+        blocks.append(
+            f'<div class="card">'
+            f'<h4>What did the work cost? · {_esc(g["goal"])} · run {_esc(g["run_number"])}</h4>'
+            f'<p><strong>Decided by a model: {_seconds(model["seconds"])}, '
+            f'{_count(model["tokens"])} tokens, {_money(model["cost"])} each. '
+            f'Decided by the keg: {_seconds(keg["seconds"])}, 0 tokens, $0 each '
+            f'({_esc(speed)}).</strong></p>'
+            f'<div class="meta">{g["keg_units"]} of {len(units)} items in this run were '
+            f'decided with no model call. Deciding all {len(units)} took '
+            f'{_count(g["totals"]["model_calls"])} model calls, '
+            f'{_count(g["totals"]["tokens"])} tokens and {_money(g["totals"]["cost"])}. '
+            f'{_esc(signed)}.</div>'
+            f'{chart}'
+            f'<table class="audit-table"><tr><th>Tier</th><th>Items</th><th>Model calls</th>'
+            f'<th>Time</th><th>Fresh tokens</th><th>Cached tokens re-read</th>'
+            f'<th>Cost</th><th>Operator\'s verdict</th></tr>{tier_rows}</table>'
+            f'<h4>At volume</h4>'
+            f'<div class="proposal-actions"><label for="audit-scale">Scale to&nbsp;</label>'
+            f'<select id="audit-scale" name="scale" hx-get="/portal/fragments/audit/economics" '
+            f'hx-target="#audit-economics" hx-swap="outerHTML" hx-trigger="change">{options}'
+            f'</select></div>'
+            + (
+                f'<p>At {scale:,} items a month. {_esc(cov["keg"])} would have answered '
+                f'{cov["covered"]} of this run\'s {cov["of"]} items ({cov["share"]:.0%}); '
+                f'the rest still go to a model.</p>' if cov["keg"] else
+                '<p>No keg is serving, so nothing is avoided yet.</p>')
+            + f'<table class="audit-table"><tr><th></th><th>Cost</th><th>Model calls</th>'
+            f'<th>Tokens</th><th>Time spent deciding</th><th></th></tr>'
+            + _proj_row("Every item decided by a model", proj["all_model"], "measured")
+            + _proj_row("With the keg serving", proj["with_keg"], "measured")
+            + _proj_row("Avoided", proj["avoided"], "the difference")
+            + f'<tr><td>Every item at the frontier tier ({_esc(g["frontier"]["model"])})</td>'
+            f'<td>{_money(proj["all_frontier"]["cost"])}</td><td colspan="3"></td>'
+            f'<td>estimate: this run\'s fresh tokens at that model\'s declared prices '
+            f'(cached re-read not priced)</td></tr>'
+            f'</table>'
+            f'<div class="meta">Costs use the prices declared in the routing config. '
+            + ("Cached context re-read is priced. " if g["cache_read_priced"] else
+               "Cached context re-read is counted in tokens but NOT priced (no price is "
+               "declared for it), so model cost is understated. ")
+            + f'Not included: {_esc(not_included)}. Both make the keg\'s saving larger '
+            f'than shown. Each item\'s confirmation turn is separate and not counted here.</div>'
+            f'</div>'
+        )
+    return f'<div id="audit-economics">{"".join(blocks)}</div>'
+
+
+def _audit_scale(request: web.Request) -> int:
+    from grove.audit import SCALES
+    try:
+        scale = int(request.query.get("scale", SCALES[-1]))
+    except ValueError:
+        scale = SCALES[-1]
+    return scale if scale in SCALES else SCALES[-1]
+
+
+async def handle_audit(request: web.Request) -> web.Response:
+    """The Audit page: integrity (run on demand) and economics (current run)."""
+    from grove import audit as audit_mod
+    try:
+        economics_html = _audit_economics_html(audit_mod.economics(), _audit_scale(request))
+    except Exception as exc:  # noqa: BLE001 — visible error fragment, never a blank panel
+        logger.error("[portal] audit economics failed: %r", exc)
+        economics_html = (f'<div id="audit-economics"><div class="error-card"><h3>Economics '
+                          f'unavailable</h3><p>{_esc(type(exc).__name__)}: {_esc(exc)}</p></div></div>')
+    return _html_fragment(
+        '<div id="audit-page"><h2>Audit</h2>'
+        + _audit_integrity_idle_html() + economics_html + '</div>')
+
+
+async def handle_audit_check(request: web.Request) -> web.Response:
+    from grove import audit as audit_mod
+    try:
+        return _html_fragment(_audit_integrity_html(audit_mod.chain_report()))
+    except Exception as exc:  # noqa: BLE001
+        logger.error("[portal] audit check failed: %r", exc)
+        return _html_fragment(
+            f'<div class="card" id="audit-integrity"><h4><span class="badge badge-red">'
+            f'not run</span> Is the record intact?</h4><p class="error">The check could not '
+            f'run: {_esc(type(exc).__name__)}: {_esc(exc)}</p></div>')
+
+
+async def handle_audit_economics(request: web.Request) -> web.Response:
+    from grove import audit as audit_mod
+    return _html_fragment(_audit_economics_html(audit_mod.economics(), _audit_scale(request)))
+
+
 def register_fragment_routes(app: web.Application) -> None:
     """Register the portal shell + ``/portal/fragments/*`` routes.
 
@@ -4139,6 +4379,9 @@ def register_fragment_routes(app: web.Application) -> None:
     # Phase 3 — memory, dock, proposals, skills
     app.router.add_get("/portal/fragments/memory/records", handle_memory_records)
     app.router.add_get("/portal/fragments/dock/goals", handle_dock_goals)
+    app.router.add_get("/portal/fragments/audit/", handle_audit)
+    app.router.add_get("/portal/fragments/audit/check", handle_audit_check)
+    app.router.add_get("/portal/fragments/audit/economics", handle_audit_economics)
     # goal-spine-v1 P4 — the in-shell goal detail (attached artifacts +
     # detach controls); the shell's generic hash router maps
     # #fragments/goal/<id> onto this path with no JS change.
