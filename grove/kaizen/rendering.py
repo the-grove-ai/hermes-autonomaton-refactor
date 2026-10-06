@@ -1099,6 +1099,7 @@ class KegBacktestCase:
     keg: Optional[Dict[str, Any]]
     result: str
     agrees_with_confirmed: Optional[bool]
+    note: str = ""
 
 
 _KEG_BACKTEST_RESULTS = ("would_change", "not_covered", "unchanged")
@@ -1117,10 +1118,20 @@ class KegBacktestDetail:
 
     @property
     def headline(self) -> str:
-        return (
+        """Three outcomes, each counted on its own. The cases the keg does not
+        cover are named, with the reason when it is known."""
+        line = (
             f"Replayed on history: {self.unchanged} unchanged · "
-            f"{self.would_change} would change"
+            f"{self.would_change} would change · {self.not_covered} not covered"
         )
+        named = [
+            c.label + (f": {c.note}" if c.note else "")
+            for c in self.cases if c.result == "not_covered" and c.label
+        ]
+        if named:
+            shown = "; ".join(dict.fromkeys(named))
+            line += f" ({shown})"
+        return line
 
     @classmethod
     def from_dict(cls, data: Any) -> "KegBacktestDetail":
@@ -1143,17 +1154,21 @@ class KegBacktestDetail:
                 keg=None if c.get("keg") is None else dict(c["keg"]),
                 result=c["result"],
                 agrees_with_confirmed=c.get("agrees_with_confirmed"),
+                note=str(c.get("note") or ""),
             ))
-        try:
-            return cls(
-                replayed=int(data["replayed"]),
-                unchanged=int(data["unchanged"]),
-                would_change=int(data["would_change"]),
-                not_covered=int(data.get("not_covered", 0)),
-                cases=cases,
-            )
-        except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"keg backtest detail has bad counts: {exc!r}")
+        # Counts are read off the cases, not trusted from the envelope: an
+        # envelope written before the three outcomes were kept apart folded
+        # "not covered" into "unchanged", and the cases never lie.
+        tally = {r: sum(1 for c in cases if c.result == r) for r in _KEG_BACKTEST_RESULTS}
+        if "replayed" not in data:
+            raise ValueError("keg backtest detail has no 'replayed' count")
+        return cls(
+            replayed=len(cases),
+            unchanged=tally["unchanged"],
+            would_change=tally["would_change"],
+            not_covered=tally["not_covered"],
+            cases=cases,
+        )
 
 
 def _decode_pattern_promotion_detail(data: Dict[str, Any]) -> Any:

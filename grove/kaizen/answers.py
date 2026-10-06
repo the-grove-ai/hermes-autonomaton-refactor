@@ -60,6 +60,20 @@ def _work(context: Optional[Mapping[str, Any]], andon: Mapping[str, Any]) -> Any
         return None
 
 
+def replay_summary(out: Mapping[str, Any]) -> str:
+    """Kaizen's one-line account of a backtest: three outcomes, each counted
+    on its own, with the cases standard work leaves to the interpreter named."""
+    line = (
+        f"Replayed {out.get('replayed')} on history: {out.get('unchanged')} "
+        f"unchanged, {out.get('would_change')} would change, "
+        f"{out.get('not_covered')} not covered"
+    )
+    named = list(dict.fromkeys(out.get("not_covered_cases") or []))
+    if named:
+        line += f" ({'; '.join(named)})"
+    return line + "."
+
+
 # ── watch ─────────────────────────────────────────────────────────────
 
 
@@ -196,8 +210,8 @@ def _standard_work(andon: Mapping[str, Any], context: Any) -> Answer:
         return Answer(
             kind=KIND_STANDARD_WORK,
             summary=(
-                f"Proposed v{out.get('version')} for the operator's signature: "
-                f"replayed {out.get('replayed')}, {out.get('would_change')} would change."
+                f"Proposed v{out.get('version')} for the operator's signature. "
+                + replay_summary(out)
             ),
             artifact=out.get("proposal_id"), detail=out,
         )
@@ -242,8 +256,7 @@ def _correction(andon: Mapping[str, Any], context: Any) -> Answer:
             summary=(
                 f"You corrected {key!r} to {details.get('corrected')} "
                 f"{record['seen']} times. Proposed v{out.get('version')} with "
-                f"that as a rule, for your signature: replayed "
-                f"{out.get('replayed')}, {out.get('would_change')} would change."
+                f"that as a rule, for your signature. " + replay_summary(out)
             ),
             artifact=out.get("proposal_id"), detail=out,
         )

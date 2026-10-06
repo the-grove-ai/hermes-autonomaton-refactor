@@ -867,6 +867,20 @@ class DecisionWork:
         it. Kaizen backtests a drafted keg over this."""
         proposed, decided = self._state()
         label_key = self.config.reference.key_input if self.config.reference else None
+        table = self.reference()
+        table_name = self.config.reference.path.name if self.config.reference else ""
+
+        def _note(key: Any) -> str:
+            """Why the reference table gives no single answer for this key."""
+            if table is None:
+                return ""
+            values = table.values(key)
+            if len(values) > 1:
+                return f"{len(values)} values in {table_name}"
+            if not values:
+                return f"not in {table_name}"
+            return ""
+
         cases = []
         for record in proposed.values():
             verdict = decided.get(record["id"])
@@ -880,6 +894,7 @@ class DecisionWork:
                 "served": dict(record["output"]),
                 "confirmed": dict(verdict["output"]),
                 "served_by_keg": bool(record.get("keg")),
+                "note": _note(inputs.get(label_key)) if label_key else "",
                 "decision": verdict["decision"],
                 "turn_id": record.get("turn_id"),
             })

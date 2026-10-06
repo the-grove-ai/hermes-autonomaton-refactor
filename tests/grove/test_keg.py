@@ -207,12 +207,20 @@ def test_lifecycle_maps_every_status():
 def test_backtest_counts_and_orders_changed_cases_first():
     history = HISTORY + [_case("m6", "billing", "finance", "escalate", urgent=True)]
     bt = backtest_keg({"inputs": INPUTS, "conditions": RULES_V2}, history)
-    assert (bt["replayed"], bt["unchanged"], bt["would_change"], bt["not_covered"]) == (6, 5, 1, 1)
+    # Three outcomes, never merged: m3 ("social") is not covered, so it is
+    # NOT one of the unchanged.
+    assert (bt["replayed"], bt["unchanged"], bt["would_change"], bt["not_covered"]) == (6, 4, 1, 1)
     assert [c["result"] for c in bt["cases"]][:2] == ["would_change", "not_covered"]
     changed = bt["cases"][0]
     assert changed["ref"] == "m6" and changed["agrees_with_confirmed"] is True
     detail = rendering.KegBacktestDetail.from_dict(bt)
-    assert detail.headline == "Replayed on history: 5 unchanged · 1 would change"
+    assert detail.headline == (
+        "Replayed on history: 4 unchanged · 1 would change · 1 not covered "
+        "(social message)")
+    # An envelope written when not-covered was folded into unchanged still
+    # reads correctly: the counts come from the cases.
+    old = dict(bt, unchanged=5)
+    assert rendering.KegBacktestDetail.from_dict(old).unchanged == 4
 
 
 def test_malformed_backtest_detail_fails_loud():
@@ -242,7 +250,8 @@ def test_proposed_keg_is_a_draft_that_never_serves(env):
         "reserved", "green", "message-triage")
     assert k["trigger"]["request"] == REQUEST
     assert rendering.decode_detail(proposal).headline == (
-        "Replayed on history: 5 unchanged · 0 would change")
+        "Replayed on history: 4 unchanged · 0 would change · 1 not covered "
+        "(social message)")
 
     # What the operator signs is what T0 runs: the keg rides inside the
     # invocation the bind-and-verify signature covers.
@@ -464,8 +473,10 @@ def test_keg_card_reads_in_review_order(env):
     order = [html.index(s) for s in (
         "Kaizen proposal", "Message tagging · v2", "Jidoka flag: anomaly",
         "Replaces v1 (keg:message-tagging:v1:",
-        "Does not cover:", "Replayed on history: 5 unchanged · 1 would change",
-        "matches your correction", "unchanged cases (5)", "rules (3)",
+        "Does not cover:",
+        "Replayed on history: 4 unchanged · 1 would change · 1 not covered (social message)",
+        "matches your correction", "not covered — routes to the interpreter",
+        "unchanged cases (4)", "rules (3)",
         "GRV-004 keg · scope reserved · authority green", "Sign</button>",
         "Send feedback",
     )]

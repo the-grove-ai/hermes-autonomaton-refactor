@@ -638,15 +638,15 @@ def backtest_keg(spec: Dict[str, Any], history: List[Dict[str, Any]]) -> Dict[st
     * ``unchanged`` — the keg answers exactly what was served;
     * ``would_change`` — the keg answers differently (``agrees_with_confirmed``
       says whether the new answer matches the operator's ground truth);
-    * ``not_covered`` — the keg does not answer it; it stays with the
-      interpreter, so nothing changes for it either.
+    * ``not_covered`` — the keg does not answer it; it routes to the
+      interpreter. Counted on its own, never as "unchanged".
 
     A case marked ``served_by_keg`` that this keg would NOT answer (it defers,
     or no rule matches) is a ``would_change``: work standard work used to
     answer goes back to the interpreter.
 
-    Cases come back changed-first, so a reviewer reads the edge cases before
-    the routine ones."""
+    Cases come back changed first, then not covered, then unchanged, so a
+    reviewer reads the edge cases before the routine ones."""
     from grove.keg import defers, evaluate
 
     cases: List[Dict[str, Any]] = []
@@ -677,6 +677,9 @@ def backtest_keg(spec: Dict[str, Any], history: List[Dict[str, Any]]) -> Dict[st
             "served": served,
             "confirmed": None if confirmed is None else dict(confirmed),
             "keg": answer,
+            # Why standard work does not answer this case, when the caller
+            # knows (e.g. "2 values in <table>") — shown beside the case.
+            "note": str(case.get("note") or ""),
             "deferred": bool(deferred),
             "result": result,
             "agrees_with_confirmed": agrees,
@@ -689,8 +692,10 @@ def backtest_keg(spec: Dict[str, Any], history: List[Dict[str, Any]]) -> Dict[st
     return {
         "kind": "keg_backtest",
         "replayed": len(cases),
-        # "not covered" changes nothing: the interpreter keeps that work.
-        "unchanged": counts[BACKTEST_UNCHANGED] + counts[BACKTEST_NOT_COVERED],
+        # Three outcomes, never merged: a case the keg does not cover is not
+        # "unchanged" — it is work that still goes to the interpreter, and a
+        # reviewer must see that the keg leaves it alone on purpose.
+        "unchanged": counts[BACKTEST_UNCHANGED],
         "would_change": counts[BACKTEST_WOULD_CHANGE],
         "not_covered": counts[BACKTEST_NOT_COVERED],
         "cases": cases,

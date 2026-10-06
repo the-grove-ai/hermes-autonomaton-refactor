@@ -1128,13 +1128,14 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
                 )
                 text = f"{_keg_outputs_text(c.served)} → {after}{verdict}"
             elif c.result == "not_covered":
-                text = "not covered — stays with the interpreter"
+                text = "not covered — routes to the interpreter" + (
+                    f" ({c.note})" if c.note else "")
             else:
                 text = f"{_keg_outputs_text(c.served)} (unchanged)"
             return f"<div>{_esc(c.ref)} · {_esc(c.label)} · {_esc(text)}</div>"
 
-        changed = [c for c in backtest.cases if c.result == "would_change"]
-        rest = [c for c in backtest.cases if c.result != "would_change"]
+        changed = [c for c in backtest.cases if c.result != "unchanged"]
+        rest = [c for c in backtest.cases if c.result == "unchanged"]
         changed_html = (
             '<div class="keg-changed">' + "".join(_case_row(c) for c in changed)
             + '</div>'

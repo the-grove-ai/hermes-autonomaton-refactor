@@ -767,3 +767,27 @@ def test_verb_bonus_plays_no_part_in_what_opens_a_session(env):
         env.work.config, keg=dataclasses.replace(env.work.config.keg, verb_bonus=0.2))
     assert dw.opens_work("tag next", goal, cfg) is False
     assert dw.session_rule_digest(cfg) == dw.session_rule_digest(env.work.config)
+
+
+def test_backtest_names_what_the_keg_leaves_to_the_interpreter(env):
+    # Live 2026-10-06: Kaizen reported "six replayed, zero would change" for a
+    # keg that does not cover one of the six. Three outcomes, each counted.
+    [event] = _earn_v1(env)          # billing, legal (two values), outage, billing
+    detail = event["answer"]["detail"]
+    assert (detail["replayed"], detail["unchanged"], detail["would_change"],
+            detail["not_covered"]) == (4, 3, 0, 1)
+    assert detail["not_covered_cases"] == ["legal: 2 values in channels.csv"]
+    assert event["answer"]["summary"].endswith(
+        "Replayed 4 on history: 3 unchanged, 0 would change, 1 not covered "
+        "(legal: 2 values in channels.csv).")
+    [proposal] = read_all()
+    assert rendering_headline(proposal) == (
+        "Replayed on history: 3 unchanged · 0 would change · 1 not covered "
+        "(legal: 2 values in channels.csv)")
+    # The not-covered case is listed with the changed ones, not folded away.
+    assert [c["result"] for c in proposal.detail["cases"]][0] == "not_covered"
+
+
+def rendering_headline(proposal):
+    from grove.kaizen import rendering
+    return rendering.decode_detail(proposal).headline

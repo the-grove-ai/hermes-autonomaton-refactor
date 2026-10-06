@@ -358,6 +358,11 @@ def _summary(result: Any) -> Dict[str, Any]:
         "replayed": backtest.get("replayed"),
         "unchanged": backtest.get("unchanged"),
         "would_change": backtest.get("would_change"),
+        "not_covered": backtest.get("not_covered"),
+        "not_covered_cases": [
+            c["label"] + (f": {c['note']}" if c.get("note") else "")
+            for c in backtest.get("cases") or [] if c["result"] == "not_covered"
+        ],
     }
 
 
