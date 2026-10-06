@@ -39,11 +39,14 @@ command -v gcloud >/dev/null 2>&1 || {
 # own failure goes back through the same handler. One dedicated file, run on
 # its own, so a refusal names the invariant and the test that broke it rather
 # than drowning in the wider suite. Skip only on purpose: SKIP_INVARIANTS=1.
-GATE="tests/grove/test_andon_invariants.py"
+# The adaptation invariants ride the same gate: an alias cannot reach a verb
+# the signed session rule does not name, a typed "yes" never approves one, and
+# adaptation switched off changes nothing.
+GATE="tests/grove/test_andon_invariants.py tests/grove/test_adaptation.py"
 if [[ "${SKIP_INVARIANTS:-0}" != "1" ]]; then
   echo "▸ Checking andon-handler invariants (${GATE})"
   GATE_OUT="$(mktemp)"
-  if ! .venv/bin/python -m pytest "${GATE}" -p no:cacheprovider -n0 -q -rf \
+  if ! .venv/bin/python -m pytest ${GATE} -p no:cacheprovider -n0 -q -rf \
         >"${GATE_OUT}" 2>&1; then
     echo "✗ DEPLOY REFUSED — an andon-handler invariant failed:" >&2
     grep -E '^(FAILED|ERROR) ' "${GATE_OUT}" | sed 's/^/    /' >&2 \

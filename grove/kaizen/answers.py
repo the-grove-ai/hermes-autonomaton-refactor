@@ -5,8 +5,9 @@ exactly one :class:`~grove.andon.Answer`:
 
   standard_work — a drafted, backtested change to standard work, filed for
                   the operator's signature in the portal;
-  remedy        — a one-time, in-scope action for this turn, filed for a chat
-                  accept (never a permanent change);
+  remedy        — an in-scope action, filed for the operator's answer in
+                  conversation (green changes are approved in conversation;
+                  changes to authority are signed in the portal);
   watch         — "no countermeasure yet": an inert record of what is being
                   watched and what would promote it.
 
@@ -77,6 +78,69 @@ def replay_summary(out: Mapping[str, Any]) -> str:
 # ── watch ─────────────────────────────────────────────────────────────
 
 
+# What a watch remembers across a restart of its count: when the count
+# restarted, who has been asked, and when the operator took the answer back.
+_CARRIED = ("since", "asked", "revoked_at")
+
+
+def _digest(signature: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(dict(signature), sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:12]
+
+
+from grove.pattern_cache import watch_id, watch_record  # noqa: E402  (read helpers)
+
+
+def _save_watch(store: Any, watch_id: str, record: Mapping[str, Any]) -> None:
+    from grove.pattern_cache import CompiledPattern, STATUS_WATCHING
+
+    store.upsert(CompiledPattern(
+        pattern_id=watch_id, t0_key=watch_id,
+        intent_class="watch", cacheable_type="watch",
+        cached_response=None, compiled_invocation=None,
+        evidence_hash="sha256:" + watch_id.rsplit(":", 1)[-1], status=STATUS_WATCHING,
+        created_at=record["first_seen"],
+        promotion_evidence=json.dumps({"watch": dict(record)}, sort_keys=True),
+    ))
+
+
+def note_watch(watch_id: str, *, store: Any = None, **changes: Any) -> None:
+    """Add to what a watch remembers, leaving its count and status alone."""
+    from grove.pattern_cache import PatternCacheStore
+
+    store = store or PatternCacheStore()
+    entry = store.get(watch_id)
+    if entry is None:
+        return
+    record = {**watch_record(watch_id, store=store), **changes}
+    status = entry.status
+    _save_watch(store, watch_id, record)
+    store.set_status(watch_id, status)
+
+
+def rewatch(
+    watch_id: str, *, detector: str, goal: Any, signature: Mapping[str, Any],
+    store: Any = None, **changes: Any,
+) -> None:
+    """Start a watch's count again from nothing: what it counted was answered
+    (declined, or taken back) and only what happens next counts now."""
+    from grove.pattern_cache import PatternCacheStore
+
+    store = store or PatternCacheStore()
+    prior = watch_record(watch_id, store=store)
+    record = {
+        "detector": detector, "goal": goal, "signature": dict(signature),
+        "description": prior.get("description") or "",
+        "trigger": prior.get("trigger") or {}, "seen": 0,
+        "andon_ids": [], "first_seen": prior.get("first_seen") or _now(),
+        "last_seen": prior.get("last_seen") or _now(),
+        **{k: prior[k] for k in _CARRIED if k in prior},
+        **changes,
+    }
+    _save_watch(store, watch_id, record)
+
+
 def watch(
     andon: Mapping[str, Any],
     *,
@@ -85,26 +149,33 @@ def watch(
     promote_after: int,
     promote: Optional[Callable[[Dict[str, Any]], Answer]] = None,
     store: Any = None,
+    seen: Optional[int] = None,
 ) -> Answer:
     """Record (or re-observe) a watch: an inert cache entry that carries the
     condition which would promote it. Seeing the same condition again counts
     toward that condition; reaching it calls ``promote`` and returns ITS
-    answer instead — the ratchet turning on repeated evidence."""
+    answer instead — the ratchet turning on repeated evidence.
+
+    ``seen`` is the count when the detector counted it from the records
+    itself; otherwise each observation adds one."""
     from grove.pattern_cache import (
         CompiledPattern, PatternCacheStore, STATUS_SUPERSEDED, STATUS_WATCHING,
     )
 
     store = store or PatternCacheStore()
-    digest = hashlib.sha256(
-        json.dumps(dict(signature), sort_keys=True, default=str).encode("utf-8")
-    ).hexdigest()[:12]
+    digest = _digest(signature)
     watch_id = f"watch:{andon.get('goal') or 'none'}:{andon.get('detector')}:{digest}"
     entry = store.get(watch_id)
     record: Dict[str, Any] = {}
-    if entry is not None and entry.status == STATUS_WATCHING:
-        record = json.loads(entry.promotion_evidence or "{}").get("watch") or {}
-    seen = int(record.get("seen") or 0) + 1
+    carried: Dict[str, Any] = {}
+    if entry is not None:
+        prior = json.loads(entry.promotion_evidence or "{}").get("watch") or {}
+        carried = {k: prior[k] for k in _CARRIED if k in prior}
+        if entry.status == STATUS_WATCHING:
+            record = prior
+    seen = int(seen) if seen is not None else int(record.get("seen") or 0) + 1
     record = {
+        **carried,
         "detector": andon.get("detector"),
         "goal": andon.get("goal"),
         "signature": dict(signature),
@@ -407,6 +478,55 @@ def _operator_feedback(andon: Mapping[str, Any], context: Any) -> Answer:
     return _standard_work(andon, context)
 
 
+def _phrase_reading(andon: Mapping[str, Any], context: Any) -> Answer:
+    """A model read the operator's phrase as a verb the work session already
+    has. Below the declared threshold: watch. At it: ask the operator, in
+    conversation, whether the phrase should mean that from now on — a filed
+    remedy, in scope because the signed session rule lets the goal's
+    vocabulary supply phrases for that verb."""
+    from grove import adaptation
+
+    details = andon.get("details") or {}
+    work = _work(context, andon)
+    verb, phrase = details.get("verb"), details.get("phrase")
+    needed = int(details.get("threshold") or _DEFAULT_PROMOTE_AFTER)
+    signature = {"pattern": details.get("pattern"), "verb": verb, "phrase": phrase}
+    if work is None:
+        return watch_unresolved(andon, context)
+    waiting = adaptation.pending(work.config.goal_id, verb, phrase)
+    if waiting:
+        # Already asked. Remind once in a session that has not seen the card.
+        adaptation.offer(work.config, waiting[0], details.get("session_id"))
+        return Answer(
+            kind=KIND_WATCH,
+            summary=(f"Already asked whether “{phrase}” should mean {verb}; "
+                     f"waiting for the operator's answer."),
+            artifact=watch_id(andon.get("goal"), andon.get("detector"), signature),
+        )
+
+    # Jidoka counted every reading no revision has undone. Readings from
+    # before the operator last answered about this phrase (not now, or taking
+    # it back) were already answered, and do not count toward asking again.
+    since = watch_record(
+        watch_id(andon.get("goal"), andon.get("detector"), signature)).get("since")
+    counted = [p for p in (andon.get("provenance") or [])
+               if not since or str(p.get("at") or "") > str(since)]
+
+    def _promote(record: Dict[str, Any]) -> Optional[Answer]:
+        if verb not in adaptation.signed_verbs(work.config):
+            return None      # no signed rule lets the vocabulary supply it: keep watching
+        return adaptation.propose(work, andon, counted)
+
+    return watch(
+        andon, signature=signature,
+        description=(
+            f"“{phrase}” read as {verb} by a model; {needed} readings with no "
+            f"revision promote it to a question for the operator"
+        ),
+        promote_after=needed, promote=_promote, seen=len(counted),
+    )
+
+
 _ANSWERS: Dict[str, Callable[[Mapping[str, Any], Any], Answer]] = {
     "operator_feedback": _operator_feedback,
     "reference_agreement": _standard_work,
@@ -414,6 +534,7 @@ _ANSWERS: Dict[str, Callable[[Mapping[str, Any], Any], Answer]] = {
     "turn_check": _turn_check,
     "repetition": _repetition,
     "kaizen_failure": _kaizen_failure,
+    "phrase_reading": _phrase_reading,
 }
 
 

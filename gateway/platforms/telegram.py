@@ -2585,6 +2585,33 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_markup=InlineKeyboardMarkup([row]))
         self._ws_cards[item_id] = (int(chat_id), int(result.message_id))
 
+    async def send_offered_cards(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Send each offered card as its own message with its buttons. A
+        button delivers its message as the operator's own text, so a press
+        and a typed line take the same path."""
+        for card in self.take_cards(chat_id):
+            if not self._bot:
+                return
+            row = []
+            for label, message in card.get("buttons") or []:
+                data = f"cd:{message}"
+                if len(data.encode("utf-8")) > 64:
+                    logger.error("[%s] no %r button: not expressible as callback data",
+                                 self.name, label)
+                    row = []
+                    break
+                row.append(InlineKeyboardButton(str(label), callback_data=data))
+            thread_id = self._metadata_thread_id(metadata)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id), "text": str(card.get("text") or ""),
+                **self._link_preview_kwargs(),
+            }
+            if row:
+                kwargs["reply_markup"] = InlineKeyboardMarkup([row])
+            kwargs.update(self._thread_kwargs_for_send(
+                chat_id, thread_id, metadata, reply_to_message_id=None))
+            await self._send_message_with_thread_fallback(**kwargs)
+
     async def send_clarify(
         self,
         chat_id: str,
@@ -3329,6 +3356,47 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             await self.handle_message(MessageEvent(
                 text=button_message(action, item_id),
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=None,
+            ))
+            return
+
+        # --- Question cards (cd:<the message the button says>) ---
+        if data.startswith("cd:"):
+            said = data[3:].strip()
+            if not said:
+                await query.answer(text="That button is not valid.")
+                return
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to answer this.")
+                return
+            await query.answer()
+            # Answered (or about to be refused as out of date): either way
+            # this card's buttons have done their job.
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            is_group = query_chat_type in {ChatType.GROUP, ChatType.SUPERGROUP}
+            source = self.build_source(
+                chat_id=str(query_chat_id),
+                chat_name=getattr(query_chat, "title", None)
+                or getattr(query_chat, "full_name", None),
+                chat_type="group" if is_group else "dm",
+                user_id=caller_id,
+                user_name=getattr(query.from_user, "full_name", None),
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            )
+            await self.handle_message(MessageEvent(
+                text=said,
                 message_type=MessageType.TEXT,
                 source=source,
                 message_id=None,

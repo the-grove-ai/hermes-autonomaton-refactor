@@ -2202,6 +2202,9 @@ class Dispatcher:
             _resume_result = self._resume_intercept(agent, user_message, previous_turn_id)
             if _resume_result is not None:
                 return _resume_result
+            _press_result = self._press_intercept(agent, user_message, previous_turn_id)
+            if _press_result is not None:
+                return _press_result
         if isinstance(user_message, str) and self._current_turn_isolation:
             # A work session's unambiguous messages (confirm, a valid revised
             # value, "show me the item again") are carried out here with no
@@ -2211,6 +2214,11 @@ class Dispatcher:
             )
             if _session_result is not None:
                 return _session_result
+            # A press the session did not act on (its switch is off) is still
+            # a press: answered in one line, never read by a model.
+            _press_result = self._press_intercept(agent, user_message, previous_turn_id)
+            if _press_result is not None:
+                return _press_result
         if isinstance(user_message, str) and pattern_cache_enabled():
             _t0_result = self._t0_intercept(
                 agent, user_message, previous_turn_id, kwargs,
@@ -5757,6 +5765,58 @@ class Dispatcher:
         self._write_intent_record(
             agent, outcome="pending", final_response_chars=len(response_text),
             intent_class_override="conversation", tier_override="T0",
+        )
+        self._persist_t0_turn(user_message, response_text)
+        return self._session_result_dict(agent, response_text)
+
+    def _press_intercept(
+        self, agent: Any, user_message: str, previous_turn_id: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """A button press that the goal's work session did not carry out: the
+        session is paused, the chat moved on, or the switch is off. A press
+        never goes to a model. A question card is answered against the
+        proposal it names; an item card is refused in one line, because an
+        item is decided only inside its own session. Returns None for any
+        message that is not a press."""
+        from grove.decision_work import ALIAS_PRESS, BUTTON_PRESS
+
+        text = user_message.strip()
+        alias, item = ALIAS_PRESS.fullmatch(text), BUTTON_PRESS.fullmatch(text)
+        if not alias and not item:
+            return None
+        outcome, failure = "pending", {}
+        try:
+            from grove import adaptation, turn_provenance
+
+            if alias:
+                prov = {**(self.turn_provenance(agent) or {}), "session_step": "t0"}
+                token = turn_provenance.set_current(prov)
+                try:
+                    response_text = adaptation.answer_press(
+                        alias.group(1), alias.group(2), prov)
+                finally:
+                    turn_provenance.reset(token)
+            else:
+                response_text = adaptation.RESUME
+        except Exception as exc:  # noqa: BLE001 — stop loud; still no model
+            logger.error("[grove.dispatcher] a button press could not be handled on "
+                         "turn %s: %r", self._current_turn_id, exc)
+            response_text = (f"⚠️ Stopped: that press could not be carried out "
+                             f"({type(exc).__name__}). Nothing changed.")
+            outcome = "error"
+            failure = {"failure_kind": "press_failed", "failure_summary": type(exc).__name__}
+        if previous_turn_id is not None:
+            self._finalize_previous_turn_pending(previous_turn_id)
+        self._current_turn_session_step = "t0"
+        self._current_turn_phrase_match = {
+            "message": text[:120], "best_phrase": None, "phrase_kind": None, "score": 0.0,
+            "fired": True, "action": "alias_press" if alias else "item_press_refused",
+            "match": "button",
+        }
+        self._current_turn_session_reply = response_text
+        self._write_intent_record(
+            agent, outcome=outcome, final_response_chars=len(response_text),
+            intent_class_override="conversation", tier_override="T0", **failure,
         )
         self._persist_t0_turn(user_message, response_text)
         return self._session_result_dict(agent, response_text)

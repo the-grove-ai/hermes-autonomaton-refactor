@@ -357,3 +357,27 @@ class PatternCacheStore:
     @staticmethod
     def _row_to_pattern(row: sqlite3.Row) -> CompiledPattern:
         return CompiledPattern(**{c: row[c] for c in _COLUMNS})
+
+
+# ── watches ───────────────────────────────────────────────────────────
+# A watch is an inert entry in this store. These two helpers read one; they
+# live here, with the store, so that anything may read a count without
+# reaching into Kaizen (which alone writes and answers them).
+
+
+def watch_id(goal: Any, detector: Any, signature: Any) -> str:
+    import hashlib
+    import json as _json
+    digest = hashlib.sha256(
+        _json.dumps(dict(signature), sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"watch:{goal or 'none'}:{detector}:{digest}"
+
+
+def watch_record(watch_id: str, *, store: Any = None) -> dict:
+    """What a watch holds, whatever its status; empty when there is none."""
+    import json as _json
+    entry = (store or PatternCacheStore()).get(watch_id)
+    if entry is None:
+        return {}
+    return _json.loads(entry.promotion_evidence or "{}").get("watch") or {}

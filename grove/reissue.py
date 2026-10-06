@@ -326,6 +326,39 @@ def take_actions(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
     return actions if isinstance(actions, dict) and actions.get("buttons") else None
 
 
+def offer_card(session_id: str, card: Mapping[str, Any]) -> None:
+    """Offer the operator a card of its own after this turn's reply: a
+    question with its buttons, ``{"text", "buttons": [[label, message], ...]}``.
+    Each button delivers its message as the operator's own, naming what the
+    card was about, so what a press may do is decided when it arrives. Read
+    once by the gateway as the turn ends; the work goes on and the card waits."""
+    path = _dir() / ("cards-" + _path(str(session_id)).name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    cards = []
+    if path.exists():
+        try:
+            cards = json.loads(path.read_text(encoding="utf-8"))
+        except ValueError:
+            cards = []
+    cards.append(dict(card))
+    path.write_text(json.dumps(cards, sort_keys=True), encoding="utf-8")
+
+
+def take_cards(session_id: Optional[str]) -> list:
+    """Consume the cards offered for a session's turn."""
+    if not session_id:
+        return []
+    path = _dir() / ("cards-" + _path(str(session_id)).name)
+    if not path.exists():
+        return []
+    try:
+        cards = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        cards = []
+    path.unlink()
+    return [c for c in cards if isinstance(c, dict) and c.get("text")]
+
+
 def take(session_id: str) -> Optional[Dict[str, Any]]:
     """Consume the armed re-issue for a session, if any. Exactly once."""
     path = _path(str(session_id))

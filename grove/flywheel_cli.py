@@ -2022,12 +2022,13 @@ def _remedy_answer(proposal: RoutingProposal) -> Any:
 def _apply_remedy(
     proposal: RoutingProposal, *, machine_path: Optional[Path] = None,
 ) -> Tuple[str, Dict[str, Any]]:
-    """Carry out an accepted remedy: one in-scope action, once.
+    """Carry out an accepted remedy: one in-scope action.
 
     The surface is checked AGAIN here, at the moment of action — nothing the
-    operator accepts in chat may write a scope-defining surface, whatever was
-    true when it was offered. The action and its result are recorded on the
-    disposition; nothing about how the system works afterwards changes."""
+    operator approves in conversation may write a scope-defining surface,
+    whatever was true when it was offered. The action and its result are
+    recorded on the disposition. Nothing here can change what the system is
+    authorized to do: that is standard work, signed in the portal."""
     from grove.andon import assert_chat_acceptable
 
     answer = _remedy_answer(proposal)
@@ -2055,6 +2056,12 @@ def _apply_remedy(
         label = "the request will be re-issued" + (
             " one tier up" if write_class == "tier_escalation" else " in a clean session"
         )
+    elif write_class == "vocabulary_alias":
+        from grove import adaptation
+
+        result = adaptation.apply_alias(action)
+        alias = result["alias"]
+        label = f"“{alias['phrase']}” now means {alias['verb']} in {alias['goal']}"
     else:
         raise ValueError(f"remedy write class {write_class!r} has no action")
     applied = {
@@ -2158,14 +2165,14 @@ def _kaizen_request_feedback(proposal: RoutingProposal, reason: Optional[str]) -
 
 
 def _summary_remedy(proposal: RoutingProposal) -> str:
-    return f"remedy (one time): {proposal.semantic_justification}"
+    return f"remedy: {proposal.semantic_justification}"
 
 
 def _diff_remedy(proposal: RoutingProposal) -> Dict[str, Any]:
     payload = proposal.payload or {}
     return {"remedy": {
-        "one_time_action": payload.get("write_class"),
-        "writes": "in-scope only — nothing permanent changes",
+        "action": payload.get("write_class"),
+        "writes": "in-scope only — no change to what the system may do",
         "action": payload.get("action"),
         "answers_andon": payload.get("andon_id"),
     }}

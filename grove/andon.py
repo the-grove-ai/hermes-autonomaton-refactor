@@ -29,9 +29,13 @@ Kaizen's answer is one of three kinds (:data:`ANSWER_KINDS`). The kind fixes
 the surface it may write and the channel it travels on:
 
   standard_work — a change to standard work. Scope-defining. Portal, signed.
-  remedy        — a one-time action for this turn. In-scope ONLY. Chat accept.
+  remedy        — an in-scope action. In-scope ONLY. Answered in conversation.
   watch         — no countermeasure yet; an inert record of what is being
                   watched and what would promote it. In-scope. Automatic.
+
+The zone rule: green changes are approved in conversation; changes to
+authority are signed in the portal. What makes a remedy green is its surface,
+decided here and never by the answer's own say-so.
 
 A remedy whose action would touch a scope-defining surface is not a remedy.
 :func:`classify_surface` decides that before anything is offered, and such an
@@ -62,21 +66,26 @@ SURFACE_SCOPE_DEFINING = "scope_defining"
 SURFACE_IN_SCOPE = "in_scope"
 
 CHANNEL_PORTAL = "portal"          # signed by the operator (Grant Token / demo stamp)
-CHANNEL_CHAT = "chat_accept"       # one-time accept; never a permanent change
+CHANNEL_CHAT = "chat_accept"       # approved in conversation; in-scope surfaces only
 CHANNEL_AUTOMATIC = "automatic"    # an inert watch record; changes no behavior
 
 LOOP_KAIZEN_ANSWER = "kaizen_answer"
 DETECTOR_KAIZEN_FAILURE = "kaizen_failure"
 
-# One-time actions a remedy may take, and the single in-scope surface each
-# writes. A remedy naming any other write class, or any path the scope wall
-# calls scope-defining, is refused. Adding a class here is a decision about
-# what the system may do on a chat accept: keep the list short.
+# The actions a remedy may take, and the single in-scope surface each writes.
+# A remedy naming any other write class, or any path the scope wall calls
+# scope-defining, is refused. Adding a class here is a decision about what
+# the system may do on an answer in conversation: keep the list short.
 REMEDY_WRITE_CLASSES: Dict[str, str] = {
     "set_aside_item": "the goal's own decision log",
     "tier_escalation": "this turn's routing (one tier up, once)",
     "kaizen_tier_escalation": "Kaizen's own drafting tier (one tier up, once)",
     "session_reset": "this chat's session (a clean one, under a signed standing rule)",
+    # Green because the SIGNED session rule lets the goal's vocabulary supply
+    # phrases for verbs already in that rule. It adds a way to say something
+    # the operator already authorized; it can never add a verb, change a
+    # threshold or widen scope (checked again when it is applied).
+    "vocabulary_alias": "the goal's learned vocabulary (a phrase for a signed verb)",
 }
 
 # The ladder rule. The router sends each turn to the cheapest tier that can

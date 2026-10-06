@@ -2832,6 +2832,10 @@ class GatewayRunner:
                         session_key, text[:40])
             return True
         merge_pending_message_event(adapter._pending_messages, session_key, event)
+        if advancing and DecisionWork(cfg).waits(text):
+            logger.info("work session %s: an answer about the vocabulary waits its turn",
+                        session_key)
+            return True
         if advancing:
             reissue.note_pause(session_id, notice=True, message=text)
             logger.info("work session %s: change of subject; pausing after this item",
@@ -10196,6 +10200,11 @@ class GatewayRunner:
         offer = getattr(adapter, "offer_reply_actions", None)
         if actions and callable(offer):
             offer(str(source.chat_id), actions)
+        # Cards of their own, sent after the reply.
+        cards = reissue.take_cards(getattr(entry, "session_id", "") or "")
+        offer_cards = getattr(adapter, "offer_cards", None)
+        if cards and callable(offer_cards):
+            offer_cards(str(source.chat_id), cards)
 
     async def _post_turn_reissue(self, event: MessageEvent, source: Any, quick_key: str) -> None:
         """Carry out a re-issue armed during the turn that just ended

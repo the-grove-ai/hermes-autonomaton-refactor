@@ -9,6 +9,10 @@ confirmation turn ends.
       declared evidence rule).
   correction — anomaly: the operator changed an answer. When a keg produced
       that answer the event names the keg, and the handler halts it.
+  phrase reading — tier-down: a model read the operator's whole message as a
+      verb the work session already has, and the count of such readings with
+      no revision after is taken from the decision log. Only for a goal that
+      declares the pattern and has adaptation switched on.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from grove.keg import FLAG_ANOMALY, FLAG_TIER_DOWN_PATTERN
 
 DETECTOR_REFERENCE_AGREEMENT = "reference_agreement"
 DETECTOR_CORRECTION = "correction"
+DETECTOR_PHRASE_READING = "phrase_reading"
 
 
 def _plain(output: Any) -> str:
@@ -96,10 +101,11 @@ def observe(
 
     if decided.get("decision") != DECISION_CONFIRM:
         return []
+    events = _phrase_readings(work, decided, context)
     rule = work.evidence()
     if not rule.get("met") or _answered_already(work):
-        return []
-    return [raise_andon(
+        return events
+    return events + [raise_andon(
         FLAG_TIER_DOWN_PATTERN, detector=DETECTOR_REFERENCE_AGREEMENT, goal=goal,
         summary=(
             f"{rule['confirmations']} confirmed decisions matched the reference "
@@ -108,5 +114,49 @@ def observe(
         evidence=rule["evidence"],
         details={"rule": rule["rule"], "confirmations": rule["confirmations"]},
         observed_input={"confirmations": rule["confirmations"]},
+        context=context,
+    )]
+
+
+def _phrase_readings(
+    work: Any, decided: Mapping[str, Any], context: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    """The operator's words on this confirmation were not a phrase the work
+    session knows, so a model read them. Count how often that exact phrase
+    has been read this way, with no revision after, and flag it. Counting is
+    all Jidoka does here; what the count becomes is Kaizen's answer."""
+    cfg = work.config
+    if not cfg.adaptation.enabled or not decided.get("operator_said"):
+        return []
+    from grove import adaptation
+    from grove.decision_work import _phrase
+
+    said = _phrase(decided.get("operator_said"))
+    pattern = adaptation.alias_pattern(cfg, "confirm")
+    if pattern is None or not pattern.propose or adaptation.refusal(cfg, "confirm", said):
+        return []
+    # Readings from before the operator last answered about this phrase were
+    # already answered; the count Jidoka reports is the one that is still open.
+    found = adaptation.readings(
+        work, pattern, said, since=adaptation.since(cfg, pattern, said))
+    if not found:
+        return []
+    return [raise_andon(
+        FLAG_TIER_DOWN_PATTERN, detector=DETECTOR_PHRASE_READING, goal=cfg.goal_id,
+        summary=(
+            f"a model read “{said}” as {pattern.verb} {len(found)} time(s), "
+            f"with no revision after"
+        ),
+        evidence=[{
+            "item_id": r.get("item_id"), "decided_id": r.get("id"),
+            "turn_uid": r.get("turn_uid"), "turn_id": r.get("turn_id"),
+            "at": r.get("ts"),
+        } for r in found],
+        details={
+            "pattern": pattern.id, "verb": pattern.verb, "phrase": said,
+            "threshold": pattern.threshold, "readings": len(found),
+            "session_id": decided.get("session_id"),
+        },
+        observed_input={"phrase": said, "read_as": pattern.verb},
         context=context,
     )]

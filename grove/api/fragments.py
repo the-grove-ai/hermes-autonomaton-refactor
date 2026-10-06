@@ -789,6 +789,33 @@ def _goal_standard_work_html(goal) -> str:
            if cfg.isolated else "These turns may also draw on recalled knowledge.")
         + '</p></div>')
 
+    # What Mylo is watching: each declared pattern, its count against its
+    # threshold, and its state. Only for a goal with adaptation switched on.
+    watching = ""
+    if cfg.adaptation.enabled:
+        try:
+            from grove import adaptation as lane
+            becomes = {"alias": "a phrase you approve in conversation",
+                       "routing_keg": "a routing rule you sign"}
+            rows = "".join(
+                f'<div class="sc-row"><span>{_esc(r["what"])} <span class="sc-quiet">· becomes '
+                f'{_esc(becomes.get(r["becomes"], r["becomes"]))}'
+                + ("" if r["proposes"] else " · counting only for now")
+                + f'</span></span><span class="sc-mono">{_esc(r["count"])} of '
+                f'{_esc(r["threshold"])} <span class="sc-eyebrow'
+                f'{" sc-on" if r["state"] == "live" else ""}">'
+                f'{_esc(str(r["state"]).upper())}</span></span></div>'
+                for r in lane.status(dw.DecisionWork(cfg)))
+            watching = (
+                '<section class="sc-pair"><div class="sc-panel"><h3>What Mylo is watching'
+                f'</h3><div class="sc-rows">{rows}</div><p class="sc-foot">Counted from '
+                'the records. A phrase is counted only when a model read it and you did '
+                'not revise the result; a revision starts the count again. Take a phrase '
+                f'back by saying “{_esc(cfg.adaptation.forget[0])}” and the phrase.</p>'
+                '</div></section>')
+        except Exception as exc:  # noqa: BLE001 — the goal page never fails for a panel
+            logger.warning("[fragments] watching panel unavailable for %s: %r", goal.id, exc)
+
     links = (
         '<div class="sc-check-line"><a class="sc-run sc-download" '
         'href="/portal#fragments/audit/">Open the scorecard</a>'
@@ -796,7 +823,8 @@ def _goal_standard_work_html(goal) -> str:
         '<a class="sc-back-btn sc-download" href="/portal#fragments/proposals/pending">'
         'Pending proposals</a></div>')
     return (f'{tiles}{links}<section class="sc-pair">{history}{in_force or how}</section>'
-            f'<section class="sc-pair">{how if in_force else ""}{reads_html}</section>')
+            f'<section class="sc-pair">{how if in_force else ""}{reads_html}</section>'
+            f'{watching}')
 
 
 def render_goal_detail(app, goal) -> str:

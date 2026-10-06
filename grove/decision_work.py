@@ -198,6 +198,62 @@ class WorkSession:
     # The item card. Fields: n, total, value, why, the item's declared inputs
     # and whatever else the goal's adapter supplies for the item.
     card: str = "{item} {n} of {total}: {label}\nProposed: {value}\n{why}"
+    # Phrases the operator approved in conversation, as (verb, phrase). They
+    # are already merged into the verb's list above; kept apart here so the
+    # session rule lists only what the Dock declares.
+    learned: Tuple[Tuple[str, str], ...] = ()
+
+
+# What a pattern counts, and what it may become. A pattern is declared in the
+# Dock; a new kind of count or outcome is the only thing that takes code.
+COUNTS_PHRASE_READ_AS = "phrase_read_as"            # a model read a phrase as a verb
+COUNTS_TURNS_FAILED_UPWARD = "turns_failed_upward"  # the ladder rule moved a turn up
+BECOMES_ALIAS = "alias"                # a phrase for a verb; approved in conversation
+BECOMES_ROUTING_KEG = "routing_keg"    # where a class of work starts; signed
+PATTERN_OUTCOMES = {
+    COUNTS_PHRASE_READ_AS: BECOMES_ALIAS,
+    COUNTS_TURNS_FAILED_UPWARD: BECOMES_ROUTING_KEG,
+}
+# Verbs whose reading by a model leaves a record that can be counted: the
+# decision it recorded. Only these can earn an alias.
+READABLE_VERBS = frozenset({"confirm"})
+ANSWER_WORDS = ("yes", "y", "yeah", "yep", "sure", "ok", "okay", "no", "nope", "not now")
+REFUSE_WORDS = ("no", "not", "don't", "dont", "never", "wrong", "hmm", "maybe", "wait",
+                "but", "why", "what")
+
+
+@dataclass(frozen=True)
+class Pattern:
+    """One thing the system counts in this goal's records, the count that
+    matters, and what reaching it becomes."""
+    id: str
+    counts: str
+    threshold: int
+    becomes: str
+    verb: Optional[str] = None
+    propose: bool = True
+    max_words: int = 4
+
+
+@dataclass(frozen=True)
+class Adaptation:
+    """What this goal's work may learn about how the operator talks.
+    ``enabled`` False (or no block) changes nothing anywhere."""
+    enabled: bool = False
+    patterns: Tuple[Pattern, ...] = ()
+    # While a question from the system is open, these typed words could be
+    # about it or about the item waiting. They do neither.
+    answer_words: Tuple[str, ...] = ANSWER_WORDS
+    # A phrase containing one of these is never offered as an alias.
+    refuse_words: Tuple[str, ...] = REFUSE_WORDS
+    forget: Tuple[str, ...] = ("forget",)
+    buttons: Tuple[Tuple[str, str], ...] = (("yes", "Yes"), ("later", "Not now"))
+
+    def alias_verbs(self) -> Tuple[str, ...]:
+        if not self.enabled:
+            return ()
+        return tuple(dict.fromkeys(
+            p.verb for p in self.patterns if p.becomes == BECOMES_ALIAS and p.verb))
 
 
 @dataclass(frozen=True)
@@ -226,6 +282,7 @@ class DecisionWorkConfig:
     backlog: Optional[Path] = None
     # See SESSION_MEMORY_*.
     session_memory: str = SESSION_MEMORY_RECORDS_ONLY
+    adaptation: Adaptation = field(default_factory=Adaptation)
 
     @property
     def isolated(self) -> bool:
@@ -406,8 +463,10 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
             revision_tiers=tuple(tiers),
         )
 
+    adaptation = _load_adaptation(raw.get("adaptation"), str(goal.id), session)
+
     resolved = getattr(goal, "resolved_sources", None)
-    return DecisionWorkConfig(
+    cfg = DecisionWorkConfig(
         goal_id=str(goal.id),
         tool=str(_need(raw, "tool", "decision_work")),
         queue=_resolve(root, _need(raw, "queue", "decision_work")),
@@ -424,7 +483,109 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         work_session=session,
         backlog=(_resolve(root, raw["backlog"]) if raw.get("backlog") else None),
         session_memory=session_memory,
+        adaptation=adaptation,
     )
+    return _with_learned(cfg)
+
+
+def _load_adaptation(raw: Any, goal_id: str, session: WorkSession) -> Adaptation:
+    """The goal's ``adaptation`` block. Malformed is refused, as everything
+    else in the declaration is."""
+    if raw is None:
+        return Adaptation()
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"goal {goal_id!r}: adaptation must be a mapping")
+    enabled = raw.get("enabled", False)
+    if not isinstance(enabled, bool):
+        raise ValueError(f"goal {goal_id!r}: adaptation.enabled must be true or false")
+
+    def _words(key: str, default: Tuple[str, ...]) -> Tuple[str, ...]:
+        value = raw.get(key)
+        if value is None:
+            return default
+        if not isinstance(value, (list, tuple)) or not all(
+                isinstance(v, str) and v.strip() for v in value):
+            raise ValueError(
+                f"goal {goal_id!r}: adaptation.{key} must be a list of words "
+                f"(quote each one: a bare yes or no is read as true or false)")
+        return tuple(v.strip() for v in value)
+
+    patterns = []
+    listed = raw.get("patterns") or ()
+    if not isinstance(listed, (list, tuple)):
+        raise ValueError(f"goal {goal_id!r}: adaptation.patterns must be a list")
+    for entry in listed:
+        if not isinstance(entry, Mapping) or not str(entry.get("id") or "").strip():
+            raise ValueError(f"goal {goal_id!r}: each adaptation pattern needs an id")
+        pid, counts = str(entry["id"]).strip(), entry.get("counts")
+        where = f"goal {goal_id!r}: adaptation pattern {pid!r}"
+        if counts not in PATTERN_OUTCOMES:
+            raise ValueError(f"{where} counts {counts!r}; it can count "
+                             f"{sorted(PATTERN_OUTCOMES)}")
+        becomes = entry.get("becomes", PATTERN_OUTCOMES[counts])
+        if becomes != PATTERN_OUTCOMES[counts]:
+            raise ValueError(f"{where}: {counts} can only become "
+                             f"{PATTERN_OUTCOMES[counts]!r}, not {becomes!r}")
+        threshold = entry.get("threshold")
+        if not isinstance(threshold, int) or isinstance(threshold, bool) or threshold < 1:
+            raise ValueError(f"{where} needs a threshold of 1 or more")
+        verb, propose = entry.get("verb"), entry.get("propose", becomes == BECOMES_ALIAS)
+        if not isinstance(propose, bool):
+            raise ValueError(f"{where}: propose must be true or false")
+        if becomes == BECOMES_ALIAS:
+            if verb not in READABLE_VERBS:
+                raise ValueError(
+                    f"{where}: an alias needs a verb whose reading leaves a record "
+                    f"to count; today that is {sorted(READABLE_VERBS)}, not {verb!r}")
+        elif propose:
+            raise ValueError(
+                f"{where}: {becomes} is counted but not yet proposed; set propose: false")
+        max_words = entry.get("max_words", Pattern.max_words)
+        if not isinstance(max_words, int) or isinstance(max_words, bool) or max_words < 1:
+            raise ValueError(f"{where}: max_words must be 1 or more")
+        patterns.append(Pattern(
+            id=pid, counts=str(counts), threshold=threshold, becomes=str(becomes),
+            verb=str(verb) if verb else None, propose=propose, max_words=max_words))
+    if len({p.id for p in patterns}) != len(patterns):
+        raise ValueError(f"goal {goal_id!r}: adaptation pattern ids must be unique")
+    if enabled and not session.enabled:
+        raise ValueError(
+            f"goal {goal_id!r}: adaptation needs an enabled work_session to learn in")
+    return Adaptation(
+        enabled=enabled, patterns=tuple(patterns),
+        answer_words=_words("answer_words", ANSWER_WORDS),
+        refuse_words=_words("refuse_words", REFUSE_WORDS),
+        forget=_words("forget", ("forget",)),
+    )
+
+
+def _with_learned(cfg: "DecisionWorkConfig") -> "DecisionWorkConfig":
+    """Merge the phrases the operator approved in conversation into the work
+    session's verbs. Honored ONLY while all of these hold: adaptation is on,
+    the phrase's verb is one the session rule lets the vocabulary supply, and
+    the operator's signature on that rule stands. Otherwise the vocabulary
+    file is ignored — a phrase can never act under a rule nobody signed."""
+    verbs = cfg.adaptation.alias_verbs()
+    if not verbs:
+        return cfg
+    from grove import adaptation as lane
+
+    learned = lane.load(cfg.goal_id)
+    if not learned:
+        return cfg
+    unsigned = sorted(v for v in learned if v not in verbs)
+    if unsigned:
+        raise ValueError(
+            f"goal {cfg.goal_id!r}: the vocabulary names {unsigned}, which the "
+            f"session rule does not let it supply phrases for ({sorted(verbs)})")
+    if session_rule_grant(cfg) is None:
+        return cfg
+    from dataclasses import replace
+
+    pairs = tuple((verb, phrase) for verb in verbs for phrase in learned.get(verb, ()))
+    merged = {verb: tuple(dict.fromkeys(
+        (*getattr(cfg.work_session, verb), *learned.get(verb, ())))) for verb in verbs}
+    return replace(cfg, work_session=replace(cfg.work_session, learned=pairs, **merged))
 
 
 def config_for_goal(goal_id: str, *, dock: Any = None) -> DecisionWorkConfig:
@@ -505,6 +666,15 @@ def button_message(action: str, item_id: str) -> str:
     return f"{action} #{item_id}"
 
 
+# A press on a question card (not an item card): the answer and the id of the
+# proposal the card was about.
+ALIAS_PRESS = re.compile(r"alias\s+(yes|later)\s+#(\S+)", re.IGNORECASE)
+
+
+def alias_message(answer: str, proposal_id: str) -> str:
+    return f"alias {answer} #{proposal_id}"
+
+
 _PHRASE_RE = re.compile(r"[^\w\s']+")
 
 
@@ -561,13 +731,27 @@ def session_rule(cfg: "DecisionWorkConfig") -> Dict[str, Any]:
     if ws.enabled:
         # Present only while the work session is switched on, so switching it
         # off leaves the rule — and the operator's signature on it — as it was.
+        learned = set(ws.learned)
+
+        def _declared(verb: str) -> List[str]:
+            return [p for p in getattr(ws, verb) if (verb, p) not in learned]
+
         rule["work_session"] = {
-            "start": list(ws.start), "confirm": list(ws.confirm),
-            "revise": list(ws.revise), "pause": list(ws.pause),
+            "start": _declared("start"), "confirm": _declared("confirm"),
+            "revise": _declared("revise"), "pause": _declared("pause"),
             "after_a_decision": "present_the_next_item",
         }
         if ws.batch:
             rule["work_session"]["batch"] = list(ws.batch)
+        verbs = cfg.adaptation.alias_verbs()
+        if verbs:
+            # The one line that lets the goal's vocabulary supply further
+            # phrases for verbs ALREADY in this rule. Present only while
+            # adaptation is on, so switching it off leaves the rule as signed.
+            rule["work_session"]["vocabulary"] = {
+                "verbs": list(verbs), "match": "exact",
+                "added_by": "the operator, in conversation",
+            }
     return rule
 
 
@@ -852,6 +1036,8 @@ def reset_work(cfg: "DecisionWorkConfig", label: str = "", *,
     for entry in kegs:
         store.set_status(entry.pattern_id, STATUS_DEMOTED)
     out["backlog_removed"] = withhold_backlog(cfg)
+    from grove import adaptation as lane
+    out["vocabulary"] = lane.reset(cfg, surface=surface)
     from grove import reissue
     reissue.goal_note(cfg.goal_id, take=True)      # a fresh run owes no keg pass
     new = work.log.start_run(label or "demo reset")
@@ -1263,6 +1449,18 @@ class DecisionWork:
         return bool(
             says(message, ws.confirm) or asks_for_work(str(message or ""), self.config)
             or BUTTON_PRESS.fullmatch(str(message or "").strip()))
+
+    def waits(self, message: Any) -> bool:
+        """Whether a message that arrives while the next item is on its way
+        is an answer about the vocabulary (a press on a question card, a
+        phrase taken back). It is not a change of subject: it waits its turn
+        and the session goes on."""
+        learning = getattr(self.config, "adaptation", None)
+        if not (self.config.work_session.enabled and learning and learning.enabled):
+            return False
+        from grove import adaptation as lane
+        action = lane.session_action(self, message) or {}
+        return action.get("action") in ("alias_yes", "alias_later", "forget", "hold")
 
     def pause_notice(self) -> str:
         """The one line the operator reads when the session pauses."""
@@ -1760,7 +1958,8 @@ class DecisionWork:
             # is recorded), or overlap at the threshold (routing only).
             "match": (None if action is None else
                       "button" if action.get("button") else
-                      "exact" if action.get("action") in ("confirm", "revise", "revise_prompt")
+                      "exact" if action.get("action") in (
+                          "confirm", "revise", "revise_prompt", "hold", "forget")
                       else "overlap"),
         }
 
@@ -1790,6 +1989,11 @@ class DecisionWork:
             kind, item_id = pressed.group(1).lower(), pressed.group(2)
             return {"action": "confirm" if kind == "confirm" else "revise_prompt",
                     "item_id": item_id, "button": True}
+        if self.config.adaptation.enabled:
+            from grove import adaptation as lane
+            learning = lane.session_action(self, message)
+            if learning is not None:
+                return learning
         if routes(message, ws.pause, self.config):
             return {"action": "pause"}
         if waiting is not None:
@@ -1926,6 +2130,8 @@ class DecisionWork:
                 lines.append(
                     "Kaizen proposed " + (f"keg v{version}" if version else "a change")
                     + ". Review in portal: " + _portal("proposals/pending"))
+            elif answer.get("write_class") == "vocabulary_alias":
+                pass      # asked on its own card, with its own buttons
             elif answer.get("summary") and answer.get("kind") != "watch":
                 lines.append(str(answer["summary"]))
         if self.last_observation_error:
@@ -1952,6 +2158,9 @@ class DecisionWork:
                     "item_id": None, "decided": False, "presented": False}
         if kind == "batch":
             return self._batch_step(provenance, action.get("inputs_for"))
+        if kind in ("hold", "alias_yes", "alias_later", "forget"):
+            from grove import adaptation as lane
+            return lane.step(self, action, provenance)
         waiting = self.pending()
         named = action.get("item_id")
         if named and (waiting is None or named != waiting["item_id"]):

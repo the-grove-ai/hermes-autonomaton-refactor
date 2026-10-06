@@ -90,6 +90,15 @@ def describe(rule: Mapping[str, Any]) -> str:
                      "item it covers at once, under its own authority, with no review.")
         if ws.get("pause"):
             text += f" Wording close to {_said('pause')} pauses the session."
+        vocabulary = ws.get("vocabulary")
+        if vocabulary:
+            verbs = ", ".join(vocabulary.get("verbs") or [])
+            text += (
+                f" Vocabulary: a phrase you approve in conversation can also mean "
+                f"{verbs}, on an exact match and only in this work session. It "
+                f"can never add an action, change a threshold or widen what "
+                f"the work may do, and you can take any phrase back by saying so."
+            )
     return text
 
 

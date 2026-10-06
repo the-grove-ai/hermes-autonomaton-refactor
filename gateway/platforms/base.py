@@ -1528,6 +1528,26 @@ class BasePlatformAdapter(ABC):
         operator types the same words instead."""
         self.take_reply_actions(chat_id)
 
+    def offer_cards(self, chat_id: str, cards: list) -> None:
+        """Remember cards to send after the next reply to a chat: a question
+        of its own, with its own buttons (``{"text", "buttons"}``)."""
+        pending = getattr(self, "_offered_cards", None)
+        if pending is None:
+            pending = self._offered_cards = {}
+        pending.setdefault(str(chat_id), []).extend(dict(c) for c in cards)
+
+    def take_cards(self, chat_id: str) -> list:
+        return (getattr(self, "_offered_cards", None) or {}).pop(str(chat_id), [])
+
+    async def send_offered_cards(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
+        """Send the cards offered for a chat. Platforms with inline buttons
+        override this; the default sends the text and says what to type."""
+        for card in self.take_cards(chat_id):
+            options = " or ".join(f"“{message}”" for _label, message in card.get("buttons") or [])
+            text = str(card.get("text") or "")
+            await self.send(chat_id, text + (f"\nReply {options}." if options else ""),
+                            metadata=metadata)
+
     def set_message_handler(self, handler: MessageHandler) -> None:
         """
         Set the handler for incoming messages.
@@ -3213,6 +3233,15 @@ class BasePlatformAdapter(ABC):
                     except Exception as _actions_exc:
                         logger.warning(
                             "[%s] could not attach reply actions: %r", self.name, _actions_exc)
+                    # A question of its own (for instance, whether a phrase
+                    # should mean what a model keeps reading it as). Sent after
+                    # the reply, as its own card; the work goes on meanwhile.
+                    try:
+                        await self.send_offered_cards(
+                            str(event.source.chat_id), metadata=_thread_metadata)
+                    except Exception as _cards_exc:
+                        logger.error(
+                            "[%s] could not send an offered card: %r", self.name, _cards_exc)
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors
