@@ -211,6 +211,9 @@ class DecisionWorkConfig:
     # "messages"). Read by reports; plays no part in deciding anything.
     item_name: Tuple[str, str] = ("item", "items")
     work_session: WorkSession = field(default_factory=WorkSession)
+    # Optional: a folder of further items that are NOT in the queue until
+    # they are released into it (work that "arrives later" — a backlog).
+    backlog: Optional[Path] = None
 
     @property
     def isolated(self) -> bool:
@@ -398,6 +401,7 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         on_unclean=on_unclean,
         item_name=item_name,
         work_session=session,
+        backlog=(_resolve(root, raw["backlog"]) if raw.get("backlog") else None),
     )
 
 
@@ -582,6 +586,121 @@ def isolating_goal_for(
         if session_rule_grant(cfg, store=grants) is not None:
             return goal.id
     return None
+
+
+# ── starting over, and work that arrives later ────────────────────────
+
+
+def backlog_state(cfg: "DecisionWorkConfig") -> Dict[str, Any]:
+    """Where the goal's backlog stands: how many items it holds, and how many
+    of those are in the queue now."""
+    if cfg.backlog is None or not cfg.backlog.is_dir():
+        return {"declared": cfg.backlog is not None, "items": 0, "released": 0}
+    names = {p.name for p in cfg.backlog.iterdir() if p.is_file() and not p.name.startswith(".")}
+    queued = {p.name for p in cfg.queue.iterdir() if p.is_file()} if cfg.queue.is_dir() else set()
+    return {"declared": True, "items": len(names), "released": len(names & queued)}
+
+
+def release_backlog(cfg: "DecisionWorkConfig") -> int:
+    """Put the backlog's items into the queue (copies; the backlog keeps its
+    own). Returns how many were added. Items already there are left alone."""
+    import shutil
+
+    if cfg.backlog is None or not cfg.backlog.is_dir():
+        raise ValueError(f"goal {cfg.goal_id!r} declares no backlog folder")
+    added = 0
+    for path in sorted(cfg.backlog.iterdir()):
+        target = cfg.queue / path.name
+        if path.is_file() and not path.name.startswith(".") and not target.exists():
+            shutil.copy2(path, target)
+            added += 1
+    return added
+
+
+def withhold_backlog(cfg: "DecisionWorkConfig") -> int:
+    """Take the backlog's items back out of the queue: only files the backlog
+    folder itself holds, never anything else. Returns how many were removed."""
+    if cfg.backlog is None or not cfg.backlog.is_dir():
+        return 0
+    removed = 0
+    for path in cfg.backlog.iterdir():
+        target = cfg.queue / path.name
+        if path.is_file() and target.is_file():
+            target.unlink()
+            removed += 1
+    return removed
+
+
+def reset_work(cfg: "DecisionWorkConfig", label: str = "", *,
+               surface: str = "cli", apply: bool = True) -> Dict[str, Any]:
+    """Start a goal's decision work over, without deleting any record.
+
+    Opens a new, clearly marked RUN (the queue starts again at its first
+    item, and everything that reads "the current run" stops seeing earlier
+    decisions); retires the previous run's standard work for the goal (a keg
+    drafted, serving or halted is revoked and stays on record as revoked; a
+    keg proposal still waiting is withdrawn with a recorded disposition); and
+    takes any released backlog back out of the queue. Earlier records and the
+    audit trail are never touched. The reset itself goes on the ledger.
+
+    ``apply`` False returns what WOULD happen and writes nothing."""
+    from grove import keg as keg_mod
+    from grove.eval import proposal_queue
+    from grove.pattern_cache import (
+        PatternCacheStore, STATUS_ACTIVE, STATUS_DEMOTED, STATUS_HALTED,
+        STATUS_SUSPENDED,
+    )
+
+    work = DecisionWork(cfg)
+    run = work.log.current_run()
+    store = PatternCacheStore()
+    kegs = [
+        e for e in store.all()
+        if (keg_mod.keg_record(e).get("keg") or {}).get("dock_goal") == cfg.goal_id
+        and e.status in (STATUS_ACTIVE, STATUS_HALTED, STATUS_SUSPENDED)
+    ]
+    waiting = [
+        p for p in proposal_queue.read_all()
+        if ((p.payload or {}).get("keg") or {}).get("dock_goal") == cfg.goal_id
+    ]
+    out: Dict[str, Any] = {
+        "goal": cfg.goal_id, "applied": bool(apply),
+        "previous_run": (run or {}).get("run_number"),
+        "previous_label": (run or {}).get("label") or "",
+        "decisions": sum(1 for r in work.log.run_records() if r.get("kind") == KIND_PROPOSED),
+        "queued": len(work.queue_items()),
+        "kegs_revoked": [(e.pattern_id, e.status) for e in kegs],
+        "proposals_withdrawn": len(waiting),
+        "backlog_removed": backlog_state(cfg)["released"],
+    }
+    if not apply:
+        return out
+    from grove.flywheel_cli import _record_kaizen_disposition
+    from grove.kaizen_ledger import KaizenLedger
+
+    for proposal in waiting:
+        proposal_queue.remove(proposal.proposal_id)
+        _record_kaizen_disposition(
+            proposal, disposition="withdrawn", reason=label or "demo reset")
+    for entry in kegs:
+        store.set_status(entry.pattern_id, STATUS_DEMOTED)
+    out["backlog_removed"] = withhold_backlog(cfg)
+    new = work.log.start_run(label or "demo reset")
+    out["run"] = new["run_number"]
+    out["label"] = new["label"]
+    first = work.next_item()
+    out["first_item"] = first.stem if first is not None else None
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    KaizenLedger(f"operator-{stamp}").record(
+        "operator_applied",
+        action="work_reset", goal=cfg.goal_id, applied_by="operator",
+        approval_surface=surface, run_opened=new["run_number"], label=new["label"],
+        previous_run=out["previous_run"],
+        kegs_revoked=[p for p, _ in out["kegs_revoked"]],
+        proposals_withdrawn=out["proposals_withdrawn"],
+        backlog_removed=out["backlog_removed"],
+    )
+    return out
 
 
 # ── reference table ───────────────────────────────────────────────────

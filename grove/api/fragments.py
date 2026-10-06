@@ -4941,6 +4941,9 @@ def _audit_economics_html(report, scale: int, chain=None) -> str:
     return f'<div id="audit-economics">{"".join(blocks)}</div>'
 
 
+SCALES_DEFAULT = 1_000_000      # the volume the page opens on
+
+
 def _audit_scale(request: web.Request) -> int:
     from grove.audit import SCALES
     try:
@@ -4950,7 +4953,65 @@ def _audit_scale(request: web.Request) -> int:
     return scale if scale in SCALES else SCALES[-1]
 
 
-async def handle_audit(request: web.Request) -> web.Response:
+def _demo_panel_html(note: str = "") -> str:
+    """Setup and teardown for the proof of concept, on the page the run is
+    shown on. Rendered only while the portal is in demo mode (the same switch
+    that lets the portal sign without a grant token) and only for goals that
+    run a work session. Collapsed, so it is not part of what the run shows."""
+    from grove.api.actions import _demo_tokenless_approve
+    from grove.decision_work import DecisionWork, backlog_state, load_config
+    from grove.dock import load_dock
+
+    if not _demo_tokenless_approve():
+        return ""
+    rows = ""
+    for goal in (getattr(load_dock(), "goals", None) or ()):
+        cfg = load_config(goal)
+        if cfg is None or not cfg.work_session.enabled:
+            continue
+        work = DecisionWork(cfg)
+        run = work.log.current_run() or {}
+        tally = work.tally()
+        queued = len(work.queue_items())
+        backlog = backlog_state(cfg)
+        one, many = cfg.item_name
+        state = (f"Run {run.get('run_number', '—')} · {tally['decided']} of {queued} "
+                 f"{many} decided")
+        release = ""
+        if backlog["declared"] and backlog["items"]:
+            waiting = backlog["items"] - backlog["released"]
+            state += (f" · backlog: {backlog['items']} {many}, "
+                      + ("all in the queue" if not waiting else f"{waiting} not yet released"))
+            if waiting:
+                release = (
+                    f'<button type="button" class="sc-back-btn" '
+                    f'hx-post="/portal/actions/demo/{_esc(cfg.goal_id)}/release" '
+                    f'hx-target="#audit-page" hx-swap="outerHTML">'
+                    f'Release the backlog ({waiting} {_esc(many)})</button>')
+        rows += (
+            f'<div class="sc-version"><div class="sc-version-head"><strong>'
+            f'{_esc(cfg.keg.name if cfg.keg else cfg.goal_id)}</strong>'
+            f'<span class="sc-eyebrow">{_esc(state.upper())}</span></div>'
+            f'<div class="sc-actions"><button type="button" class="sc-back-btn" '
+            f'hx-post="/portal/actions/demo/{_esc(cfg.goal_id)}/reset" '
+            f'hx-target="#audit-page" hx-swap="outerHTML" '
+            f'hx-confirm="Start {_esc(cfg.goal_id)} over? This opens a new run, revokes '
+            f'its kegs and takes the backlog back out of the queue. No record is deleted.">'
+            f'Reset to the start</button>{release}</div>'
+            f'<div class="sc-quiet">Reset opens a new run at the first {_esc(one)}, revokes '
+            f'this goal\'s kegs, withdraws waiting keg proposals, takes any released '
+            f'backlog back out of the queue and ends open work sessions. Earlier records '
+            f'and the audit chain are kept.</div></div>')
+    if not rows:
+        return ""
+    said = f'<div class="sc-note sc-event">{_esc(note)}</div>' if note else ""
+    return (
+        f'<div class="sc" id="demo-controls"><details class="sc-more"'
+        f'{" open" if note else ""}><summary>Demo controls</summary>'
+        f'<div class="sc-versions">{said}{rows}</div></details></div>')
+
+
+def audit_page_html(scale: int, note: str = "") -> str:
     """The Audit page: the current run's scorecard, then the integrity check
     it rests on. Both read the same records; neither writes."""
     from grove import audit as audit_mod
@@ -4962,14 +5023,21 @@ async def handle_audit(request: web.Request) -> web.Response:
         logger.error("[portal] audit check failed: %r", exc)
         integrity_html = _audit_check_failed_html(exc)
     try:
-        economics_html = _audit_economics_html(
-            audit_mod.economics(), _audit_scale(request), chain=chain)
+        economics_html = _audit_economics_html(audit_mod.economics(), scale, chain=chain)
     except Exception as exc:  # noqa: BLE001 — visible error fragment, never a blank panel
         logger.error("[portal] audit economics failed: %r", exc)
         economics_html = (f'<div id="audit-economics"><div class="error-card"><h3>Scorecard '
                           f'unavailable</h3><p>{_esc(type(exc).__name__)}: {_esc(exc)}</p></div></div>')
-    return _html_fragment(
-        '<div id="audit-page">' + economics_html + integrity_html + '</div>')
+    try:
+        demo_html = _demo_panel_html(note)
+    except Exception as exc:  # noqa: BLE001 — the controls never cost the page
+        logger.error("[portal] demo controls failed: %r", exc)
+        demo_html = ""
+    return '<div id="audit-page">' + economics_html + integrity_html + demo_html + '</div>'
+
+
+async def handle_audit(request: web.Request) -> web.Response:
+    return _html_fragment(audit_page_html(_audit_scale(request)))
 
 
 def _audit_check_failed_html(exc) -> str:

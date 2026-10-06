@@ -1346,6 +1346,80 @@ def _unknown_tier_card_html(tier: str) -> str:
     )
 
 
+async def _demo_action(request: web.Request, verb: str) -> web.Response:
+    """Reset a goal's work, or release its backlog, from the portal.
+
+    Execution stage, operator-initiated. Allowed only in demo mode — the same
+    ``portal.demo_tokenless_approve`` switch under which the portal signs
+    without a grant token; with it off this is refused, loudly, and nothing is
+    written. The reset is ``grove.decision_work.reset_work`` (the script's own
+    implementation) and goes on the ledger stamped with the surface."""
+    from grove import decision_work as dw
+    from grove.api.fragments import SCALES_DEFAULT, audit_page_html
+
+    goal_id = request.match_info["goal_id"]
+    if not _demo_tokenless_approve():
+        return await _loud_action_failure(
+            audit_page_html(SCALES_DEFAULT, note="Demo controls are off outside demo mode."),
+            failure_class="demo_controls_off", action=f"demo_{verb}",
+            message="Demo controls are available only in demo mode.",
+            status=403, file_kaizen=False,
+        )
+    try:
+        cfg = dw.config_for_goal(goal_id)
+        if verb == "release":
+            added = dw.release_backlog(cfg)
+            many = cfg.item_name[1]
+            note = (f"Released {added} {many} into the queue." if added
+                    else "The backlog was already in the queue.")
+            logger.info("[portal.actions] demo: released %d backlog item(s) for %s",
+                        added, goal_id)
+        else:
+            label = "portal reset " + datetime.now().astimezone().strftime("%b %-d %-I:%M %p")
+            done = dw.reset_work(cfg, label, surface="portal_demo_tokenless")
+            ended = _end_goal_sessions(goal_id)
+            note = (
+                f"Run {done['run']} is open at {done['first_item'] or 'an empty queue'}. "
+                f"Revoked {len(done['kegs_revoked'])} keg(s), withdrew "
+                f"{done['proposals_withdrawn']} proposal(s), took {done['backlog_removed']} "
+                f"backlog item(s) out of the queue, ended {ended} work session(s). "
+                + (f"Say “{cfg.work_session.start[0]}” to begin."
+                   if cfg.work_session.start else ""))
+            logger.info("[portal.actions] demo: reset %s → run %s", goal_id, done["run"])
+    except Exception as exc:  # noqa: BLE001 — loud, with the page still there
+        logger.error("[portal.actions] demo %s failed for %s: %r", verb, goal_id, exc)
+        return await _loud_action_failure(
+            audit_page_html(SCALES_DEFAULT,
+                            note=f"That did not work: {type(exc).__name__}: {exc}"),
+            failure_class="demo_action_failed", action=f"demo_{verb}",
+            message=f"Demo {verb} failed for {goal_id}: {type(exc).__name__}: {exc}",
+            status=500, file_kaizen=False,
+        )
+    return _html_fragment(audit_page_html(SCALES_DEFAULT, note=note))
+
+
+def _end_goal_sessions(goal_id: str) -> int:
+    """End every open work session for a goal: clear the isolation latch on
+    each session that carries it, so the next request for the work opens a
+    clean session under the signed rule. Returns how many were ended."""
+    from grove.decision_work import ISOLATION_META_PREFIX
+    from hermes_state import SessionDB
+
+    db = SessionDB()
+    keys = db.meta_keys(ISOLATION_META_PREFIX, goal_id)
+    for key in keys:
+        db.set_meta(key, "")
+    return len(keys)
+
+
+async def handle_demo_reset(request: web.Request) -> web.Response:
+    return await _demo_action(request, "reset")
+
+
+async def handle_demo_release(request: web.Request) -> web.Response:
+    return await _demo_action(request, "release")
+
+
 async def handle_tier_model_swap(request: web.Request) -> web.Response:
     """Swap the model bound to a tier. Form body: ``tier`` (T1/T2/T3, R3) and
     ``model_slug`` (must be in the catalog). Calls the sole routing writer, then
@@ -2449,6 +2523,10 @@ def register_action_routes(app: web.Application) -> None:
         "/detach",
         handle_attachment_detach,
     )
+    # Demo controls (proof of concept): start a goal's work over, or release
+    # its backlog into the queue. Demo mode only.
+    app.router.add_post("/portal/actions/demo/{goal_id}/reset", handle_demo_reset)
+    app.router.add_post("/portal/actions/demo/{goal_id}/release", handle_demo_release)
     # portal-model-swap-v1 — tier model swap + revert
     app.router.add_post("/portal/actions/routing/swap", handle_tier_model_swap)
     app.router.add_post("/portal/actions/routing/revert", handle_tier_model_revert)

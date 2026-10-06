@@ -38,58 +38,31 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="write the new run")
     args = parser.parse_args()
 
-    from grove.decision_work import KIND_PROPOSED, DecisionWork, config_for_goal
+    from grove.decision_work import config_for_goal, reset_work
 
+    # The reset itself lives in grove.decision_work, shared with the portal's
+    # Reset button, so the two can never disagree.
     try:
-        work = DecisionWork(config_for_goal(args.goal))
-        run = work.log.current_run()
-        decided = [r for r in work.log.run_records() if r.get("kind") == KIND_PROPOSED]
-        queued = len(work.queue_items())
+        cfg = config_for_goal(args.goal)
+        plan = reset_work(cfg, args.label, apply=False)
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 
     print(f"goal          : {args.goal}")
-    print(f"decision log  : {work.log.path}")
-    print(f"current run   : {run.get('run_number') if run else 'none yet'}"
-          + (f" ({run['label']})" if run and run.get("label") else ""))
-    print(f"decisions in it: {len(decided)} of {queued} queued items")
-
-    from grove import keg as keg_mod
-    from grove.eval import proposal_queue
-    from grove.pattern_cache import (
-        PatternCacheStore, STATUS_ACTIVE, STATUS_DEMOTED, STATUS_HALTED,
-        STATUS_SUSPENDED,
-    )
-
-    store = PatternCacheStore()
-    kegs = [
-        entry for entry in store.all()
-        if (keg_mod.keg_record(entry).get("keg") or {}).get("dock_goal") == args.goal
-        and entry.status in (STATUS_ACTIVE, STATUS_HALTED, STATUS_SUSPENDED)
-    ]
-    waiting = [
-        p for p in proposal_queue.read_all()
-        if ((p.payload or {}).get("keg") or {}).get("dock_goal") == args.goal
-    ]
-    print(f"kegs to revoke : {len(kegs)}"
-          + "".join(f"\n    {e.pattern_id} ({e.status})" for e in kegs))
-    print(f"proposals to withdraw: {len(waiting)}")
+    print(f"current run   : {plan['previous_run'] or 'none yet'}"
+          + (f" ({plan['previous_label']})" if plan["previous_label"] else ""))
+    print(f"decisions in it: {plan['decisions']} of {plan['queued']} queued items")
+    print(f"kegs to revoke : {len(plan['kegs_revoked'])}"
+          + "".join(f"\n    {pid} ({status})" for pid, status in plan["kegs_revoked"]))
+    print(f"proposals to withdraw: {plan['proposals_withdrawn']}")
+    print(f"backlog items to take out of the queue: {plan['backlog_removed']}")
     if not args.apply:
         print("dry run — nothing written. Re-run with --apply to open a new run.")
         return 0
-    from grove.flywheel_cli import _record_kaizen_disposition
-
-    for proposal in waiting:
-        proposal_queue.remove(proposal.proposal_id)
-        _record_kaizen_disposition(
-            proposal, disposition="withdrawn", reason=args.label or "demo reset",
-        )
-    for entry in kegs:
-        store.set_status(entry.pattern_id, STATUS_DEMOTED)
-    new = work.log.start_run(args.label or "demo reset")
-    print(f"✓ opened run {new['run_number']} ({new['label']}); the queue starts "
-          f"again at {work.next_item().stem if work.next_item() else 'nothing'}.")
+    done = reset_work(cfg, args.label, surface="cli")
+    print(f"✓ opened run {done['run']} ({done['label']}); the queue starts "
+          f"again at {done['first_item'] or 'nothing'}.")
     print("Start a fresh chat session with /new before coding.")
     return 0
 

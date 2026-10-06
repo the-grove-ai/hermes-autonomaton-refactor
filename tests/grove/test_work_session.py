@@ -746,3 +746,95 @@ def test_with_the_session_on_the_model_is_never_told_to_wait_for_the_operator(en
     with pytest.raises(DecisionRefused) as stop:
         off.check_one_step_per_turn(deciding)
     assert "starts when the operator asks for it" in str(stop.value)   # as before
+
+
+# ── setup and teardown: reset, and a backlog that arrives later ───────
+
+
+def _with_backlog(env, tmp_path):
+    work = env.work(session=BATCH)
+    backlog = tmp_path / "backlog"
+    backlog.mkdir()
+    for n, channel in ((21, "billing"), (22, "legal")):
+        (backlog / f"m{n}.txt").write_text(channel)
+    cfg = work.config.__class__(**{**work.config.__dict__, "backlog": backlog})
+    return DecisionWork(cfg), cfg
+
+
+def test_the_backlog_is_released_into_the_queue_and_taken_back_out(env, tmp_path):
+    work, cfg = _with_backlog(env, tmp_path)
+    env.add("billing", "outage")
+    assert dw.backlog_state(cfg) == {"declared": True, "items": 2, "released": 0}
+    assert dw.release_backlog(cfg) == 2 and len(work.queue_items()) == 4
+    assert dw.release_backlog(cfg) == 0                        # already there
+    assert dw.backlog_state(cfg)["released"] == 2
+    # Taking it back removes ONLY the backlog's own files.
+    assert dw.withhold_backlog(cfg) == 2
+    assert [p.name for p in work.queue_items()] == ["m01.txt", "m02.txt"]
+    assert sorted(p.name for p in cfg.backlog.iterdir()) == ["m21.txt", "m22.txt"]
+    with pytest.raises(ValueError, match="no backlog"):
+        dw.release_backlog(env.work().config)
+
+
+def test_reset_starts_over_without_deleting_anything(env, tmp_path):
+    from grove.kaizen_ledger import default_ledger_dir
+    from grove.pattern_cache import PatternCacheStore, STATUS_DEMOTED
+
+    work, cfg = _with_backlog(env, tmp_path)
+    _serve_keg()
+    env.add("billing", "outage")
+    env.propose(work)
+    work.session_step({"action": "confirm"}, env.prov(tier="T0"))
+    dw.release_backlog(cfg)
+    before = len(work.log.records())
+    plan = dw.reset_work(cfg, "again", apply=False)
+    assert plan["applied"] is False and plan["backlog_removed"] == 2
+    assert len(work.log.records()) == before                   # a dry run writes nothing
+    assert PatternCacheStore().get("keg:mt:v2").status != STATUS_DEMOTED
+    done = dw.reset_work(cfg, "again", surface="portal_demo_tokenless")
+    assert (done["label"], done["first_item"], done["backlog_removed"]) == ("again", "m01", 2)
+    assert done["kegs_revoked"] == [("keg:mt:v2", "active")]
+    assert PatternCacheStore().get("keg:mt:v2").status == STATUS_DEMOTED
+    # Every earlier record is still in the log; the new run just starts empty.
+    assert len(work.log.records()) == before + 1 and work.tally()["decided"] == 0
+    assert len(work.queue_items()) == 2
+    events = [json.loads(l) for f in default_ledger_dir().glob("operator-*.jsonl")
+              for l in f.read_text().splitlines()]
+    [event] = [e for e in events if e.get("action") == "work_reset"]
+    assert (event["event_type"], event["approval_surface"], event["run_opened"]) == (
+        "operator_applied", "portal_demo_tokenless", done["run"])
+    assert event["kegs_revoked"] == ["keg:mt:v2"] and event["record_hash"]
+
+
+def test_the_portals_demo_controls_exist_only_in_demo_mode(env, tmp_path, monkeypatch):
+    import asyncio
+    import grove.api.actions as actions
+    import grove.dock as dock_mod
+    from grove.api import fragments
+
+    work, cfg = _with_backlog(env, tmp_path)
+    env.add("billing")
+    goal = SimpleNamespace(id=GOAL)
+    monkeypatch.setattr(dock_mod, "load_dock", lambda: SimpleNamespace(goals=(goal,)))
+    monkeypatch.setattr(dw, "load_config", lambda g: cfg)
+    monkeypatch.setattr(dw, "config_for_goal", lambda goal_id, dock=None: cfg)
+    monkeypatch.setattr(actions, "_demo_tokenless_approve", lambda: True)
+    panel = fragments._demo_panel_html()
+    assert "Demo controls" in panel and "Reset to the start" in panel
+    assert "Release the backlog (2 messages)" in panel
+    assert f'/portal/actions/demo/{GOAL}/reset' in panel
+    # Outside demo mode: no panel, and the action itself refuses and writes nothing.
+    monkeypatch.setattr(actions, "_demo_tokenless_approve", lambda: False)
+    assert fragments._demo_panel_html() == ""
+    monkeypatch.setattr(fragments, "audit_page_html", lambda scale, note="": f"<div>{note}</div>")
+    refused = []
+
+    async def loud(html, **kw):
+        refused.append(kw)
+        return SimpleNamespace(status=kw["status"])
+
+    monkeypatch.setattr(actions, "_loud_action_failure", loud)
+    request = SimpleNamespace(match_info={"goal_id": GOAL})
+    response = asyncio.run(actions._demo_action(request, "reset"))
+    assert response.status == 403 and refused[0]["failure_class"] == "demo_controls_off"
+    assert work.log.records() == []                            # nothing was opened

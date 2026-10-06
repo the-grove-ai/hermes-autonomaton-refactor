@@ -2476,6 +2476,17 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def meta_keys(self, prefix: str, value: Optional[str] = None) -> List[str]:
+        """Keys in the state_meta store that start with ``prefix`` (and, when
+        given, hold exactly ``value``). Read-only."""
+        query, params = "SELECT key FROM state_meta WHERE key LIKE ?", [prefix + "%"]
+        if value is not None:
+            query += " AND value = ?"
+            params.append(value)
+        with self._lock:
+            rows = self._conn.execute(query, params).fetchall()
+        return [row["key"] if isinstance(row, sqlite3.Row) else row[0] for row in rows]
+
     def set_meta(self, key: str, value: str) -> None:
         """Write a value to the state_meta key/value store."""
         def _do(conn):
