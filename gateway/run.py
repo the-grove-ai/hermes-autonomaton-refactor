@@ -6945,6 +6945,15 @@ class GatewayRunner:
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            # Remedy re-issue: an accepted remedy, or a remedy a signed
+            # standing rule authorizes, may have armed a re-issue of the
+            # operator's request this turn — in a clean session, or one tier
+            # up. Carried out here because only the gateway owns the chat's
+            # session and message queue. Never breaks normal handling.
+            try:
+                await self._post_turn_reissue(event, source, _quick_key)
+            except Exception as _reissue_exc:
+                logger.error("remedy re-issue failed: %r", _reissue_exc)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -10083,6 +10092,46 @@ class GatewayRunner:
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
+
+    async def _post_turn_reissue(self, event: MessageEvent, source: Any, quick_key: str) -> None:
+        """Carry out a re-issue armed during the turn that just ended
+        (``grove.reissue``): optionally open a clean session, optionally pin
+        the next turn one tier up, then put the operator's original request
+        back on this chat's queue. Armed only by an accepted remedy or a
+        signed standing rule; consumed exactly once."""
+        from grove import reissue
+
+        try:
+            entry = self.session_store.get_or_create_session(source)
+        except Exception:
+            return
+        armed = reissue.take(getattr(entry, "session_id", "") or "")
+        if not armed:
+            return
+        request = armed.get("request") or event.text
+        if not request:
+            logger.error("remedy re-issue for %s had no request to re-issue", quick_key)
+            return
+        if armed.get("clean_session"):
+            # The same path /new takes — and it clears this chat's queue, so
+            # the request is enqueued only after it.
+            await self._handle_reset_command(event)
+            entry = self.session_store.get_or_create_session(source)
+        if armed.get("tier"):
+            reissue.arm_tier(getattr(entry, "session_id", "") or "", str(armed["tier"]))
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            logger.error("remedy re-issue for %s found no adapter", quick_key)
+            return
+        self._enqueue_fifo(quick_key, MessageEvent(
+            text=str(request), message_type=MessageType.TEXT, source=source,
+            message_id=None, channel_prompt=None,
+        ), adapter)
+        logger.info(
+            "remedy re-issue for %s: clean_session=%s tier=%s (andon %s, authorized %s)",
+            quick_key, bool(armed.get("clean_session")), armed.get("tier"),
+            armed.get("andon_id"), armed.get("authorized"),
+        )
 
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo command - remove the last user/assistant exchange."""

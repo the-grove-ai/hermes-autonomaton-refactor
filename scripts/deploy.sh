@@ -33,6 +33,31 @@ done
 command -v gcloud >/dev/null 2>&1 || {
   echo "ERROR: gcloud CLI not found." >&2; exit 1; }
 
+# Deploy gate — the andon handler's invariants. Nothing deploys unless every
+# andon event closes with exactly one Kaizen answer, nothing accepted in chat
+# can write a scope-defining surface, no detector imports Kaizen, and Kaizen's
+# own failure goes back through the same handler. One dedicated file, run on
+# its own, so a refusal names the invariant and the test that broke it rather
+# than drowning in the wider suite. Skip only on purpose: SKIP_INVARIANTS=1.
+GATE="tests/grove/test_andon_invariants.py"
+if [[ "${SKIP_INVARIANTS:-0}" != "1" ]]; then
+  echo "▸ Checking andon-handler invariants (${GATE})"
+  GATE_OUT="$(mktemp)"
+  if ! .venv/bin/python -m pytest "${GATE}" -p no:cacheprovider -n0 -q -rf \
+        >"${GATE_OUT}" 2>&1; then
+    echo "✗ DEPLOY REFUSED — an andon-handler invariant failed:" >&2
+    grep -E '^(FAILED|ERROR) ' "${GATE_OUT}" | sed 's/^/    /' >&2 \
+      || tail -n 20 "${GATE_OUT}" >&2
+    echo "  What was asserted (the message carries the andon id where one applies):" >&2
+    grep -E '^E  ' "${GATE_OUT}" | head -n 8 | sed 's/^/    /' >&2 || true
+    echo "  Each test name states the invariant it guards." >&2
+    echo "  Full output: ${GATE_OUT}" >&2
+    exit 1
+  fi
+  tail -n 1 "${GATE_OUT}"
+  rm -f "${GATE_OUT}"
+fi
+
 echo "▸ Deploying origin/main to ${INSTANCE} (${ZONE})"
 
 # Dashboard UI build/ship removed post-Sprint 64: the upstream dashboard is

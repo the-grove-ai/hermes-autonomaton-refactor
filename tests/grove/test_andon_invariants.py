@@ -1,0 +1,537 @@
+"""The andon handler's invariants — THE DEPLOY GATE.
+
+``scripts/deploy.sh`` runs this file on its own and refuses to deploy when
+any test here fails. Each test name states the invariant it guards, and each
+assertion message names the andon id involved, so a refusal reads as "which
+rule, on which event".
+
+  Invariant 1 — every andon event closes with exactly one Kaizen answer.
+  Invariant 2 — nothing accepted in chat can write a scope-defining surface.
+  Invariant 3 — no detector imports Kaizen.
+  Recursion   — Kaizen's own failure goes back through the same handler.
+
+The five cases are the events that used to end with a bare refusal. Fixtures
+are a MESSAGE-TAGGING goal: the handler is generic and so is its gate.
+"""
+
+from __future__ import annotations
+
+import ast
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+import grove.grants as grants_mod
+import grove.pattern_cache as pc
+from grove import andon, keg
+from grove import decision_work as dw
+from grove import flywheel_cli as fc
+from grove import turn_provenance
+from grove.decision_work import DecisionRefused, DecisionWork
+from grove.eval.proposal_queue import read_all
+from grove.kaizen import answers, standard_work
+from grove.kaizen_ledger import default_ledger_dir, verify_ledger_chain
+from grove.pattern_cache import PatternCacheStore, STATUS_ACTIVE, STATUS_HALTED
+
+GOAL = "message-triage"
+REPO = Path(__file__).resolve().parents[2]
+
+
+@pytest.fixture
+def env(tmp_path, monkeypatch):
+    db = tmp_path / "pattern_cache.db"
+    monkeypatch.setattr(pc, "default_pattern_cache_path", lambda: db)
+    monkeypatch.setattr(grants_mod, "_store", None)      # per-test grant store
+    (tmp_path / "queue").mkdir()
+    (tmp_path / "channels.csv").write_text(
+        "Channel,Default Tag\nbilling,finance\noutage,ops\npress,comms\n", encoding="utf-8")
+    (tmp_path / "tags.csv").write_text(
+        "Tag\nfinance\nops\ncomms\nescalate\nother\n", encoding="utf-8")
+    goal = SimpleNamespace(
+        id=GOAL, root=tmp_path, keywords=("message",), resolved_sources=lambda: [],
+        extra={"decision_work": {
+            "tool": "tag_message", "queue": "queue", "isolation": "sources_only",
+            "on_unclean": "open_clean_session",
+            "inputs": {"channel": {"data_type": "string", "required": True},
+                       "subject": {"data_type": "string", "required": False}},
+            "outputs": {"tag": {"data_type": "string"}},
+            "reference_table": {"path": "channels.csv", "key_column": "Channel",
+                                "value_column": "Default Tag", "key_input": "channel",
+                                "value_output": "tag"},
+            "output_domains": [{"output": "tag", "path": "tags.csv", "column": "Tag"}],
+            "evidence": {"threshold": 3},
+            "keg": {"name": "Message tagging", "request": "tag the next message",
+                    "revision_tiers": ["T1", "T2", "T3"]},
+        }},
+    )
+    cfg = dw.load_config(goal)
+    monkeypatch.setattr(dw, "config_for_goal", lambda goal_id, dock=None: cfg)
+    token = turn_provenance.set_current(None)
+
+    class Env:
+        store = PatternCacheStore(db)
+        work = DecisionWork(cfg)
+        n = 0
+
+        def add(self, channel, subject=""):
+            self.n += 1
+            (tmp_path / "queue" / f"m{self.n:02d}.txt").write_text(
+                json.dumps({"channel": channel, "subject": subject}))
+
+        def prov(self, **over):
+            base = {"session_id": "sess", "turn_id": f"sess#{self.n}",
+                    "turn_uid": f"u{self.n}", "tier": "T1", "model": "m",
+                    "request": "tag the next message",
+                    "cellar_hits": 0, "sections": [], "tools_yielded": [],
+                    "isolation_goal": GOAL}
+            base.update(over)
+            turn_provenance.set_current(base)
+            return base
+
+        def inputs(self):
+            return json.loads(self.work.next_item().read_text())
+
+        def code(self, tag, decision="confirm", corrected=None, keg_served=False):
+            item = self.work.next_item()
+            if keg_served:
+                [entry] = [e for e in self.store.all() if e.status == STATUS_ACTIVE]
+                spec = keg.keg_of(entry)
+                self.work.apply_keg(
+                    spec, item_id=item.stem, inputs=self.inputs(),
+                    keg_ref={"name": spec["name"], "version": spec["version"],
+                             "pattern_id": entry.pattern_id},
+                    provenance=self.prov(tier="T0"))
+            else:
+                self.work.record(item_id=item.stem, inputs=self.inputs(),
+                                 output={"tag": tag}, reasoning="", provenance=self.prov())
+            self.work.decide(
+                decision=decision,
+                corrected_output={"tag": corrected} if corrected else None,
+                provenance=self.prov())
+            return self.work.last_observations
+
+        def earn_v1(self):
+            for channel, tag in (("billing", "finance"), ("outage", "ops"), ("press", "comms")):
+                self.add(channel)
+                self.code(tag)
+            [proposal] = [p for p in read_all() if (p.payload or {}).get("keg")]
+            assert fc.cli_approve(proposal.proposal_id.split(":")[-1][:12]) == 0
+
+        def events(self):
+            out = []
+            for f in sorted(default_ledger_dir().glob("*.jsonl")):
+                out += [json.loads(l) for l in f.read_text().splitlines() if l.strip()]
+            return out
+
+    yield Env()
+    turn_provenance.reset(token)
+
+
+def _drafts(*conditions):
+    drafts = list(conditions)
+
+    def call(prompt, *, system=None, tool=None, tier=None, max_tokens=0):
+        return {"condition": drafts.pop(0) if drafts else "", "rationale": "r"}
+    return call
+
+
+def _with_drafts(monkeypatch, *conditions):
+    real = standard_work.draft_condition
+    call = _drafts(*conditions)
+    monkeypatch.setattr(
+        standard_work, "draft_condition",
+        lambda *a, **kw: real(*a, **{**kw, "call": call}))
+
+
+def assert_every_andon_closed_exactly_once(events):
+    """Invariant 1, as a count over the ledger."""
+    raised = [e["andon_id"] for e in events if e["event_type"] == "andon_event"]
+    closed = [a for e in events if e["event_type"] == "kaizen_answer" for a in e["closes"]]
+    assert raised, "no andon event was raised — the scenario exercised nothing"
+    for andon_id in raised:
+        assert closed.count(andon_id) == 1, (
+            f"andon {andon_id} has {closed.count(andon_id)} closing answers, expected 1")
+    assert sorted(closed) == sorted(raised), "a closing answer names an unknown andon"
+    for e in events:
+        if e["event_type"] == "kaizen_answer":
+            assert e["kind"] in andon.ANSWER_KINDS, f"andon {e['andon_id']}: bad kind"
+            assert e["artifact"], f"andon {e['andon_id']} closed with no artifact"
+            assert len(e["source_chain"]) >= 2, f"andon {e['andon_id']}: no source chain"
+    return raised
+
+
+# ── the five cases that used to dead-end ──────────────────────────────
+
+
+def test_case_1_unclean_session_gets_a_proposed_session_rule_then_a_clean_session(env):
+    env.add("billing")
+    # The rule is unsigned: the refusal carries a proposal to sign it.
+    with pytest.raises(DecisionRefused) as refused:
+        env.work.check_turn(env.prov(isolation_goal=None))
+    answer = refused.value.answer
+    assert (answer["kind"], answer["channel"]) == (andon.KIND_STANDARD_WORK, andon.CHANNEL_PORTAL)
+    [proposal] = read_all()
+    assert proposal.type == "session_rule" and proposal.payload["rule"]["on_unclean"] == (
+        "open_clean_session")
+    # Signed in the portal path: a revocable standing grant on exactly that rule.
+    assert fc.cli_approve(proposal.proposal_id.split(":")[-1][:12]) == 0
+    grant = dw.session_rule_grant(env.work.config)
+    assert grant is not None and grant.scope == GOAL
+    # Now the same event is answered by the remedy the standing rule authorizes
+    # — and the operator is never told to type /new.
+    with pytest.raises(DecisionRefused) as again:
+        env.work.check_turn(env.prov(isolation_goal=None))
+    remedy = again.value.answer
+    assert (remedy["kind"], remedy["write_class"], remedy["channel"]) == (
+        andon.KIND_REMEDY, "session_reset", andon.CHANNEL_CHAT)
+    assert remedy["detail"]["standing_grant"] == grant.id
+    # Authorized by the signed rule, so it is carried out without a further
+    # accept: the re-issue is armed for the gateway and recorded on the bus.
+    from grove import reissue
+    armed = reissue.take("sess")
+    assert armed["clean_session"] is True and armed["request"] == "tag the next message"
+    assert armed["authorized"] == grant.id and reissue.take("sess") is None   # once only
+    [applied] = [e for e in env.events() if e["event_type"] == "remedy_applied"]
+    assert (applied["write_class"], applied["standing_grant"], applied["channel"]) == (
+        "session_reset", grant.id, "standing_rule")
+    # Revoked, the rule is out of force at once.
+    assert grants_mod.get_grant_store().revoke_grant(grant.id) is True
+    assert dw.session_rule_grant(env.work.config) is None
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_case_2_invalid_output_gets_a_retry_one_tier_up(env):
+    env.add("billing")
+    with pytest.raises(DecisionRefused) as refused:
+        env.work.record(item_id="m01", inputs=env.inputs(), output={"tag": "made-up"},
+                        reasoning="", provenance=env.prov())
+    answer = refused.value.answer
+    assert (answer["kind"], answer["write_class"], answer["channel"]) == (
+        andon.KIND_REMEDY, "tier_escalation", andon.CHANNEL_CHAT)
+    [remedy] = read_all()
+    assert remedy.type == "remedy" and remedy.payload["action"]["from_tier"] == "T1"
+    assert remedy.payload["action"]["tier"] == "T2"
+    # Accepted in chat: the request is re-issued one tier up, once.
+    from grove import reissue
+    assert fc.cli_approve(remedy.proposal_id.split(":")[-1][:12]) == 0
+    armed = reissue.take("sess")
+    assert (armed["tier"], armed["clean_session"], armed["request"]) == (
+        "T2", False, "tag the next message")
+    # At the top of the ladder there is nothing higher: Kaizen watches instead.
+    with pytest.raises(DecisionRefused) as top:
+        env.work.record(item_id="m01", inputs=env.inputs(), output={"tag": "made-up"},
+                        reasoning="", provenance=env.prov(tier="T3"))
+    assert top.value.answer["kind"] == andon.KIND_WATCH
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_case_3_unreadable_item_is_set_aside_on_accept(env):
+    env.add("billing")
+    env.add("outage")
+    refused = env.work.abnormal(
+        "item_unreadable", "The next item could not be read.",
+        {**env.prov(), "item_id": "m01"})
+    assert refused.answer["write_class"] == "set_aside_item"
+    [remedy] = read_all()
+    assert fc.cli_approve(remedy.proposal_id.split(":")[-1][:12]) == 0   # the chat accept
+    assert env.work.next_item().stem == "m02"                # the queue moved on
+    aside = env.work.set_aside_items()["m01"]
+    assert aside["andon_id"] == refused.andon_id             # nothing dropped, all on record
+    applied = [e for e in env.events() if e["event_type"] == "remedy_applied"]
+    assert applied and applied[0]["write_class"] == "set_aside_item"
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_case_4_correction_of_a_model_answer_is_watched_then_promoted(env):
+    env.earn_v1()
+    # A channel the keg does not cover, answered by the interpreter and
+    # corrected the same way each time.
+    watches = []
+    for n in range(1, 4):
+        env.add("social", f"post {n}")
+        [event] = env.code("other", decision="correct", corrected="comms")
+        watches.append(event)
+        proposals = [p for p in read_all() if (p.payload or {}).get("keg")]
+        if n < 3:
+            # Single corrections change nothing, and are remembered.
+            assert event["answer"]["kind"] == andon.KIND_WATCH, event["andon_id"]
+            assert f"seen {n} of 3" in event["answer"]["summary"]
+            assert proposals == []
+    # At the goal's own evidence threshold the watch promotes to a proposal:
+    # in the portal, with a backtest. Nothing changed silently in between.
+    final = watches[-1]["answer"]
+    assert final["kind"] == andon.KIND_STANDARD_WORK, watches[-1]["andon_id"]
+    assert final["detail"]["promoted_from"] == watches[0]["answer"]["artifact"]
+    [proposal] = [p for p in read_all() if (p.payload or {}).get("keg")]
+    k = proposal.payload["keg"]
+    assert k["version"] == 2 and k["conditions"][0] == {
+        "if": "channel == 'social'", "then": {"tag": "comms"}}
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_case_5_kaizen_draft_failure_fails_upward_then_asks_the_operator(env, monkeypatch):
+    env.earn_v1()
+    asked = []
+    real = standard_work.draft_condition
+
+    def call(prompt, *, system=None, tool=None, tier=None, max_tokens=0):
+        asked.append(tier)
+        return {"condition": "not a condition", "rationale": "r"}
+
+    monkeypatch.setattr(
+        standard_work, "draft_condition",
+        lambda *a, **kw: real(*a, **{**kw, "call": call}))
+    env.add("billing", "refund")
+    [event] = env.code(None, decision="correct", corrected="escalate", keg_served=True)
+    assert asked == ["T1", "T2", "T3"]                       # failed upward, to the top
+    assert event["halted"] and env.store.get(event["halted"][0]).status == STATUS_HALTED
+    assert event["answer"]["kind"] == andon.KIND_STANDARD_WORK
+    [request] = [p for p in read_all() if p.type == "kaizen_request"]
+    assert event["answer"]["artifact"] == request.proposal_id
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+# ── invariant 1 across the whole loop ─────────────────────────────────
+
+
+def test_invariant_1_every_andon_event_closes_with_exactly_one_answer(env, monkeypatch):
+    _with_drafts(monkeypatch, "channel == 'billing' AND subject CONTAINS 'refund'")
+    env.earn_v1()                                             # tier-down → proposal
+    env.add("billing", "refund")
+    env.code(None, decision="correct", corrected="escalate", keg_served=True)   # miss → v2
+    env.add("outage")
+    env.code("finance", decision="correct", corrected="other")                  # watch
+    with pytest.raises(DecisionRefused):
+        env.work.check_turn(env.prov(isolation_goal=None))                      # session rule
+    raised = assert_every_andon_closed_exactly_once(env.events())
+    assert len(raised) == 4
+    kinds = {e["kind"] for e in env.events() if e["event_type"] == "kaizen_answer"}
+    assert kinds == {andon.KIND_STANDARD_WORK, andon.KIND_WATCH}
+
+
+def test_invariant_1_the_ledger_that_holds_the_closes_is_hash_chained(env):
+    env.earn_v1()
+    for path in default_ledger_dir().glob("*.jsonl"):
+        lines = path.read_text().splitlines()
+        report = verify_ledger_chain(lines)
+        assert report["problems"] == [] and report["unchained"] == 0, path.name
+        if len(lines) > 2:
+            tampered = json.loads(lines[1])
+            tampered["summary"] = "edited after the fact"
+            broken = verify_ledger_chain([lines[0], json.dumps(tampered)] + lines[2:])
+            assert broken["problems"], f"an edit to {path.name} went undetected"
+            assert verify_ledger_chain([lines[0]] + lines[2:])["problems"], (
+                f"a removal from {path.name} went undetected")
+
+
+# ── invariant 2: the chat-accept path ─────────────────────────────────
+
+
+def test_invariant_2_no_chat_accepted_answer_touches_a_scope_defining_surface(env, tmp_path):
+    from grove.andon import Answer, ScopeViolation
+    from hermes_constants import get_hermes_home
+
+    dock = str(Path(get_hermes_home()) / "dock" / "dock.yaml")
+    in_scope = Answer(kind=andon.KIND_REMEDY, summary="s", write_class="set_aside_item")
+    assert andon.channel_for(in_scope) == andon.CHANNEL_CHAT
+    andon.assert_chat_acceptable(in_scope)
+    for bad in (
+        Answer(kind=andon.KIND_REMEDY, summary="s", write_class="set_aside_item",
+               write_targets=[dock]),                    # reaches a scope-defining file
+        Answer(kind=andon.KIND_REMEDY, summary="s", write_class="edit_the_dock"),  # undeclared
+        Answer(kind=andon.KIND_STANDARD_WORK, summary="s"),
+        Answer(kind=andon.KIND_WATCH, summary="s"),
+    ):
+        with pytest.raises(ScopeViolation):
+            andon.assert_chat_acceptable(bad)
+    with pytest.raises(ScopeViolation):
+        andon.channel_for(Answer(kind=andon.KIND_REMEDY, summary="s",
+                                 write_class="set_aside_item", write_targets=[dock]))
+    # Standard-work answers only ever travel on the portal channel.
+    assert andon.channel_for(Answer(kind=andon.KIND_STANDARD_WORK, summary="s")) == (
+        andon.CHANNEL_PORTAL)
+
+
+def test_invariant_2_applying_a_remedy_rechecks_its_surface(env):
+    from grove.andon import ScopeViolation
+    from grove.eval.proposal_queue import RoutingProposal
+    from hermes_constants import get_hermes_home
+
+    smuggled = RoutingProposal(
+        proposal_id="sha256:x", type="remedy", evidence=("t",), eval_hash="h",
+        created_at="2026-01-01T00:00:00+00:00",
+        payload={"write_class": "set_aside_item", "action": {"goal": GOAL, "item_id": "m01"},
+                 "write_targets": [str(Path(get_hermes_home()) / "routing.authority.yaml")]},
+    )
+    with pytest.raises(ScopeViolation):
+        fc._apply_remedy(smuggled)
+
+
+def test_invariant_2_standard_work_cannot_be_approved_from_chat(env):
+    from grove.api import actions
+    from tools.flywheel_review_tool import approve_proposal
+
+    env.add("billing")
+    with pytest.raises(DecisionRefused):
+        env.work.check_turn(env.prov(isolation_goal=None))
+    [rule] = read_all()
+    out = json.loads(approve_proposal(rule.proposal_id.split(":")[-1][:12]))
+    assert out["success"] is False and "Operator Portal" in out["error"]
+    assert dw.session_rule_grant(env.work.config) is None     # nothing was signed
+    assert actions._is_scope_defining_proposal(rule) is True  # portal gates it as such
+
+
+# ── invariant 3: detectors cannot reach Kaizen ────────────────────────
+
+
+def _imports(path: Path):
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                yield alias.name
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            yield module
+            for alias in node.names:
+                yield f"{module}.{alias.name}"
+
+
+def test_invariant_3_no_detector_imports_kaizen():
+    detectors = sorted((REPO / "grove" / "detectors").glob("*.py"))
+    assert len(detectors) >= 2, "the detectors package is missing"
+    # The decision engine raises the turn-check andon; it is held to the same rule.
+    for path in detectors + [REPO / "grove" / "decision_work.py"]:
+        for name in _imports(path):
+            assert not (name == "grove.kaizen" or name.startswith("grove.kaizen.")), (
+                f"{path.relative_to(REPO)} imports {name}: a detector raises an "
+                f"andon and returns; it never calls Kaizen")
+
+
+def test_invariant_3_kaizen_is_reached_only_through_the_handler():
+    # The one place the handler hands an event to Kaizen.
+    handler = (REPO / "grove" / "andon.py").read_text(encoding="utf-8")
+    assert handler.count("answers.answer(andon, context)") == 1
+    for path in sorted((REPO / "grove" / "detectors").glob("*.py")):
+        src = path.read_text(encoding="utf-8")
+        if path.name != "__init__.py":
+            assert "raise_andon(" in src, f"{path.name} never raises an andon"
+
+
+# ── recursion: the handler is invariant over Kaizen's own failures ────
+
+
+def test_recursion_kaizens_failure_goes_through_the_same_handler(env, monkeypatch):
+    calls = []
+    real_raise = andon.raise_andon
+
+    def spy(kind, **kw):
+        calls.append(kw["detector"])
+        return real_raise(kind, **kw)
+
+    monkeypatch.setattr(andon, "raise_andon", spy)
+    real_answer = answers.answer
+
+    def failing(event, context=None):
+        if event["detector"] == "probe":
+            raise andon.KaizenCouldNotAnswer("nothing valid", {"reason": "probe_failed"})
+        return real_answer(event, context)
+
+    monkeypatch.setattr(answers, "answer", failing)
+    event = andon.raise_andon(
+        keg.FLAG_ANOMALY, detector="probe", goal=GOAL, summary="a detector fired",
+        evidence=[{"turn_uid": "u1"}])
+    # The failure was raised by the SAME function, as the next andon event.
+    assert calls == ["probe", "kaizen_failure"], calls
+    assert event["escalated_to"] and event["answer"]["kind"] in andon.ANSWER_KINDS
+    cords = [e for e in env.events() if e["event_type"] == "andon_event"]
+    assert cords[1]["originating"] == [event["andon_id"]]
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_recursion_always_terminates_in_one_of_the_three_kinds(env, monkeypatch):
+    def always_fails(event, context=None):
+        raise andon.KaizenCouldNotAnswer("still nothing", {"reason": "always"})
+
+    monkeypatch.setattr(answers, "answer", always_fails)
+    event = andon.raise_andon(
+        keg.FLAG_ANOMALY, detector="probe", goal=GOAL, summary="a detector fired")
+    assert event["answer"]["kind"] == andon.KIND_WATCH       # built without a model
+    raised = assert_every_andon_closed_exactly_once(env.events())
+    assert len(raised) == andon._MAX_DEPTH + 1
+
+
+def test_recursion_a_scope_violating_remedy_is_itself_an_andon_event(env, monkeypatch):
+    from hermes_constants import get_hermes_home
+
+    def overreaching(event, context=None):
+        if event["detector"] == "probe":
+            return andon.Answer(
+                kind=andon.KIND_REMEDY, summary="edit the dock", write_class="set_aside_item",
+                write_targets=[str(Path(get_hermes_home()) / "dock" / "dock.yaml")])
+        return answers.watch_unresolved(event, context)
+
+    monkeypatch.setattr(answers, "answer", overreaching)
+    event = andon.raise_andon(
+        keg.FLAG_ANOMALY, detector="probe", goal=GOAL, summary="a detector fired")
+    # Never offered on the chat channel: refused, and answered as a failure.
+    assert event["escalated_to"] and event["answer"]["kind"] == andon.KIND_WATCH
+    closes = [e for e in env.events() if e["event_type"] == "kaizen_answer"]
+    assert all(c["channel"] != andon.CHANNEL_CHAT for c in closes)
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+# ── carrying out a re-issue ───────────────────────────────────────────
+
+
+def test_reissue_is_consumed_once_and_pins_one_tier_once():
+    from grove import reissue
+
+    assert [reissue.next_tier(t) for t in ("T1", "T2", "T3", "T0", None)] == [
+        "T2", "T3", None, None, None]
+    reissue.arm({"clean_session": True, "request": "do it"}, session_id="chat-1")
+    assert reissue.take("chat-1")["request"] == "do it" and reissue.take("chat-1") is None
+    reissue.arm_tier("chat-1", "T2")
+    assert reissue.take_tier("chat-1") == "T2" and reissue.take_tier("chat-1") is None
+    with pytest.raises(ValueError):
+        reissue.arm({"clean_session": True})          # no session to belong to
+
+
+async def test_gateway_carries_out_an_armed_reissue_after_the_turn():
+    from gateway.run import GatewayRunner
+    from grove import reissue
+
+    calls = []
+
+    class _Store:
+        session_id = "chat-old"
+
+        def get_or_create_session(self, source):
+            return SimpleNamespace(session_id=self.session_id)
+
+    class _Gateway:
+        session_store = _Store()
+        adapters = {"telegram": object()}
+
+        async def _handle_reset_command(self, event):
+            calls.append("reset")
+            self.session_store.session_id = "chat-new"
+
+        def _enqueue_fifo(self, key, event, adapter):
+            calls.append(("enqueue", key, event.text))
+
+    gateway = _Gateway()
+    source = SimpleNamespace(platform="telegram")
+    event = SimpleNamespace(text="approve", source=source)
+    # Nothing armed: nothing happens.
+    await GatewayRunner._post_turn_reissue(gateway, event, source, "key")
+    assert calls == []
+    reissue.arm({"clean_session": True, "tier": "T2", "request": "tag the next message"},
+                session_id="chat-old")
+    await GatewayRunner._post_turn_reissue(gateway, event, source, "key")
+    # Reset first (it clears the chat's queue), then the ORIGINAL request —
+    # not the operator's "approve" — goes back on the queue, pinned one tier up
+    # in the new session.
+    assert calls == ["reset", ("enqueue", "key", "tag the next message")]
+    assert reissue.take_tier("chat-new") == "T2"

@@ -85,9 +85,12 @@ def test_emit_primitive_files_minimal_uniform_payload():
     events = _producer_failures()
     assert len(events) == 1
     # Gate ruling (a): minimal-uniform payload — producer + error only,
-    # beside the ledger's own reserved keys.
+    # beside the ledger's own reserved keys. (2026-10-06: the ledger's
+    # reserved keys now include the provenance chain's two — prev_hash and
+    # record_hash — on every event; the PAYLOAD is unchanged.)
     assert set(events[0]) == {
-        "event_type", "session_id", "timestamp", "producer", "error",
+        "event_type", "session_id", "timestamp", "prev_hash", "record_hash",
+        "producer", "error",
     }
 
 

@@ -54,6 +54,9 @@ invocation usage since GRV-009 E3 C4 (12438f1b6 retired ``tool_batch_executed``)
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
+import os
 import json
 import logging
 import threading
@@ -70,6 +73,101 @@ __all__ = ["KAIZEN_LEDGER_DIRNAME", "KaizenLedger", "default_ledger_dir"]
 # name. Every production construction site consumes default_ledger_dir();
 # the dotted literal appears nowhere else.
 KAIZEN_LEDGER_DIRNAME = ".kaizen_ledger"
+
+
+def ledger_event_digest(event: Dict[str, Any]) -> str:
+    """The chain hash of one ledger event: SHA-256 of its canonical JSON
+    without ``record_hash``. ``prev_hash`` IS covered, so each event commits
+    to everything before it."""
+    body = {k: v for k, v in event.items() if k != "record_hash"}
+    return hashlib.sha256(
+        json.dumps(body, sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _last_record_hash(fh: Any) -> Optional[str]:
+    """``record_hash`` of the last event in an open ledger file, or None when
+    the file is empty or its last event predates the chain."""
+    fh.seek(0, os.SEEK_END)
+    size = fh.tell()
+    if size == 0:
+        return None
+    fh.seek(max(0, size - 65536))
+    tail = fh.read().splitlines()
+    for raw in reversed(tail):
+        if not raw.strip():
+            continue
+        try:
+            return json.loads(raw).get("record_hash")
+        except ValueError:
+            return None
+    return None
+
+
+def verify_ledger_chain(lines: Any, archived: Any = ()) -> Dict[str, Any]:
+    """Verify one ledger file's provenance chain.
+
+    ``lines`` are the file's lines; ``archived`` are the lines the retention
+    engine moved to the archive for this same file (it archives before it
+    prunes, never destroys), so a pruned ledger still verifies as a whole.
+
+    Checks, over every chained event in the union: its own hash is correct
+    (not edited); its ``prev_hash`` names an event that exists (nothing
+    removed from the middle, nothing inserted); no two events claim the same
+    predecessor (no fork, no reorder). Events written before the chain existed
+    carry no hash and are counted, not flagged.
+
+    Not detectable from the file alone: removal of the NEWEST events (the
+    remaining chain is still whole). Returns ``{events, chained, unchained,
+    problems}``; ``problems`` entries are ``{line, event_type, problem}``."""
+    report: Dict[str, Any] = {"events": 0, "chained": 0, "unchained": 0, "problems": []}
+    events: List[Any] = []
+    for origin, source in (("ledger", lines), ("archive", archived)):
+        for number, raw in enumerate(source, 1):
+            if not str(raw).strip():
+                continue
+            try:
+                event = json.loads(raw)
+            except ValueError:
+                report["problems"].append({
+                    "line": number, "event_type": None,
+                    "problem": f"unreadable {origin} line"})
+                continue
+            if not isinstance(event, dict):
+                continue
+            events.append((origin, number, event))
+    report["events"] = len(events)
+    by_hash: Dict[str, Any] = {}
+    chained = []
+    for origin, number, event in events:
+        if not event.get("record_hash"):
+            report["unchained"] += 1
+            continue
+        report["chained"] += 1
+        chained.append((origin, number, event))
+        if ledger_event_digest(event) != event["record_hash"]:
+            report["problems"].append({
+                "line": number, "event_type": event.get("event_type"),
+                "problem": "the event was altered after it was written"})
+        by_hash[event["record_hash"]] = event
+    successors: Dict[Any, int] = {}
+    for origin, number, event in chained:
+        prev = event.get("prev_hash")
+        successors[prev] = successors.get(prev, 0) + 1
+        if prev is not None and prev not in by_hash:
+            report["problems"].append({
+                "line": number, "event_type": event.get("event_type"),
+                "problem": "the event before this one is missing"})
+    for prev, count in successors.items():
+        if count > 1:
+            report["problems"].append({
+                "line": None, "event_type": None,
+                "problem": (
+                    "two events follow the same event (inserted or reordered)"
+                    if prev is not None else
+                    "more than one event claims to be the first"
+                )})
+    return report
 
 
 def default_ledger_dir() -> Path:
@@ -196,6 +294,17 @@ class KaizenLedger:
         "andon_event",
         "kaizen_proposal",
         "new_standard_work",
+        # The one artifact that closes an andon event (grove/andon.py): Kaizen's
+        # answer — a standard-work change, a remedy or a watch — with the
+        # surface it writes, the channel it travels on, and a source_chain of
+        # ledger hashes back to the flag and the event.
+        "kaizen_answer",
+        # An accepted remedy was carried out (its one-time action and result).
+        "remedy_applied",
+        # The operator applied a governance file by hand (e.g. dock.yaml):
+        # which file, digests before and after, which fields changed. Custody
+        # of a change that no proposal carried.
+        "operator_applied",
         # binding-governance-surfaces-v1 — a model_binding write through the
         # sanctioned CapabilityBindingWriter (capability_registry.
         # set_model_binding). The writer files this ITSELF on success
@@ -387,7 +496,7 @@ class KaizenLedger:
                 f"unknown kaizen event_type {event_type!r}; "
                 f"expected one of {sorted(self.EVENT_TYPES)}"
             )
-        reserved = {"event_type", "session_id", "timestamp"}
+        reserved = {"event_type", "session_id", "timestamp", "prev_hash", "record_hash"}
         collisions = reserved & set(fields.keys())
         if collisions:
             raise ValueError(
@@ -400,10 +509,22 @@ class KaizenLedger:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             **fields,
         }
-        line = json.dumps(event, sort_keys=True, default=str) + "\n"
+        # Provenance chain: each event carries the hash of the event before it
+        # in this ledger file and its own hash, so an event that is edited,
+        # removed, inserted or reordered afterwards is detectable
+        # (verify_ledger_chain). The file lock makes read-previous + append one
+        # step across every writer of this file, in this process or another.
         with self._lock:
-            with open(self._path, "a", encoding="utf-8") as fh:
-                fh.write(line)
+            with open(self._path, "a+", encoding="utf-8") as fh:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                try:
+                    event["prev_hash"] = _last_record_hash(fh)
+                    event["record_hash"] = ledger_event_digest(event)
+                    fh.seek(0, os.SEEK_END)
+                    fh.write(json.dumps(event, sort_keys=True, default=str) + "\n")
+                    fh.flush()
+                finally:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
         # stage-summary-v1 — after the event is durably written, let the owner
         # (the Dispatcher) see it, so the turn's stage summary can count this
         # turn's halts, dispositions and grant uses without re-reading the

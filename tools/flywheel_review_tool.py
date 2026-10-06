@@ -490,6 +490,18 @@ def approve_proposal(
         # A keg grant is signed in the portal, where its backtest is on
         # screen — never from chat. (Scoped to keg proposals; other
         # portal-review types keep their existing chat behavior.)
+        if _resolved.type in ("session_rule", "kaizen_request"):
+            return json.dumps(
+                {
+                    "success": False, "proposal_id": pid, "kind": "routing",
+                    "error": (
+                        "This is a change to standard work — it is signed in "
+                        "the Operator Portal (Proposals), not in chat. The "
+                        "agent tool cannot apply it."
+                    ),
+                },
+                ensure_ascii=False,
+            )
         if _resolved.requires_portal_review and (_resolved.payload or {}).get("keg"):
             return json.dumps(
                 {

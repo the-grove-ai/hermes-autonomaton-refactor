@@ -582,6 +582,23 @@ def _t0_declined(response_text: Any) -> bool:
     return isinstance(data, dict) and data.get("t0_declined") is True
 
 
+def _t0_refused(response_text: Any) -> Optional[Dict[str, Any]]:
+    """The refusal an executable T0 pattern's tool returned, or None.
+
+    The contract is one JSON key: ``"t0_refused": true``, with the plain
+    ``message`` the operator should read, the short ``reason`` and the
+    ``andon_id`` of the andon event Jidoka raised for it."""
+    if not isinstance(response_text, str) or not response_text.lstrip().startswith("{"):
+        return None
+    try:
+        data = _json_mod.loads(response_text)
+    except (ValueError, TypeError):
+        return None
+    if isinstance(data, dict) and data.get("t0_refused") is True:
+        return data
+    return None
+
+
 def _guarantee_turn_record(dispatch_turn):
     """failed-turn-records-v1 — guarantee every turn leaves an intent record.
 
@@ -1310,6 +1327,7 @@ class Dispatcher:
                     lambda sid: self.session.get_messages_as_conversation(sid)
                 ),
                 dock_goals=dock_goals,
+                skip_session=self._session_is_goal_isolated,
             )
 
         _run_guarded_producer(
@@ -2097,6 +2115,7 @@ class Dispatcher:
         self._current_turn_isolation = self._resolve_turn_isolation(
             agent, user_message,
         )
+        self._current_turn_t0_handback = None
         # Sprint 35 — pre-construction classification + tier binding.
         # Fires AFTER the per-turn reset block above so the reset
         # cannot null out the captured classification. Pre-Sprint-35
@@ -2899,6 +2918,9 @@ class Dispatcher:
                 "routing_reason": getattr(decision, "reason", None),
                 "pattern_cache_hit": bool(getattr(decision, "pattern_cache_hit", False))
                                      or tier == "T0",
+                # A T0 pattern that was consulted and handed this turn back as
+                # outside its scope (standard work, not a fault). None otherwise.
+                "t0_handback": getattr(self, "_current_turn_t0_handback", None),
                 "model": model_used,
                 "tools_offered": {
                     "count": len(offered),
@@ -3742,7 +3764,8 @@ class Dispatcher:
             resolve_tier_to_runtime,
         )
         decision = route_for_agent(
-            message=user_message, explicit_model=None, explicit_tier=None,
+            message=user_message, explicit_model=None,
+            explicit_tier=self._take_reissue_tier(agent),
         )
         if decision is None:
             # Vanilla install (no routing config) OR caller pre-set the
@@ -3850,6 +3873,11 @@ class Dispatcher:
                 logger.debug("[grove.dispatcher] t0_cache_miss log failed: %r", exc)
             return None
 
+        if not self._t0_pattern_in_scope(pattern):
+            # The entry answers this request only in its own goal's sessions,
+            # and this is not one. Not its request here: an ordinary miss.
+            return None
+
         # ── Hit ──────────────────────────────────────────────────────────
         # Finalize the previous turn first. A T0 hit never classifies, so
         # ``_current_turn_classification`` is None → is_correction unread →
@@ -3879,21 +3907,25 @@ class Dispatcher:
             finally:
                 self._current_turn_t0_pattern = None
             if _t0_declined(response_text):
-                # The pattern's own tool says this request is not its to
-                # answer (a keg that does not cover the item, or defers it).
-                # Not a hit: the interpreter takes the turn.
-                log_pattern_cache_event(
-                    event_type="t0_declined",
-                    pattern_id=pattern.pattern_id,
-                    t0_key=pattern.t0_key,
-                    intent_class=pattern.intent_class,
-                    cacheable_type=pattern.cacheable_type,
-                )
+                # Standard work: the pattern's own tool says this request is
+                # outside what it was signed to answer (a keg that does not
+                # cover the item, or defers it), so the interpreter takes the
+                # turn. Not an abnormality and not a hit. It is noted on THIS
+                # turn's own record (stage summary, compilation) — no separate
+                # event.
+                self._current_turn_t0_handback = pattern.pattern_id
                 logger.info(
-                    "[grove.dispatcher] T0 pattern %s declined this request — "
-                    "falling through to the classified path.", pattern.pattern_id,
+                    "[grove.dispatcher] T0 pattern %s does not cover this "
+                    "request — the interpreter takes the turn.", pattern.pattern_id,
                 )
                 return None
+            stop = _t0_refused(response_text)
+            if stop is not None:
+                # An abnormality: the pattern's tool REFUSED (Jidoka has
+                # flagged it and pulled the andon cord). The line stops for
+                # this turn — no handoff to a model. The operator reads the
+                # andon event's own message, written here, not by a model.
+                return self._t0_andon_stop(agent, pattern, user_message, stop)
 
         store.record_hit(pattern.pattern_id)
 
@@ -4057,6 +4089,48 @@ class Dispatcher:
         from grove.effect_signature import canonical_effect_signature
         self._approval_gate.mint(canonical_effect_signature(tool_name, arguments))
 
+    def _t0_pattern_in_scope(self, pattern: Any) -> bool:
+        """Whether a matched T0 entry answers in THIS session. A keg whose
+        signed trigger says ``sessions: goal_isolated`` answers only in a
+        session isolated to its Dock goal; everything else answers anywhere."""
+        from grove import keg as _keg_mod
+
+        spec = _keg_mod.keg_of(pattern)
+        if not spec or (spec.get("trigger") or {}).get("sessions") != "goal_isolated":
+            return True
+        return bool(spec.get("dock_goal")) and (
+            getattr(self, "_current_turn_isolation", None) == spec.get("dock_goal")
+        )
+
+    def _t0_andon_stop(
+        self, agent: Any, pattern: Any, user_message: str, stop: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """End a turn the andon cord stopped at T0.
+
+        No model runs and nothing is handed off. The reply is the andon
+        event's message; the turn is recorded as stopped (outcome ``error``,
+        kind ``andon_stop``) with the short reason, so it can never be read
+        as a successful answer."""
+        reason = str(stop.get("reason") or "refused")
+        message = str(stop.get("message") or "This request was stopped.")
+        response_text = f"⚠️ Stopped: {message}"
+        self._write_intent_record(
+            agent,
+            outcome="error",
+            final_response_chars=len(response_text),
+            intent_class_override=pattern.intent_class,
+            tier_override="T0",
+            failure_kind="andon_stop",
+            failure_summary=reason[:120],
+        )
+        logger.warning(
+            "[grove.dispatcher] T0 pattern %s refused turn %s (%s; andon %s) — "
+            "line stopped, no model call.",
+            pattern.pattern_id, self._current_turn_id, reason, stop.get("andon_id"),
+        )
+        self._persist_t0_turn(user_message, response_text)
+        return self._t0_result_dict(agent, response_text)
+
     def _execute_t0_invocation(self, agent: Any, pattern: Any) -> str:
         """Fire an EXECUTABLE pattern's compiled tool invocation, model-free.
 
@@ -4191,7 +4265,7 @@ class Dispatcher:
         if _keg_mod.keg_of(pattern) is not None:
             # A keg's miss is read off its goal's decision feed, where the
             # operator's corrected value is on record: Jidoka halts it there
-            # (grove.jidoka.observe_decision) and Kaizen drafts the fix. One
+            # (grove.detectors.decision_feed) and Kaizen drafts the fix. One
             # watcher, one halt — not a second one here.
             return
         # A miss stops the line. Halted, not "suspended": suspended means a
@@ -4199,19 +4273,19 @@ class Dispatcher:
         # approval stands until the operator rules.
         store.set_status(pattern_id, STATUS_HALTED)
         try:
-            from grove import jidoka as _jidoka
-            _jidoka.flag(
-                _keg_mod.FLAG_ANOMALY, detector=_jidoka.DETECTOR_CORRECTION, goal=None,
+            from grove.andon import raise_andon as _raise_andon
+            _raise_andon(
+                _keg_mod.FLAG_ANOMALY, detector="correction", goal=None,
                 summary="the operator corrected an answer served from the T0 cache",
                 evidence=[{"turn_id": self._current_turn_id,
                            "turn_uid": self._current_turn_uid}],
                 details={"pattern_id": pattern_id, "intent_class": pattern.intent_class},
-                ledger=getattr(self, "_ledger", None),
+                matched_skill=pattern_id,
             )
         except Exception as _flag_exc:  # noqa: BLE001 — the halt already holds
             logger.error(
-                "[grove.dispatcher] could not record the Jidoka flag for "
-                "halted pattern %s: %r", pattern_id, _flag_exc,
+                "[grove.dispatcher] could not raise the andon for halted "
+                "pattern %s: %r", pattern_id, _flag_exc,
             )
         log_pattern_cache_event(
             event_type="pattern_drift_detected",
@@ -5302,14 +5376,54 @@ class Dispatcher:
             )
             return None
 
+    def _take_reissue_tier(self, agent: Any) -> Optional[str]:
+        """The tier an accepted remedy pinned this re-issued turn to, if any
+        (``grove.reissue``). Consumed once; a fault means no pin."""
+        try:
+            from grove import reissue
+            return reissue.take_tier(
+                self.session_id or getattr(agent, "session_id", None))
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[grove.dispatcher] could not read the re-issue tier: %r", exc)
+            return None
+
+    def _session_is_goal_isolated(self, session_id: str) -> bool:
+        """Whether a session was isolated to a decision-work goal. Such a
+        session's content is that goal's own work — its answers live in the
+        goal's decision log and nowhere else — so nothing is mined from it
+        into memory. Unknown (no session database, or a read fault) is treated
+        as isolated: when in doubt, do not mine."""
+        try:
+            from grove.decision_work import isolation_meta_key
+
+            get_meta = getattr(self.session, "get_meta", None) if self.session is not None else None
+            if not callable(get_meta):
+                return bool(self._isolation_by_session.get(str(session_id)))
+            return bool(get_meta(isolation_meta_key(str(session_id))))
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "[grove.dispatcher] could not read goal isolation for session "
+                "%s: %r — not mining it for memory", session_id, exc,
+            )
+            return True
+
     def turn_provenance(self, agent: Any) -> Dict[str, Any]:
         """What the running turn has read and who is answering it — the
         snapshot a governed tool checks before it writes
         (``grove.turn_provenance``). Read-only over Dispatcher-owned state."""
-        composed = getattr(agent, "_composed_prompt", None)
-        sections = sorted((getattr(composed, "sections", None) or {}).keys())
         decision = self._current_turn_routing_decision
         t0_pattern = getattr(self, "_current_turn_t0_pattern", None)
+        if t0_pattern:
+            # A T0 serve sends NO prompt to any model, so nothing was read.
+            # The agent may still hold a prompt composed when it was built —
+            # before this turn's isolation was applied — but that prompt is
+            # never used on this path and must not be reported as read.
+            sections: List[str] = []
+            cellar_hits = 0
+        else:
+            composed = getattr(agent, "_composed_prompt", None)
+            sections = sorted((getattr(composed, "sections", None) or {}).keys())
+            cellar_hits = int(getattr(agent, "_cellar_retrieval_hits", 0) or 0)
         return {
             "session_id": self.session_id or getattr(agent, "session_id", None),
             "turn_id": self._current_turn_id,
@@ -5319,7 +5433,9 @@ class Dispatcher:
             ),
             "model": "pattern_cache" if t0_pattern else getattr(agent, "model", None),
             "t0_pattern": t0_pattern,
-            "cellar_hits": int(getattr(agent, "_cellar_retrieval_hits", 0) or 0),
+            # The operator's own words this turn: what a remedy re-issues.
+            "request": getattr(self, "_current_turn_user_message", None),
+            "cellar_hits": cellar_hits,
             "sections": sections,
             "tools_yielded": list(self._current_turn_tools_yielded),
             "isolation_goal": self._current_turn_isolation,

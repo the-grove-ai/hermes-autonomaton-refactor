@@ -1201,6 +1201,9 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
         f'{backtest_html}'
         f'<details class="card-evidence" open><summary>rules '
         f'({len(keg.get("conditions") or [])})</summary>{rules}</details>'
+        f'<div class="meta">Answers the request: '
+        + _esc(" · ".join(f"“{r}”" for r in keg_mod.trigger_requests(keg)))
+        + '</div>'
         f'<div class="meta">GRV-004 keg · scope {_esc(keg.get("scope"))} · '
         f'authority {_esc(keg.get("authority_level"))} · '
         f'standard work for {_esc(keg.get("dock_goal"))} · serves at T0 once '
@@ -1210,6 +1213,44 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
         f'<div class="meta">created {_esc(p.get("created_at"))}</div>'
         f'{actions}'
         f'</div>'
+    )
+
+
+def _kaizen_request_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str:
+    """Kaizen could not draft a rule at any tier and asks the operator to
+    write the condition. There is nothing to approve: the card shows the miss
+    and every refused draft, and a box. What the operator sends goes back to
+    Kaizen, is checked and backtested, and returns as a keg proposal to sign —
+    so writing here is never itself a change. No writes from this path."""
+    payload = view.payload
+    miss = payload.get("miss") or {}
+    attempts = "".join(
+        f"<div>{_esc(a.get('tier'))}: {_esc(a.get('condition') or '(empty)')} — "
+        f"refused because {_esc(a.get('refused'))}</div>"
+        for a in payload.get("attempts") or []
+    )
+    return (
+        f'<div class="card" id="proposal-{short_id}">'
+        f'<h4><span class="badge">Kaizen needs a condition</span> '
+        f'{_esc(payload.get("goal"))}</h4>'
+        f'<p>{_esc(view.semantic_justification)}</p>'
+        f'<div class="meta">Corrected case: {_esc(miss.get("item_id"))} · '
+        f'{_esc(json.dumps(miss.get("inputs"), ensure_ascii=False))} · answered '
+        f'{_esc(_keg_outputs_text(miss.get("served")))}, you said '
+        f'{_esc(_keg_outputs_text(miss.get("corrected")))}</div>'
+        f'<details class="card-evidence" open><summary>drafts that were refused '
+        f'({len(payload.get("attempts") or [])})</summary>{attempts}</details>'
+        f'<div class="meta">Fields you can use: '
+        f'{_esc(", ".join(payload.get("inputs") or []))}. Operators: ==, IN, NOT IN, '
+        f'CONTAINS, joined with AND / OR.</div>'
+        f'<div class="proposal-actions">'
+        f'<input type="text" name="reason" id="kaizen-condition-{short_id}" '
+        f'style="flex:1;min-width:20rem" placeholder="Write the condition">'
+        f'<button class="btn btn-approve" '
+        f'hx-post="/portal/actions/proposals/{_esc(pid)}/reject" '
+        f'hx-include="#kaizen-condition-{short_id}" '
+        f'hx-target="#proposal-{short_id}" hx-swap="outerHTML">Send to Kaizen</button>'
+        f'</div></div>'
     )
 
 
@@ -1257,6 +1298,8 @@ def _proposal_card_html(request: web.Request, p: dict) -> str:
     # rules); an ordinary cached-pattern promotion keeps the generic card.
     if ptype == PROPOSAL_TYPE_PATTERN_PROMOTION and view.payload.get("keg"):
         return _keg_card_html(p, view, pid, short_id)
+    if ptype == "kaizen_request":
+        return _kaizen_request_card_html(p, view, pid, short_id)
 
     offers_approve = _type_offers_approve(ptype)
     if offers_approve:

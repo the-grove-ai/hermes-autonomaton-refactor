@@ -40,6 +40,8 @@ STATUS_REJECTED = "rejected"     # operator rejected — never re-propose
 # STATUS_ACTIVE serves, so neither of these is ever returned by ``get_active``.
 STATUS_HALTED = "halted"         # signed keg stopped after a miss; grant stands
 STATUS_SUPERSEDED = "superseded" # signed keg version replaced by a later one
+STATUS_WATCHING = "watching"     # Kaizen's "no countermeasure yet": inert, with
+                                 # the condition that would promote it
 
 # Small, unambiguous contraction expansions. Each preserves meaning exactly —
 # no abbreviation guessing ("fav" → "favorite" is intentionally NOT here).
@@ -254,9 +256,51 @@ class PatternCacheStore:
                 (*keys, STATUS_ACTIVE),
             ).fetchall()
         if not rows:
-            return None
+            return self._active_by_overlap(stem)
         rows = sorted(rows, key=lambda r: key_rank.get(r["t0_key"], len(key_rank)))
         return self._row_to_pattern(rows[0])
+
+    def _active_by_overlap(self, stem: str) -> Optional[CompiledPattern]:
+        """An active entry whose DECLARED example requests this message
+        matches by token overlap (``grove.intent_match``), or None.
+
+        Exact text is tried first (the indexed ``t0_key``); this is the second,
+        still deterministic, pass. Only an entry that declares both examples
+        and a threshold can match this way — an entry with neither serves
+        exact text only, as before. A keg declares them inside its signed
+        trigger; an ordinary cached pattern carries the phrasings the scanner
+        clustered. The best score wins; ties go to the older entry."""
+        import json
+        from grove.intent_match import best_match
+
+        with self._connect() as con:
+            rows = con.execute(
+                "SELECT * FROM t0_patterns WHERE status = ? ORDER BY created_at",
+                (STATUS_ACTIVE,),
+            ).fetchall()
+        best_score, best_row = 0.0, None
+        for row in rows:
+            examples, threshold = [], None
+            try:
+                if row["compiled_invocation"]:
+                    keg = (json.loads(row["compiled_invocation"]).get("args") or {}).get("keg")
+                    if isinstance(keg, dict):
+                        trigger = keg.get("trigger") or {}
+                        examples = [trigger.get("request")] + list(trigger.get("requests") or [])
+                        threshold = trigger.get("match_threshold")
+                if threshold is None and row["promotion_evidence"]:
+                    match = json.loads(row["promotion_evidence"]).get("match") or {}
+                    examples = list(match.get("examples") or [])
+                    threshold = match.get("threshold")
+            except (TypeError, ValueError):
+                continue
+            examples = [e for e in examples if isinstance(e, str) and e.strip()]
+            if not examples or not isinstance(threshold, (int, float)):
+                continue
+            score, _example = best_match(stem, examples)
+            if score >= float(threshold) and score > best_score:
+                best_score, best_row = score, row
+        return self._row_to_pattern(best_row) if best_row is not None else None
 
     def record_hit(self, pattern_id: str) -> bool:
         """Bump ``hit_count`` and stamp ``last_hit_at`` for a served pattern.

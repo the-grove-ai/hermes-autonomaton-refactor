@@ -66,6 +66,7 @@ def run_memory_extraction(
     session_ids: List[str],
     transcript_loader: Callable[[str], List[Dict[str, Any]]],
     dock_goals: List[Dict[str, Any]],
+    skip_session: Optional[Callable[[str], bool]] = None,
 ) -> int:
     """Run the detector over each dormant session; return total staged.
 
@@ -75,14 +76,28 @@ def run_memory_extraction(
     handling — the detector is fail-loud and the caller (Dispatcher init)
     wraps this in a single loud-log guard. The detector's own processing
     lock makes each session strictly one-shot.
+
+    ``skip_session`` names sessions that must not be mined at all — a session
+    isolated to a decision-work goal, whose answers belong in that goal's
+    decision log and never in memory. A skipped session is not locked and not
+    sent to the model; its access telemetry is still flushed.
     """
     staged_total = 0
     flushed_total = 0
+    skipped = 0
     for session_id in session_ids:
         flushed_total += store.flush_access_events(session_id)
+        if skip_session is not None and skip_session(session_id):
+            skipped += 1
+            continue
         transcript = transcript_loader(session_id)
         staged_total += detector.detect_and_stage(
             session_id, transcript, dock_goals,
+        )
+    if skipped:
+        logger.info(
+            "[grove.memory] %d goal-isolated session(s) not mined for memory",
+            skipped,
         )
     if staged_total or flushed_total:
         logger.info(

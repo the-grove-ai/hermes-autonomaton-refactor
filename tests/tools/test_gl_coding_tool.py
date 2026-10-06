@@ -225,3 +225,65 @@ def test_keg_verb_is_refused_outside_a_t0_serve(work):
     out = _call(verb="apply_keg", keg=KEG)        # the fixture's turn is T1
     assert out["refused"] == "not_t0" and work.log.records() == []
     assert "apply_keg" not in gl.GL_CODING_SCHEMA["parameters"]["properties"]["verb"]["enum"]
+
+
+def test_keg_refused_at_t0_stops_the_line_on_the_bus(work):
+    # Live 2026-10-06: a refusal at T0 reached the operator as raw JSON. It is
+    # an abnormality: Jidoka flags it, the andon cord is pulled, the turn
+    # stops with a plain message. No model takes over.
+    from grove.dispatcher import _t0_declined, _t0_refused
+    from grove.kaizen_ledger import default_ledger_dir
+
+    turn_provenance.set_current({
+        "isolation_goal": None, "sections": [], "tools_yielded": [], "cellar_hits": 0,
+        "session_id": "sess-1", "turn_id": "sess-1#4", "turn_uid": "u4",
+        "tier": "T0", "model": "pattern_cache", "t0_pattern": "keg:x:v1:abc",
+    })
+    raw = gl.gl_coding({"verb": "apply_keg", "keg": KEG})
+    stop = _t0_refused(raw)
+    assert stop["reason"] == "session_not_isolated"
+    assert "Start a new session with /new" in stop["message"]
+    assert _t0_declined(raw) is False                 # not a handback
+    assert work.log.records() == []
+
+    # On the one bus: the session's own ledger carries the flag, the event
+    # and Kaizen's answer — a refusal never arrives alone.
+    events = [json.loads(l) for l in
+              (default_ledger_dir() / "sess-1.jsonl").read_text().splitlines()]
+    flag, cord, close = [e for e in events if e.get("loop_step")]
+    assert (flag["event_type"], flag["flag"], flag["detector_id"]) == (
+        "jidoka_flag", "anomaly", "turn_check")
+    assert cord["event_type"] == "andon_event" and cord["stops_line"] is True
+    assert cord["andon_id"] == stop["andon_id"] and cord["flag_id"] == flag["flag_id"]
+    assert cord["provenance"] == [{"turn_id": "sess-1#4", "turn_uid": "u4"}]
+    # The session rule is unsigned, so Kaizen proposes it for signature.
+    assert close["event_type"] == "kaizen_answer" and close["closes"] == [cord["andon_id"]]
+    assert (close["kind"], close["channel"]) == ("standard_work", "portal")
+    assert "Proposed the rule for your signature" in stop["message"]
+
+
+def test_model_turn_refusal_is_on_the_bus_too(work):
+    turn_provenance.set_current({
+        "isolation_goal": gl.GOAL_ID, "sections": ["cellar_knowledge"], "tools_yielded": [],
+        "cellar_hits": 1, "session_id": "sess-2", "turn_id": "sess-2#1", "turn_uid": "u1",
+        "tier": "T1", "model": "m",
+    })
+    out = _call(verb="record", gl_code="6110", reasoning="x")
+    assert out["refused"] == "contaminated_turn" and out["stopped"] is True and out["andon_id"]
+    # Ordinary flow is not an abnormality and raises nothing.
+    turn_provenance.set_current({
+        "isolation_goal": gl.GOAL_ID, "sections": [], "tools_yielded": [], "cellar_hits": 0,
+        "session_id": "sess-3", "turn_id": "sess-3#1", "turn_uid": "u1", "tier": "T1", "model": "m",
+    })
+    flow = _call(verb="decide", decision="confirm")
+    assert flow["refused"] == "nothing_pending" and "andon_id" not in flow
+    # A code that is not in the chart IS one.
+    assert _call(verb="record", gl_code="9999", reasoning="x")["andon_id"]
+
+
+def test_unreadable_invoice_at_t0_stops_the_line(work, tmp_path):
+    from grove.dispatcher import _t0_refused
+    (tmp_path / "invoices" / "00_bad.txt").write_text("not an invoice", encoding="utf-8")
+    _t0()
+    stop = _t0_refused(gl.gl_coding({"verb": "apply_keg", "keg": KEG}))
+    assert stop["reason"] == "item_unreadable" and stop["andon_id"]

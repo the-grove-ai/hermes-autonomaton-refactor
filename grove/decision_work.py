@@ -35,6 +35,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 ISOLATION_SOURCES_ONLY = "sources_only"
+ON_UNCLEAN_OPEN_CLEAN = "open_clean_session"
+
+# Standing-grant write class for a goal's signed session rule. The grant's
+# write_class is this prefix plus a digest of the rule, so a signature commits
+# to exactly the rule that was on screen when it was signed.
+SESSION_RULE_PREFIX = "session_rule:"
 
 # Prompt sections that carry recalled knowledge (composer registration names),
 # and the tools that fetch it. An isolated turn composes none of the first and
@@ -51,6 +57,7 @@ ISOLATION_META_PREFIX = "goal_isolation:"
 KIND_RUN_STARTED = "run_started"
 KIND_PROPOSED = "proposed"
 KIND_DECIDED = "decided"
+KIND_SET_ASIDE = "set_aside"     # an item taken out of the queue for manual handling
 
 DECISION_CONFIRM = "confirm"
 DECISION_CORRECT = "correct"
@@ -60,11 +67,29 @@ SCOPE_SINGLE_VALUE_KEYS = "single_value_keys"
 
 class DecisionRefused(Exception):
     """A decision the turn was not entitled to make. ``reason`` is a short
-    machine kind; the message is what the operator reads."""
+    machine kind; the message is what the operator reads. ``andon_id`` is set
+    when the refusal was an abnormality that pulled the andon cord."""
 
-    def __init__(self, reason: str, message: str) -> None:
+    def __init__(
+        self, reason: str, message: str, andon_id: Optional[str] = None,
+        answer: Optional[Mapping[str, Any]] = None,
+    ) -> None:
         super().__init__(message)
         self.reason = reason
+        self.andon_id = andon_id
+        # What Kaizen proposed in answer to the andon event (kind, summary,
+        # channel) — the next step the operator is offered, never just "no".
+        self.answer = dict(answer) if answer else None
+
+
+# Refusals that are abnormalities — something is wrong with the turn or with
+# what was proposed — as opposed to ordinary flow ("nothing is pending", "the
+# queue is empty", "confirm the last one first"). An abnormality is never
+# just returned to the caller: Jidoka flags it and the andon cord is pulled.
+ABNORMAL_REFUSALS = frozenset({
+    "no_provenance", "session_not_isolated", "contaminated_turn",
+    "output_not_in_domain", "undeclared_output", "item_unreadable", "keg_fault",
+})
 
 
 def isolation_meta_key(session_id: str) -> str:
@@ -115,6 +140,11 @@ class KegDeclaration:
     guessed at."""
     name: str
     request: str
+    requests: Tuple[str, ...] = ()      # further example requests it answers
+    # How closely a request's content words must overlap one of those examples
+    # to be the keg's (grove.intent_match). The examples are illustrations,
+    # not an exhaustive list.
+    match_threshold: float = 0.8
     scope: str = "reserved"
     authority_level: str = "green"
     revision_tiers: Tuple[str, ...] = ("T1", "T2")
@@ -133,6 +163,10 @@ class DecisionWorkConfig:
     isolation: Optional[str]
     sources: Tuple[Path, ...] = field(default_factory=tuple)
     keg: Optional[KegDeclaration] = None
+    # What to do when this goal's work is asked for in a session that is not
+    # clean: None (refuse) or "open_clean_session" (the gateway opens one and
+    # re-issues the request). Part of the session rule the operator signs.
+    on_unclean: Optional[str] = None
 
     @property
     def isolated(self) -> bool:
@@ -142,6 +176,12 @@ class DecisionWorkConfig:
 def _resolve(root: Path, raw: Any) -> Path:
     p = Path(str(raw)).expanduser()
     return p if p.is_absolute() else (Path(root) / p)
+
+
+def _threshold(value: Any, goal_id: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not 0.0 < float(value) <= 1.0:
+        raise ValueError(f"goal {goal_id!r}: match_threshold must be a number in (0, 1]")
+    return float(value)
 
 
 def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
@@ -210,6 +250,9 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
     isolation = raw.get("isolation")
     if isolation not in (None, ISOLATION_SOURCES_ONLY):
         raise ValueError(f"goal {goal.id!r}: unknown isolation {isolation!r}")
+    on_unclean = raw.get("on_unclean")
+    if on_unclean not in (None, ON_UNCLEAN_OPEN_CLEAN):
+        raise ValueError(f"goal {goal.id!r}: unknown on_unclean {on_unclean!r}")
 
     keg = None
     keg_raw = raw.get("keg")
@@ -221,9 +264,16 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         tiers = keg_raw.get("revision_tiers") or ("T1", "T2")
         if not isinstance(tiers, (list, tuple)) or not all(isinstance(t, str) for t in tiers):
             raise ValueError(f"goal {goal.id!r}: keg revision_tiers must be a list of tier names")
+        also = keg_raw.get("requests") or ()
+        if not isinstance(also, (list, tuple)) or not all(
+            isinstance(r, str) and r.strip() for r in also
+        ):
+            raise ValueError(f"goal {goal.id!r}: keg requests must be a list of phrases")
         keg = KegDeclaration(
             name=str(_need(keg_raw, "name", "keg")),
             request=str(_need(keg_raw, "request", "keg")),
+            requests=tuple(also),
+            match_threshold=_threshold(keg_raw.get("match_threshold", 0.8), goal.id),
             scope=str(keg_raw.get("scope", "reserved")),
             authority_level=str(keg_raw.get("authority_level", "green")),
             revision_tiers=tuple(tiers),
@@ -242,6 +292,7 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         isolation=isolation,
         sources=tuple(resolved()) if callable(resolved) else (),
         keg=keg,
+        on_unclean=on_unclean,
     )
 
 
@@ -269,18 +320,75 @@ def _keyword_matches(message: str, keywords: Any) -> bool:
     return False
 
 
-def isolating_goal_for(message: str, *, dock: Any = None) -> Optional[str]:
-    """The isolating goal a message opens work on, by the goal's own declared
-    keywords — deterministic, no model. None when no isolating goal matches.
-    A Dock or declaration fault returns None and is logged by the caller's
-    loader; isolation is then enforced at the point of action instead (a
-    session that was never isolated cannot record a decision)."""
+def opens_work(message: str, goal: Any, cfg: "DecisionWorkConfig") -> bool:
+    """Whether a message opens this goal's work — deterministic, no model.
+
+    A goal that declares a keg is matched by token overlap
+    (``grove.intent_match``) against the keg's PRIMARY request, at the goal's
+    declared threshold. Only the primary request opens a session: the keg's
+    further examples are short continuations ("Next") that answer inside a
+    session already open, and must never turn an unrelated new session into
+    this goal's. A goal with no keg falls back to its declared keywords."""
+    if cfg.keg is not None:
+        from grove.intent_match import matches
+        return matches(message, (cfg.keg.request,), cfg.keg.match_threshold)
+    return _keyword_matches(message, goal.keywords)
+
+
+def session_rule(cfg: "DecisionWorkConfig") -> Dict[str, Any]:
+    """The goal's session rule as declared in the Dock: everything that
+    decides, with no model and no keg in between, how a session behaves —
+    whether it is isolated, what opens it, how closely, and what happens when
+    the work is asked for in a session that is not clean.
+
+    This is the one part of a goal's declaration that takes effect directly,
+    so it is in force ONLY while the operator's signature on exactly this rule
+    stands (:func:`session_rule_grant`). An edit to any of these fields is a
+    draft until it is signed again."""
+    return {
+        "goal": cfg.goal_id,
+        "isolation": cfg.isolation,
+        "opens_on": cfg.keg.request if cfg.keg is not None else None,
+        "match_threshold": cfg.keg.match_threshold if cfg.keg is not None else None,
+        "on_unclean": cfg.on_unclean,
+    }
+
+
+def session_rule_digest(cfg: "DecisionWorkConfig") -> str:
+    import hashlib
+    return hashlib.sha256(
+        json.dumps(session_rule(cfg), sort_keys=True).encode("utf-8")
+    ).hexdigest()[:16]
+
+
+def session_rule_grant(cfg: "DecisionWorkConfig", *, store: Any = None) -> Optional[Any]:
+    """The operator's standing grant on this goal's CURRENT session rule, or
+    None when it is unsigned, was revoked, or the rule changed since signing."""
+    if store is None:
+        from grove.grants import get_grant_store
+        store = get_grant_store()
+    return store.get_grant(cfg.goal_id, SESSION_RULE_PREFIX + session_rule_digest(cfg))
+
+
+def isolating_goal_for(
+    message: str, *, dock: Any = None, grants: Any = None,
+) -> Optional[str]:
+    """The isolating goal a message opens work on, or None.
+
+    A goal isolates a session only when its declared session rule is SIGNED
+    (:func:`session_rule_grant`) and the message opens its work
+    (:func:`opens_work`). An unsigned or changed rule isolates nothing: the
+    goal's tool then refuses the work as an unclean session, and Kaizen
+    answers that event by proposing the rule for signature. A Dock or
+    declaration fault returns None and is logged by the caller."""
     if dock is None:
         from grove.dock import load_dock
         dock = load_dock()
     for goal in (getattr(dock, "goals", None) or ()):
         cfg = load_config(goal)
-        if cfg is not None and cfg.isolated and _keyword_matches(message, goal.keywords):
+        if cfg is None or not cfg.isolated or not opens_work(message, goal, cfg):
+            continue
+        if session_rule_grant(cfg, store=grants) is not None:
             return goal.id
     return None
 
@@ -477,15 +585,79 @@ class DecisionWork:
                 return record
         return None
 
+    def set_aside_items(self) -> Dict[str, Dict[str, Any]]:
+        return {
+            r["item_id"]: r for r in self.log.run_records()
+            if r.get("kind") == KIND_SET_ASIDE
+        }
+
     def next_item(self) -> Optional[Path]:
-        """The first queued item with no proposal in the current run."""
+        """The first queued item with no proposal in the current run that has
+        not been set aside for manual handling."""
         proposed, _ = self._state()
+        aside = self.set_aside_items()
         for path in self.queue_items():
-            if path.stem not in proposed:
+            if path.stem not in proposed and path.stem not in aside:
                 return path
         return None
 
+    def set_aside(self, *, item_id: str, reason: str, andon_id: Optional[str]) -> Dict[str, Any]:
+        """Take the next item out of the queue for manual handling — the
+        one-time action of an accepted remedy. Appends a record; the item
+        stays in the queue folder and on the log, marked, never dropped."""
+        expected = self.next_item()
+        if expected is None or expected.stem != item_id:
+            raise DecisionRefused(
+                "not_next_item",
+                f"{item_id} is not the next item in the queue, so it cannot be set aside.",
+            )
+        run = self._run()
+        return self.log.append({
+            "kind": KIND_SET_ASIDE, "run_id": run["run_id"], "item_id": item_id,
+            "reason": (reason or "")[:300], "andon_id": andon_id,
+        })
+
     # -- checks -----------------------------------------------------------
+
+    def abnormal(
+        self, reason: str, message: str,
+        provenance: Optional[Mapping[str, Any]] = None,
+    ) -> DecisionRefused:
+        """Build the refusal for an abnormality, after putting it on the bus:
+        a Jidoka flag (anomaly) and the andon event it raises, carrying the
+        reason and this turn's provenance. Returns the exception to raise. A
+        ledger fault is logged loud and the refusal still stands — the work is
+        refused either way."""
+        import logging
+
+        prov = dict(provenance or {})
+        andon_id = None
+        answer = None
+        try:
+            from grove.andon import raise_andon
+            from grove.keg import FLAG_ANOMALY
+            andon = raise_andon(
+                FLAG_ANOMALY, detector="turn_check",
+                goal=self.config.goal_id, summary=f"{reason}: {message}",
+                evidence=[{"turn_id": prov.get("turn_id"),
+                           "turn_uid": prov.get("turn_uid")}],
+                details={"reason": reason, "message": message,
+                         "tier": prov.get("tier"),
+                         "session_id": prov.get("session_id"),
+                         "item_id": prov.get("item_id"),
+                         "request": prov.get("request")},
+                observed_input={"reason": reason},
+                matched_skill=prov.get("t0_pattern"),
+                context={"work": self},
+            )
+            andon_id = andon["andon_id"]
+            answer = andon.get("answer")
+        except Exception as exc:  # noqa: BLE001
+            logging.getLogger(__name__).error(
+                "[decision_work] could not put refusal %s for %s on the bus: %r",
+                reason, self.config.goal_id, exc,
+            )
+        return DecisionRefused(reason, message, andon_id=andon_id, answer=answer)
 
     def check_turn(self, provenance: Optional[Mapping[str, Any]]) -> None:
         """Refuse unless this turn may decide for this goal. Only an isolated
@@ -493,47 +665,54 @@ class DecisionWork:
         if not self.config.isolated:
             return
         if not provenance:
-            raise DecisionRefused(
+            raise self.abnormal(
                 "no_provenance",
                 "This decision cannot be recorded: the turn's provenance is "
                 "not available, so its sources cannot be verified.",
             )
         if provenance.get("isolation_goal") != self.config.goal_id:
-            raise DecisionRefused(
+            raise self.abnormal(
                 "session_not_isolated",
                 f"This session includes turns outside the {self.config.goal_id} "
                 f"goal, so its context is not clean. Start a new session with "
                 f"/new, then ask again.",
+                provenance,
             )
         sections = RECALL_SECTIONS & set(provenance.get("sections") or ())
         tools = RECALL_TOOLS & set(provenance.get("tools_yielded") or ())
         hits = int(provenance.get("cellar_hits") or 0)
         if sections or tools or hits:
             found = sorted(sections) + sorted(tools) + (["cellar hits"] if hits else [])
-            raise DecisionRefused(
+            raise self.abnormal(
                 "contaminated_turn",
                 "This decision cannot be recorded: the turn drew on recalled "
                 f"context ({', '.join(found)}). Work for this goal uses its "
                 "declared sources only. Start a new session with /new, then "
                 "ask again.",
+                provenance,
             )
 
-    def check_output(self, output: Mapping[str, Any]) -> None:
+    def check_output(
+        self, output: Mapping[str, Any],
+        provenance: Optional[Mapping[str, Any]] = None,
+    ) -> None:
         missing = [k for k in self.config.outputs if output.get(k) in (None, "")]
         if missing:
             raise DecisionRefused(
                 "missing_output", f"The decision is missing: {', '.join(missing)}.")
         unknown = [k for k in output if k not in self.config.outputs]
         if unknown:
-            raise DecisionRefused(
-                "undeclared_output", f"Not a declared output: {', '.join(unknown)}.")
+            raise self.abnormal(
+                "undeclared_output", f"Not a declared output: {', '.join(unknown)}.",
+                provenance)
         for domain in self.config.output_domains:
             value = str(output[domain.output]).strip()
             if value not in _domain_values(domain):
-                raise DecisionRefused(
+                raise self.abnormal(
                     "output_not_in_domain",
                     f"{domain.output} {value!r} is not in {domain.path.name} "
                     f"({domain.column}).",
+                    provenance,
                 )
 
     # -- writing ----------------------------------------------------------
@@ -572,7 +751,7 @@ class DecisionWork:
                 "not_next_item",
                 f"The next item is {expected.stem}, not {item_id}.",
             )
-        self.check_output(output)
+        self.check_output(output, provenance)
         prov = dict(provenance or {})
         run = self._run()
         return self.log.append({
@@ -610,7 +789,7 @@ class DecisionWork:
             if not corrected_output:
                 raise DecisionRefused(
                     "missing_correction", "A correction needs the corrected value.")
-            self.check_output(corrected_output)
+            self.check_output(corrected_output, provenance)
             final = {k: str(v).strip() for k, v in corrected_output.items()}
             if final == waiting["output"]:
                 raise DecisionRefused(
@@ -638,8 +817,8 @@ class DecisionWork:
         self.last_observations = []
         self.last_observation_error = None
         try:
-            from grove import jidoka
-            self.last_observations = jidoka.observe_decision(self, waiting, decided)
+            from grove.detectors import decision_feed
+            self.last_observations = decision_feed.observe(self, waiting, decided)
         except Exception as exc:  # noqa: BLE001
             import logging
             logging.getLogger(__name__).error(

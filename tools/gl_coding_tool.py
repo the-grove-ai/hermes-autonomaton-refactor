@@ -106,11 +106,32 @@ def _work() -> DecisionWork:
     return DecisionWork(config_for_goal(GOAL_ID))
 
 
+def _next_step(exc: DecisionRefused) -> str:
+    """What Kaizen proposed in answer to the andon event, in the operator's
+    words: a refusal never arrives alone."""
+    answer = exc.answer or {}
+    kind, summary = answer.get("kind"), answer.get("summary") or ""
+    if kind == "standard_work":
+        return f"{summary} Sign it or send feedback there."
+    if kind == "remedy":
+        if (answer.get("detail") or {}).get("authorized") == "standing_rule":
+            return summary
+        return f"Proposed next step: {summary} Reply approve to do it, or say what to do instead."
+    if kind == "watch":
+        return summary
+    return ""
+
+
 def _refusal(exc: DecisionRefused) -> str:
-    return json.dumps(
-        {"success": False, "refused": exc.reason, "message": str(exc)},
-        ensure_ascii=False,
-    )
+    out = {"success": False, "refused": exc.reason, "message": str(exc)}
+    if exc.andon_id:
+        # An abnormality: Jidoka flagged it, the andon cord is pulled, and
+        # Kaizen has answered. Tell the operator the proposed next step.
+        out["andon_id"] = exc.andon_id
+        out["stopped"] = True
+        out["proposed_next_step"] = _next_step(exc)
+        out["answer"] = exc.answer
+    return json.dumps(out, ensure_ascii=False)
 
 
 def _next(work: DecisionWork) -> Dict[str, Any]:
@@ -206,12 +227,15 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
     proposals: List[Dict[str, Any]] = []
     for event in work.last_observations:
         halted += event.get("halted") or []
-        kaizen = event.get("kaizen") or {}
-        if kaizen:
+        answer = event.get("answer") or {}
+        if answer:
+            detail = answer.get("detail") or {}
             proposals.append({
-                "flag": event.get("flag"), "status": kaizen.get("status"),
-                "version": kaizen.get("version"), "detail": kaizen.get("detail"),
-                "proposal_id": kaizen.get("proposal_id"),
+                "flag": event.get("flag"), "kind": answer.get("kind"),
+                "status": "proposed" if answer.get("kind") == "standard_work"
+                          else answer.get("kind"),
+                "version": detail.get("version"), "summary": answer.get("summary"),
+                "proposal_id": answer.get("artifact"),
             })
     parts = [
         "No keg was involved in this coding." if not keg
@@ -224,15 +248,13 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
             "model until the operator rules on a fix."
         )
     for p in proposals:
-        if p["status"] == "proposed":
+        if p["kind"] == "standard_work":
             parts.append(
-                f"A proposal for v{p['version']} is waiting in the portal for "
-                "the operator's signature. It changes nothing until signed."
+                f"{p['summary']} It is waiting in the portal for the operator's "
+                "signature and changes nothing until signed."
             )
-        elif p["status"] == "draft_failed":
-            parts.append(
-                "No fix could be drafted that passed its checks; nothing was proposed."
-            )
+        elif p["summary"]:
+            parts.append(p["summary"])
     if work.last_observation_error:
         parts.append(
             "The watcher failed after recording this decision: "
@@ -251,6 +273,16 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _t0_stop(exc: DecisionRefused) -> str:
+    step = _next_step(exc)
+    return json.dumps(
+        {"t0_refused": True, "reason": exc.reason,
+         "message": str(exc) + (f"\n\n{step}" if step else ""),
+         "andon_id": exc.andon_id, "answer": exc.answer},
+        ensure_ascii=False,
+    )
+
+
 def _apply_keg(work: DecisionWork, args: Dict[str, Any]) -> str:
     """T0 only: code the next invoice with a signed keg — no model. Returns
     the reply the operator reads, or a decline that hands the turn back to the
@@ -266,7 +298,7 @@ def _apply_keg(work: DecisionWork, args: Dict[str, Any]) -> str:
 
     spec = args.get("keg")
     if not isinstance(spec, dict):
-        raise DecisionRefused("no_keg", "apply_keg was called without a keg.")
+        raise work.abnormal("keg_fault", "The keg was served without its rules.", prov)
     work.check_turn(prov)
     if work.pending() is not None:
         return _decline("a prior coding is waiting for the operator")
@@ -302,10 +334,27 @@ def _apply_keg(work: DecisionWork, args: Dict[str, Any]) -> str:
 
 def gl_coding(args: Dict[str, Any]) -> str:
     verb = str((args or {}).get("verb") or "").strip().lower()
+    work = None
     try:
         work = _work()
         if verb == "apply_keg":
-            return _apply_keg(work, args)
+            prov = turn_provenance.current() or {}
+            try:
+                return _apply_keg(work, args)
+            except DecisionRefused as exc:
+                if prov.get("tier") != "T0":
+                    raise
+                # A refusal at T0 is an abnormality, not a handoff. Jidoka has
+                # flagged it (work.abnormal); the Dispatcher stops the turn
+                # and shows the operator this message. No model takes over.
+                return _t0_stop(exc)
+            except (ValueError, OSError) as exc:
+                if prov.get("tier") != "T0":
+                    raise
+                item = work.next_item()
+                return _t0_stop(work.abnormal(
+                    "item_unreadable", f"The next invoice could not be read: {exc}",
+                    {**prov, "item_id": item.stem if item else None}))
         if verb == "next":
             result = _next(work)
         elif verb == "record":
@@ -320,11 +369,19 @@ def gl_coding(args: Dict[str, Any]) -> str:
     except DecisionRefused as exc:
         return _refusal(exc)
     except (ValueError, OSError) as exc:
-        # Config, queue or invoice defect: surface it, do not guess around it.
-        return json.dumps(
-            {"success": False, "error": type(exc).__name__, "message": str(exc)},
-            ensure_ascii=False,
-        )
+        # Config, queue or invoice defect: an abnormality. It goes through the
+        # andon handler like any other, and comes back with a proposed step.
+        try:
+            item = work.next_item()
+            prov = {**(turn_provenance.current() or {}),
+                    "item_id": item.stem if item else None}
+            return _refusal(work.abnormal(
+                "item_unreadable", f"The next invoice could not be read: {exc}", prov))
+        except Exception:  # noqa: BLE001 — work itself is unusable: say so plainly
+            return json.dumps(
+                {"success": False, "error": type(exc).__name__, "message": str(exc)},
+                ensure_ascii=False,
+            )
     return json.dumps(result, ensure_ascii=False)
 
 

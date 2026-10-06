@@ -66,6 +66,7 @@ from grove.eval.proposal_queue import (
     compute_proposal_id,
     file_agentless,
     PROPOSAL_TYPE_PATTERN_PROMOTION,
+    PROPOSAL_TYPE_SESSION_RULE,
 )
 from grove.flywheel_cli import (
     _handler_for,
@@ -112,6 +113,8 @@ def _is_scope_defining_proposal(proposal) -> bool:
     is unchanged. The agent tool refuses keg proposals by its own check."""
     if proposal.type in _SCOPE_DEFINING_REFUSED_TYPES:
         return True
+    if proposal.type == PROPOSAL_TYPE_SESSION_RULE:
+        return True      # a signed, standing rule on how sessions behave
     return proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION and bool(
         (proposal.payload or {}).get("keg")
     )

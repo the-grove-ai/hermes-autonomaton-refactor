@@ -35,6 +35,9 @@ from grove.eval.proposal_queue import (
     PROPOSAL_TYPE_CONSOLIDATION,
     PROPOSAL_TYPE_DOCK_DETACH,
     PROPOSAL_TYPE_DOCK_GOAL_STATUS,
+    PROPOSAL_TYPE_KAIZEN_REQUEST,
+    PROPOSAL_TYPE_REMEDY,
+    PROPOSAL_TYPE_SESSION_RULE,
     PROPOSAL_TYPE_DOCK_MUTATION,
     PROPOSAL_TYPE_EXPLORATION_NUDGE,
     PROPOSAL_TYPE_FAULT_TRIAGE,
@@ -1991,6 +1994,196 @@ def keg_feedback_history(
     return [reason for _at, reason in sorted(reasons)]
 
 
+# ── Kaizen's answers: remedy, session rule, request for a condition ──
+
+
+def _remedy_answer(proposal: RoutingProposal) -> Any:
+    from grove.andon import Answer, KIND_REMEDY
+
+    payload = proposal.payload or {}
+    return Answer(
+        kind=KIND_REMEDY, summary=proposal.semantic_justification,
+        artifact=proposal.proposal_id, write_class=payload.get("write_class"),
+        write_targets=list(payload.get("write_targets") or []),
+    )
+
+
+def _apply_remedy(
+    proposal: RoutingProposal, *, machine_path: Optional[Path] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """Carry out an accepted remedy: one in-scope action, once.
+
+    The surface is checked AGAIN here, at the moment of action — nothing the
+    operator accepts in chat may write a scope-defining surface, whatever was
+    true when it was offered. The action and its result are recorded on the
+    disposition; nothing about how the system works afterwards changes."""
+    from grove.andon import assert_chat_acceptable
+
+    answer = _remedy_answer(proposal)
+    assert_chat_acceptable(answer)
+    payload = proposal.payload or {}
+    action = payload.get("action") or {}
+    write_class = payload.get("write_class")
+    if write_class == "set_aside_item":
+        from grove.decision_work import DecisionWork, config_for_goal
+
+        work = DecisionWork(config_for_goal(str(action.get("goal"))))
+        record = work.set_aside(
+            item_id=str(action.get("item_id")), reason=str(action.get("reason") or ""),
+            andon_id=payload.get("andon_id"),
+        )
+        result = {"set_aside": record["item_id"], "record_id": record["id"]}
+        label = f"{record['item_id']} set aside for manual handling"
+    elif write_class in ("tier_escalation", "session_reset"):
+        # Carried out by the gateway when it re-issues the request; accepting
+        # arms it for the next turn of this chat.
+        from grove import reissue
+
+        reissue.arm(action, session_id=action.get("session_id"))
+        result = {"reissue": dict(action)}
+        label = "the request will be re-issued" + (
+            " one tier up" if write_class == "tier_escalation" else " in a clean session"
+        )
+    else:
+        raise ValueError(f"remedy write class {write_class!r} has no action")
+    applied = {
+        "write_class": write_class, "andon_id": payload.get("andon_id"),
+        "surface_class": "in_scope", "channel": "chat_accept", **result,
+    }
+    return label, applied
+
+
+def _remedy_feedback(proposal: RoutingProposal, reason: Optional[str]) -> None:
+    """The operator declined a remedy. With a reason, that is feedback: it is
+    kept on the disposition and Kaizen watches the class — a remedy declined
+    repeatedly is a signal that standard work should change."""
+    logger.info(
+        "[flywheel] remedy %s declined%s", proposal.proposal_id,
+        f" — {reason}" if reason else "",
+    )
+
+
+def _apply_session_rule(
+    proposal: RoutingProposal, *, machine_path: Optional[Path] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    """The operator signed a goal's session rule: add the standing grant that
+    puts exactly this rule in force. The grant is revocable by its id through
+    the existing grant store (``autonomaton grants revoke <id>``, the
+    ``revoke_grant`` tool or the portal); revoking it takes the rule out of
+    force at once, with no deploy."""
+    from grove import decision_work as dw
+    from grove.grant_recognition import GrantToken
+    from grove.grants import get_grant_store
+
+    payload = proposal.payload or {}
+    goal, digest = str(payload.get("goal") or ""), str(payload.get("digest") or "")
+    if not goal or not digest:
+        raise ValueError(f"session_rule payload is incomplete: {payload!r}")
+    cfg = dw.config_for_goal(goal)
+    if dw.session_rule_digest(cfg) != digest:
+        raise ValueError(
+            f"the session rule for {goal} changed after this proposal was "
+            f"drafted; nothing was signed. A fresh proposal carries the current rule."
+        )
+    store = get_grant_store()
+    write_class = dw.SESSION_RULE_PREFIX + digest
+    store.add_standing_grant(GrantToken(
+        source="standing", scope=goal, write_class=write_class,
+        disposition="always", authorized_by="operator",
+    ))
+    grant = store.get_grant(goal, write_class)
+    applied = {
+        "goal": goal, "rule": payload.get("rule"), "digest": digest,
+        "standing_grant": grant.id if grant else None,
+        "revocation": {"handle": grant.id if grant else None,
+                       "how": "autonomaton grants revoke <handle>"},
+        "effect": "the rule is in force for sessions opened from now on",
+    }
+    return f"session rule for {goal} (grant {applied['standing_grant']})", applied
+
+
+def _refuse_kaizen_request(
+    proposal: RoutingProposal, *, machine_path: Optional[Path] = None,
+) -> Tuple[str, Dict[str, Any]]:
+    raise ValueError(
+        "There is nothing to approve here: Kaizen is asking for a condition. "
+        "Write it in the box and send it; it comes back as a proposal to sign."
+    )
+
+
+def _kaizen_request_feedback(proposal: RoutingProposal, reason: Optional[str]) -> None:
+    """The operator wrote the condition Kaizen could not draft. Hand it back:
+    it is checked, backtested and proposed as a keg revision for signature.
+    A condition that fails its checks is refused through the andon handler
+    like any other failed draft — it does not vanish."""
+    condition = (reason or "").strip()
+    payload = proposal.payload or {}
+    if not condition:
+        return
+    from grove.andon import raise_andon
+    from grove.decision_work import DecisionWork, config_for_goal
+    from grove.kaizen import standard_work
+    from grove.keg import FLAG_ANOMALY
+
+    work = DecisionWork(config_for_goal(str(payload.get("goal"))))
+    miss = payload.get("miss") or {}
+    originating = {
+        "andon_id": payload.get("originating_andon"), "flag": FLAG_ANOMALY,
+        "summary": "revision written by the operator",
+        "provenance": [], "details": {
+            "item_id": miss.get("item_id"), "inputs": miss.get("inputs"),
+            "served": miss.get("served"), "corrected": miss.get("corrected")},
+    }
+    outcome = standard_work.answer(work, originating, operator_condition=condition)
+    if outcome.get("status") != "proposed":
+        raise_andon(
+            FLAG_ANOMALY, detector="kaizen_failure", goal=work.config.goal_id,
+            summary=f"the operator's condition could not be proposed: {outcome.get('detail')}",
+            details={"reason": "condition_refused", "condition": condition,
+                     "originating_andon_id": payload.get("originating_andon"),
+                     "attempts": outcome.get("attempts")},
+            matched_skill="kaizen", context={"work": work},
+        )
+
+
+def _summary_remedy(proposal: RoutingProposal) -> str:
+    return f"remedy (one time): {proposal.semantic_justification}"
+
+
+def _diff_remedy(proposal: RoutingProposal) -> Dict[str, Any]:
+    payload = proposal.payload or {}
+    return {"remedy": {
+        "one_time_action": payload.get("write_class"),
+        "writes": "in-scope only — nothing permanent changes",
+        "action": payload.get("action"),
+        "answers_andon": payload.get("andon_id"),
+    }}
+
+
+def _summary_session_rule(proposal: RoutingProposal) -> str:
+    return f"session rule: {proposal.semantic_justification}"
+
+
+def _diff_session_rule(proposal: RoutingProposal) -> Dict[str, Any]:
+    payload = proposal.payload or {}
+    return {"session_rule": {
+        **(payload.get("rule") or {}),
+        "in_force": "when signed; revocable at any time by the grant's id",
+    }}
+
+
+def _summary_kaizen_request(proposal: RoutingProposal) -> str:
+    return "Kaizen needs a condition from you: " + proposal.semantic_justification
+
+
+def _diff_kaizen_request(proposal: RoutingProposal) -> Dict[str, Any]:
+    payload = proposal.payload or {}
+    return {"kaizen_request": {
+        "miss": payload.get("miss"), "declared_inputs": payload.get("inputs"),
+        "refused_drafts": payload.get("attempts"),
+    }}
+
+
 def _approve_pattern_demotion(
     proposal: RoutingProposal,
     *,
@@ -2260,7 +2453,19 @@ def _record_kaizen_disposition(
             standard_work = (applied_result or {}).get("new_standard_work")
         elif disposition == "rejected":
             fields["loop_step"] = keg_mod.LOOP_FEEDBACK
+    if proposal.type == PROPOSAL_TYPE_REMEDY:
+        fields["loop_step"] = "accepted" if disposition == "applied" else "feedback"
+    elif proposal.type in (PROPOSAL_TYPE_SESSION_RULE, PROPOSAL_TYPE_KAIZEN_REQUEST):
+        fields["loop_step"] = "signed" if disposition == "applied" else "feedback"
     ledger.record("kaizen_disposition", **fields)
+    if proposal.type == PROPOSAL_TYPE_REMEDY and disposition == "applied":
+        ledger.record(
+            "remedy_applied",
+            loop_step="remedy_applied",
+            proposal_id=proposal.proposal_id,
+            **{k: v for k, v in (applied_result or {}).items()
+               if k not in ("proposal_id",)},
+        )
     if standard_work:
         ledger.record(
             keg_mod.LOOP_NEW_STANDARD_WORK,
@@ -2771,6 +2976,26 @@ PROPOSAL_HANDLERS: Dict[str, ProposalHandler] = {
     # portal-action-checkpoint-parity — operator-initiated Dock mutations the
     # portal FILES (no writer call); apply is operator-only via flywheel approve.
     # No requires_source_patterns (cluster-less operator taps must pass B2).
+    PROPOSAL_TYPE_REMEDY: ProposalHandler(
+        summary_renderer=_summary_remedy,
+        diff_renderer=_diff_remedy,
+        apply_callback=_apply_remedy,
+        apply_label_prefix="Remedy carried out: ",
+        feedback_callback=_remedy_feedback,
+    ),
+    PROPOSAL_TYPE_SESSION_RULE: ProposalHandler(
+        summary_renderer=_summary_session_rule,
+        diff_renderer=_diff_session_rule,
+        apply_callback=_apply_session_rule,
+        apply_label_prefix="Signed: ",
+    ),
+    PROPOSAL_TYPE_KAIZEN_REQUEST: ProposalHandler(
+        summary_renderer=_summary_kaizen_request,
+        diff_renderer=_diff_kaizen_request,
+        apply_callback=_refuse_kaizen_request,
+        apply_label_prefix="",
+        feedback_callback=_kaizen_request_feedback,
+    ),
     PROPOSAL_TYPE_DOCK_GOAL_STATUS: ProposalHandler(
         summary_renderer=_summary_dock_goal_status,
         diff_renderer=_dock_goal_status_to_diff,

@@ -215,6 +215,13 @@ def test_registry_covers_exactly_the_registered_types() -> None:
         PROPOSAL_TYPE_PATTERN_PROMOTION,
         PROPOSAL_TYPE_PATTERN_DEMOTION,
         PROPOSAL_TYPE_SKILL_SYNTHESIS,
+        # andon-handler (2026-10-06) added three: Kaizen's answers to andon
+        # events — remedy (the one chat-acceptable kind), session_rule (a
+        # goal's signed session rule) and kaizen_request (the operator writes
+        # a condition Kaizen could not draft; never approvable).
+        "remedy",
+        "session_rule",
+        "kaizen_request",
     }
 
 

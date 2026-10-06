@@ -233,6 +233,119 @@ def draft_condition(
 # ── the answer ────────────────────────────────────────────────────────
 
 
+def goal_kegs(work: Any, statuses: tuple, *, store: Any = None) -> List[Any]:
+    """This goal's keg entries in the current run's lineage, by status."""
+    from grove.pattern_cache import PatternCacheStore
+
+    run = work.log.current_run() or {}
+    out = []
+    for entry in (store or PatternCacheStore()).all():
+        record = keg_mod.keg_record(entry).get("keg") or {}
+        if (
+            record.get("dock_goal") == work.config.goal_id
+            and record.get("lineage") == run.get("run_id")
+            and entry.status in statuses
+        ):
+            out.append(entry)
+    return out
+
+
+def propose_direct_rule(
+    work: Any, andon: Mapping[str, Any], *, key: Any, corrected: Mapping[str, Any],
+    store: Any = None,
+) -> Dict[str, Any]:
+    """Propose a revision of the goal's signed keg that answers ``key`` with
+    the value the operator has repeatedly corrected it to. Called only once
+    that correction has been seen as often as the goal's evidence rule asks
+    of any rule. With no signed keg to revise there is nothing to propose."""
+    from grove.eval.pattern_compiler import propose_keg
+    from grove.pattern_cache import PatternCacheStore, STATUS_ACTIVE, STATUS_HALTED
+
+    cfg = work.config
+    store = store or PatternCacheStore()
+    current = goal_kegs(work, (STATUS_ACTIVE, STATUS_HALTED), store=store)
+    if cfg.keg is None or not current or key is None or not corrected:
+        return {"status": "no_keg_to_revise",
+                "detail": "no signed keg for this goal to add the rule to"}
+    ref = cfg.reference
+    base = list((keg_mod.keg_of(current[-1]) or {}).get("conditions") or [])
+    rule = {"if": f"{ref.key_input} == {_quote(key)}", "then": dict(corrected)}
+    history = work.history()
+    matching = [
+        c for c in history
+        if keg_mod._norm(c["inputs"].get(ref.key_input)) == keg_mod._norm(key)
+        and c["confirmed"] == dict(corrected)
+    ]
+    run = work.log.current_run() or {}
+    result = propose_keg(
+        store,
+        name=cfg.keg.name, request=cfg.keg.request, requests=cfg.keg.requests,
+        match_threshold=cfg.keg.match_threshold,
+        sessions="goal_isolated" if cfg.isolated else None,
+        intent_class=_intent_class([str(c.get("turn_id")) for c in matching]),
+        tool_name=cfg.tool, tool_args={"verb": "apply_keg"},
+        inputs=cfg.inputs, outputs=cfg.outputs,
+        conditions=[rule] + [c for c in base if c.get("if") != rule["if"]],
+        scope_text=(
+            f"Adds one rule: {ref.key_input} {key!r} is answered "
+            f"{json.dumps(dict(corrected))}, as you corrected it {len(matching)} times."
+        ),
+        reserve=(
+            f"Any {ref.key_input} with more than one value in {ref.path.name}; "
+            f"any {ref.key_input} not covered by a rule."
+        ),
+        dock_goal=cfg.goal_id, scope=cfg.keg.scope,
+        authority_level=cfg.keg.authority_level,
+        flag=keg_mod.FLAG_ANOMALY,
+        flag_detail=str(andon.get("summary") or ""),
+        evidence_turn_ids=[str(c.get("turn_id") or c["ref"]) for c in matching]
+        or [str(andon.get("andon_id"))],
+        history=history, lineage=run.get("run_id"), andon_id=andon.get("andon_id"),
+    )
+    return _summary(result)
+
+
+def request_operator_condition(work: Any, andon: Mapping[str, Any]) -> Optional[str]:
+    """Ask the operator to write the condition Kaizen could not draft. Files a
+    card in the portal that carries the miss and every refused attempt; what
+    the operator writes comes back through :func:`answer` as an ordinary keg
+    proposal — backtested and signed like any other."""
+    import hashlib
+    from datetime import datetime, timezone
+    from grove.eval.proposal_queue import (
+        PROPOSAL_TYPE_KAIZEN_REQUEST, RoutingProposal, append, compute_proposal_id,
+    )
+
+    details = andon.get("details") or {}
+    origin = details.get("originating_details") or {}
+    payload = {
+        "goal": work.config.goal_id,
+        "andon_id": andon.get("andon_id"),
+        "originating_andon": details.get("originating_andon_id"),
+        "miss": {"item_id": origin.get("item_id"), "inputs": origin.get("inputs"),
+                 "served": origin.get("served"), "corrected": origin.get("corrected")},
+        "attempts": details.get("attempts") or [],
+        "inputs": sorted(work.config.inputs),
+    }
+    evidence = (str(details.get("originating_andon_id") or andon.get("andon_id")),)
+    proposal = RoutingProposal(
+        proposal_id=compute_proposal_id(
+            type=PROPOSAL_TYPE_KAIZEN_REQUEST, payload=payload, evidence=evidence),
+        type=PROPOSAL_TYPE_KAIZEN_REQUEST, payload=payload, evidence=evidence,
+        eval_hash="sha256:" + hashlib.sha256(
+            f"kaizen_request|{evidence[0]}".encode("utf-8")).hexdigest(),
+        created_at=datetime.now(timezone.utc).isoformat(),
+        semantic_justification=(
+            "Kaizen could not draft a rule that separates the corrected case "
+            "from the ones you confirmed. Write the condition and it will be "
+            "backtested and brought back for your signature."
+        ),
+        proposer="kaizen",
+    )
+    append(proposal)
+    return proposal.proposal_id
+
+
 def _summary(result: Any) -> Dict[str, Any]:
     backtest = result.backtest or {}
     return {
@@ -255,11 +368,11 @@ def answer(
     store: Any = None,
     call: Any = None,
     queue_path: Any = None,
+    operator_condition: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Draft, backtest and propose the keg (or keg revision) that answers
     ``andon``. Returns a summary; ``status`` says what happened in plain
     terms. Never activates anything."""
-    from grove import jidoka
     from grove.eval.pattern_compiler import propose_keg
     from grove.flywheel_cli import keg_feedback_history
     from grove.pattern_cache import PatternCacheStore, STATUS_HALTED
@@ -284,9 +397,7 @@ def answer(
     attempts: List[Dict[str, Any]] = []
 
     if andon.get("flag") == keg_mod.FLAG_ANOMALY:
-        halted = [
-            entry for entry in jidoka._goal_kegs(work, (STATUS_HALTED,), store=store)
-        ]
+        halted = goal_kegs(work, (STATUS_HALTED,), store=store)
         if not halted:
             return {"status": "no_keg_to_revise",
                     "detail": "the corrected decision was not served by a keg"}
@@ -308,21 +419,26 @@ def answer(
         if feedback:
             reason = "The operator sent the last draft back with this feedback: " + " | ".join(feedback)
 
-    if target is not None or feedback:
+    if operator_condition:
+        # The operator wrote the condition. It gets the same checks as a
+        # drafted one — and then the same backtest and signature.
+        problem = _check_condition(work, operator_condition, history, target=target)
+        if problem is not None:
+            return {"status": "condition_refused", "attempts": [
+                {"tier": "operator", "condition": operator_condition, "refused": problem}],
+                "detail": f"the condition was refused because {problem}"}
+        drafted, attempts = operator_condition, [
+            {"tier": "operator", "condition": operator_condition, "refused": None}]
+    elif target is not None or feedback:
         drafted, attempts = draft_condition(
             work, base, history, target=target, reason=reason, call=call,
         )
         if drafted is None:
-            failed = jidoka.flag(
-                keg_mod.FLAG_ANOMALY, detector="kaizen_draft", goal=cfg.goal_id,
-                summary="Kaizen could not draft a revision that passes its checks",
-                evidence=list(andon.get("provenance") or []),
-                details={"answering": andon.get("andon_id"), "attempts": attempts},
-                ledger=ledger,
-            )
+            # Kaizen has no valid draft. It reports that and nothing else: the
+            # andon handler raises it as the next event and routes it back.
             return {"status": "draft_failed", "attempts": attempts,
-                    "andon_id": failed["andon_id"],
                     "detail": "no tier produced a usable condition; nothing proposed"}
+    if drafted is not None:
         # Narrowest change: the separated cases go back to the interpreter.
         # Teaching the keg a NEW answer for them takes the same repeated,
         # confirmed evidence as any rule — a single miss never earns it.
@@ -359,6 +475,9 @@ def answer(
         store,
         name=cfg.keg.name,
         request=cfg.keg.request,
+        requests=cfg.keg.requests,
+        match_threshold=cfg.keg.match_threshold,
+        sessions="goal_isolated" if cfg.isolated else None,
         intent_class=_intent_class(evidence_ids),
         tool_name=cfg.tool,
         tool_args={"verb": "apply_keg"},

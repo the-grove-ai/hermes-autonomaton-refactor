@@ -93,6 +93,42 @@ def _run_reports(home: Path, store_path: Path) -> tuple:
     return lines, problems
 
 
+def _ledger_report(home: Path) -> tuple:
+    """Verify every Kaizen ledger file's provenance chain (the ledger that
+    carries flags, andon events, Kaizen's answers and signatures). Lines the
+    retention engine archived are read back in, so a pruned ledger still
+    verifies whole. Returns ``(summary line, problems)``."""
+    from grove.kaizen_ledger import verify_ledger_chain
+
+    directory = home / ".kaizen_ledger"
+    if not directory.is_dir():
+        return None, []
+    files = chained = unchained = 0
+    problems = []
+    for path in sorted(directory.glob("*.jsonl")):
+        archive = home / ".kaizen_ledger_archive" / path.name
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+        archived = []
+        if archive.exists():
+            with open(archive, encoding="utf-8") as fh:
+                archived = fh.read().splitlines()
+        report = verify_ledger_chain(lines, archived)
+        files += 1
+        chained += report["chained"]
+        unchained += report["unchained"]
+        for p in report["problems"]:
+            problems.append({
+                "line": p.get("line"), "turn_id": p.get("event_type") or "",
+                "problem": p["problem"], "where": f"ledger {path.name}",
+            })
+    line = (
+        f"  Kaizen ledger events       {chained:,} chained in {files:,} file(s)"
+        + (f"; {unchained:,} older, pre-chain" if unchained else "")
+    )
+    return line, problems
+
+
 def main() -> int:
     from grove.intent_store import verify_chain
 
@@ -115,6 +151,8 @@ def main() -> int:
     problems = list(report["problems"])
     run_lines, run_problems = _run_reports(home, path) if live else ([], [])
     problems += run_problems
+    ledger_line, ledger_problems = _ledger_report(home) if live else (None, [])
+    problems += ledger_problems
     bar = "=" * 62
     print(bar)
     print("  AUDIT CHAIN CHECK")
@@ -129,6 +167,8 @@ def main() -> int:
               "(newest record still present)")
     else:
         print("  Sessions tail-checked      not run (needs the live session database)")
+    if ledger_line:
+        print(ledger_line)
     for block in run_lines:
         print(block)
     print(bar)
@@ -143,7 +183,8 @@ def main() -> int:
     print(bar)
     for p in problems:
         where = (
-            f"line {p['line']}" if p.get("line")
+            p["where"] + (f" line {p['line']}" if p.get("line") else "") if p.get("where")
+            else f"line {p['line']}" if p.get("line")
             else f"session {p['session_id']}" if p.get("session_id")
             else "decision log"
         )

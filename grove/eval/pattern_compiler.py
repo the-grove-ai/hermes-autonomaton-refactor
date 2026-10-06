@@ -35,6 +35,10 @@ _DEFAULTS: Dict[str, Any] = {
     # conversation is small-talk: no tool, no stable answer — excluded so it
     # doesn't drop every scan (Sprint 56 Fix #4).
     "exclude_intents": ["unknown", "system_admin", "conversation"],
+    # How closely two requests' content words must overlap to count as the
+    # same request, for clustering and for serving (grove.intent_match).
+    # 1.0 = identical content words only.
+    "match_threshold": 0.8,
 }
 
 # Intent classes whose answers are stable artifacts → cache the response
@@ -55,6 +59,11 @@ class Candidate:
     rejection_count: int
     sample_queries: tuple          # first 3 user_message_stems
     evidence_turn_ids: tuple
+    # Every distinct phrasing in the cluster, and the overlap threshold that
+    # clustered them — stored on the compiled entry so serving matches the
+    # same way detection did.
+    phrasings: tuple = ()
+    match_threshold: float = 1.0
 
 
 def load_pattern_cache_config() -> Dict[str, Any]:
@@ -152,12 +161,32 @@ def scan_candidates(store: Any, config: Optional[Dict[str, Any]] = None) -> List
     except Exception:
         pass
 
+    # Group by meaning, not by exact text: a request joins the first cluster
+    # (same intent class) whose founding phrasing it overlaps at or above the
+    # configured threshold (grove.intent_match — deterministic token overlap).
+    # A cluster is keyed by its founding phrasing's t0_key, so a cluster of
+    # identically-worded requests is exactly the group it always was. At
+    # threshold 1.0 only identical content words cluster.
+    from grove.intent_match import overlap
+
+    threshold = float(cfg.get("match_threshold", 0.8))
+    founders: Dict[str, list] = collections.defaultdict(list)   # intent → [(stem, key)]
     groups: Dict[tuple, list] = collections.defaultdict(list)
     for rec in store.latest_by_turn():
         ic = rec.intent_class
         if not ic or ic == "unknown" or ic in exclude:
             continue
-        key = t0_key(ic, rec.user_message_stem)
+        stem = rec.user_message_stem or ""
+        exact = t0_key(ic, stem)
+        key = exact if (ic, exact) in groups else None
+        if key is None:
+            for founder_stem, founder_key in founders[ic]:
+                if overlap(stem, founder_stem) >= threshold:
+                    key = founder_key
+                    break
+        if key is None:
+            key = exact
+            founders[ic].append((stem, key))
         groups[(ic, key)].append(rec)
 
     out: List[Candidate] = []
@@ -180,6 +209,8 @@ def scan_candidates(store: Any, config: Optional[Dict[str, Any]] = None) -> List
             rejection_count=rejection_count,
             sample_queries=tuple(r.user_message_stem for r in recs[:3]),
             evidence_turn_ids=tuple(r.turn_id for r in recs),
+            phrasings=tuple(dict.fromkeys(r.user_message_stem for r in recs)),
+            match_threshold=threshold,
         ))
     out.sort(key=lambda c: -c.repetition_count)
     return out
@@ -265,6 +296,13 @@ def compile_candidate(
         # Sprint 56 — carry the sample queries so `flywheel patterns list`
         # can show the operator WHAT each pattern matches, not just a hash.
         "sample_queries": list(candidate.sample_queries),
+        # A cluster of differently-worded requests is served the way it was
+        # detected: by overlap with its recorded phrasings. A pattern whose
+        # requests were all worded alike declares no match block and serves
+        # exact text only.
+        **({"match": {"examples": list(candidate.phrasings),
+                      "threshold": candidate.match_threshold}}
+           if len(candidate.phrasings) > 1 else {}),
     }, sort_keys=True)
 
     return CompiledPattern(
@@ -490,19 +528,22 @@ def propose_pattern_promotions(
             created_at=now,
             proposer="pattern_compiler",  # proposal-proposer-attribution-v1 (#8)
         )
-        # The scanner is a Jidoka detector: repetition. It flags and pulls the
-        # andon cord like every other detector, and the proposal answers that
-        # event. Only for a proposal that is new — a rescan of a pattern already
-        # waiting in the queue saw nothing new and flags nothing.
+        # The scanner is a Jidoka detector: repetition. It pulls the andon
+        # cord and returns; the handler routes the event to Kaizen, whose
+        # answer files the proposal compiled above. A rescan of a pattern
+        # already waiting saw nothing new and raises nothing.
         already_queued = any(
             p.proposal_id == proposal.proposal_id for p in _queue_read_all(path=queue_path)
         )
-        andon = None
+        queued = {"ok": False}
+
+        def _file(andon: Dict[str, Any], _proposal=proposal, _queued=queued) -> Optional[str]:
+            _queued["ok"] = bool(_queue_append(_proposal, path=queue_path))
+            return _proposal.proposal_id if _queued["ok"] else None
+
         if not already_queued:
-            andon = _flag_repetition(cand, ledger=ledger)
-        if _queue_append(proposal, path=queue_path):
-            if andon is not None:
-                _record_kaizen_answer(andon, proposal, cand, ledger=ledger)
+            _raise_repetition(cand, _file, ledger=ledger)
+        if queued["ok"]:
             dispositions.append(_disp(
                 cand, DISPOSITION_PROPOSED, "queued for operator approval",
                 proposal_id=proposal.proposal_id,
@@ -535,13 +576,16 @@ def _goal_for_request(request: str) -> Optional[str]:
     return None
 
 
-def _flag_repetition(cand: Candidate, *, ledger: Any = None) -> Dict[str, Any]:
-    from grove import jidoka
+def _raise_repetition(cand: Candidate, propose: Any, *, ledger: Any = None) -> Dict[str, Any]:
+    """The scanner as a detector: pull the andon cord for a repeated request.
+    ``propose`` — the proposal this scan compiled — rides along as context,
+    and the handler's route to Kaizen is what files it."""
+    from grove.andon import raise_andon
     from grove.keg import FLAG_TIER_DOWN_PATTERN
 
     request = cand.sample_queries[0] if cand.sample_queries else ""
-    return jidoka.flag(
-        FLAG_TIER_DOWN_PATTERN, detector=jidoka.DETECTOR_REPETITION,
+    return raise_andon(
+        FLAG_TIER_DOWN_PATTERN, detector="repetition",
         goal=_goal_for_request(request),
         summary=(
             f"the same {cand.intent_class} request was answered the same way "
@@ -549,24 +593,9 @@ def _flag_repetition(cand: Candidate, *, ledger: Any = None) -> Dict[str, Any]:
         ),
         evidence=[{"turn_id": t} for t in cand.evidence_turn_ids],
         details={"t0_key": cand.t0_key, "cacheable_type": cand.cacheable_type},
+        observed_input={"request": request, "phrasings": len(cand.phrasings)},
+        context={"propose": propose},
         ledger=ledger,
-    )
-
-
-def _record_kaizen_answer(
-    andon: Dict[str, Any], proposal: Any, cand: Candidate, *, ledger: Any = None,
-) -> None:
-    from grove import jidoka
-    from grove.keg import LOOP_KAIZEN_PROPOSAL
-
-    jidoka._ledger(ledger).record(
-        LOOP_KAIZEN_PROPOSAL,
-        loop_step=LOOP_KAIZEN_PROPOSAL,
-        proposal_id=proposal.proposal_id,
-        pattern_id=cand.t0_key,
-        flag=andon["flag"],
-        andon_id=andon["andon_id"],
-        evidence_count=len(cand.evidence_turn_ids),
     )
 
 
@@ -673,6 +702,9 @@ def propose_keg(
     *,
     name: str,
     request: str,
+    requests: Any = (),
+    match_threshold: Optional[float] = None,
+    sessions: Optional[str] = None,
     intent_class: str,
     tool_name: str,
     tool_args: Optional[Dict[str, Any]] = None,
@@ -755,7 +787,20 @@ def propose_keg(
         "authority_level": authority_level,   # what it may do once granted
         "dock_goal": dock_goal,
         "reserve": reserve,
-        "trigger": {"request": request, "intent_class": intent_class},
+        "trigger": {
+            "request": request,
+            # Further requests the keg also answers, matched as exact text.
+            **({"requests": [str(r) for r in requests]} if requests else {}),
+            # How closely a request must overlap one of those examples to be
+            # this keg's (grove.intent_match). Absent: exact text only.
+            **({"match_threshold": float(match_threshold)}
+               if match_threshold is not None else {}),
+            # Where the keg answers. "goal_isolated": only in a session
+            # isolated to its Dock goal — elsewhere the request is simply not
+            # the keg's. Absent: any session.
+            **({"sessions": sessions} if sessions else {}),
+            "intent_class": intent_class,
+        },
         "inputs": inputs,
         "outputs": outputs,
         "conditions": conditions,
@@ -860,10 +905,8 @@ def propose_keg(
             proposal_id=proposal.proposal_id,
         )
     if ledger is None:
-        from grove.kaizen_ledger import KaizenLedger
-        ledger = KaizenLedger(
-            "kaizen-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-        )
+        from grove.andon import _bus
+        ledger = _bus()                # the one bus: this session's ledger
     ledger.record(
         keg_mod.LOOP_KAIZEN_PROPOSAL,
         loop_step=keg_mod.LOOP_KAIZEN_PROPOSAL,

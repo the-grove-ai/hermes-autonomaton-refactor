@@ -284,6 +284,21 @@ PROPOSAL_TYPE_UNMAPPED_FAILURE_CLASS = "unmapped_failure_class"
 # buttons; extend a tuple to add a verb (e.g. "suggest_revision") with NO change
 # to the iterator — the shape is deliberately open. The generic fleet type
 # MIRRORS forge's verb shape (C1b-2).
+# Kaizen's answers to andon events (grove/andon.py, grove/kaizen/answers.py).
+# remedy: a one-time, in-scope action for this turn — the ONLY of these the
+#   operator may accept in chat. Payload: {"andon_id", "goal", "write_class",
+#   "action": {...}, "write_targets": [...]}.
+# session_rule: a goal's session rule for signature (scope-defining; portal).
+#   Payload: {"goal", "digest", "rule": {...}, "andon_id"}. Signing adds a
+#   revocable standing grant on exactly that rule.
+# kaizen_request: Kaizen could not draft a rule at any tier and asks the
+#   operator to write the condition. Not approvable; the operator's text goes
+#   back to Kaizen as feedback and returns as an ordinary keg proposal.
+#   Payload: {"goal", "andon_id", "originating_andon", "attempts"}.
+PROPOSAL_TYPE_REMEDY = "remedy"
+PROPOSAL_TYPE_SESSION_RULE = "session_rule"
+PROPOSAL_TYPE_KAIZEN_REQUEST = "kaizen_request"
+
 PROPOSAL_VERBS: Dict[str, Tuple[str, ...]] = {
     PROPOSAL_TYPE_FORGE_ARTIFACT_PENDING: ("promote", "reject"),
     PROPOSAL_TYPE_FLEET_ARTIFACT_PENDING: ("promote", "reject"),

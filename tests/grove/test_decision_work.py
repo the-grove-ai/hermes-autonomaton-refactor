@@ -60,6 +60,23 @@ def _goal(tmp_path, **over):
     )
 
 
+class _Grants:
+    """A stand-in standing-grant store: the session rules that are signed."""
+
+    def __init__(self, *goals):
+        self.signed = {}
+        for goal in goals:
+            self.sign(goal)
+
+    def sign(self, goal):
+        cfg = dw.load_config(goal)
+        self.signed[(goal.id, dw.SESSION_RULE_PREFIX + dw.session_rule_digest(cfg))] = (
+            SimpleNamespace(id="grant-test", revoked=False))
+
+    def get_grant(self, scope, write_class):
+        return self.signed.get((scope, write_class))
+
+
 def _queue(tmp_path, *channels):
     for i, channel in enumerate(channels, 1):
         (tmp_path / "queue" / f"m{i:02d}.txt").write_text(channel, encoding="utf-8")
@@ -302,13 +319,39 @@ def test_evidence_reads_only_the_current_run(tmp_path):
 
 
 def test_isolating_goal_is_matched_by_its_declared_keywords(tmp_path):
-    dock = SimpleNamespace(goals=(_goal(tmp_path),))
-    assert dw.isolating_goal_for("Tag the next message", dock=dock) == GOAL
-    assert dw.isolating_goal_for("what's on my calendar", dock=dock) is None
-    assert dw.isolating_goal_for("messages", dock=dock) is None    # whole words only
+    goal = _goal(tmp_path)
+    dock, grants = SimpleNamespace(goals=(goal,)), _Grants(goal)
+    assert dw.isolating_goal_for("Tag the next message", dock=dock, grants=grants) == GOAL
+    assert dw.isolating_goal_for("what's on my calendar", dock=dock, grants=grants) is None
+    assert dw.isolating_goal_for("messages", dock=dock, grants=grants) is None  # whole words
     open_goal = _goal(tmp_path, isolation=None)
-    assert dw.isolating_goal_for("Tag the next message",
-                                 dock=SimpleNamespace(goals=(open_goal,))) is None
+    assert dw.isolating_goal_for(
+        "Tag the next message", dock=SimpleNamespace(goals=(open_goal,)),
+        grants=_Grants(open_goal)) is None
+
+
+def test_session_rule_isolates_only_while_its_signature_stands(tmp_path):
+    goal = _goal(tmp_path)
+    dock = SimpleNamespace(goals=(goal,))
+    said = "Tag the next message"
+    # Unsigned: the Dock declares the rule, but nothing is in force.
+    assert dw.isolating_goal_for(said, dock=dock, grants=_Grants()) is None
+    grants = _Grants(goal)
+    assert dw.isolating_goal_for(said, dock=dock, grants=grants) == GOAL
+    # A hand-edit to any session-rule field is a draft until signed again:
+    # the signature commits to the rule that was on screen.
+    edited = _goal(tmp_path, on_unclean="open_clean_session")
+    assert dw.session_rule_digest(dw.load_config(edited)) != dw.session_rule_digest(
+        dw.load_config(goal))
+    assert dw.isolating_goal_for(
+        said, dock=SimpleNamespace(goals=(edited,)), grants=grants) is None
+    grants.sign(edited)
+    assert dw.isolating_goal_for(
+        said, dock=SimpleNamespace(goals=(edited,)), grants=grants) == GOAL
+    # Fields outside the session rule do not disturb the signature.
+    other = _goal(tmp_path, evidence={"threshold": 9})
+    assert dw.session_rule_digest(dw.load_config(other)) == dw.session_rule_digest(
+        dw.load_config(goal))
 
 
 def test_composer_composes_no_isolated_section():
@@ -347,10 +390,11 @@ class _Meta:
 def _dispatcher(monkeypatch, tmp_path, session_id, turn):
     from grove.dispatcher import Dispatcher
 
-    dock = SimpleNamespace(goals=(_goal(tmp_path),))
+    goal = _goal(tmp_path)
+    dock, grants = SimpleNamespace(goals=(goal,)), _Grants(goal)
     monkeypatch.setattr(
         dw, "isolating_goal_for",
-        lambda message, dock=dock, _real=dw.isolating_goal_for: _real(message, dock=dock),
+        lambda message, _real=dw.isolating_goal_for: _real(message, dock=dock, grants=grants),
     )
     d = Dispatcher.__new__(Dispatcher)
     d.session_id = session_id

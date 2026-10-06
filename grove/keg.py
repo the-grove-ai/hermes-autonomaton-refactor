@@ -283,6 +283,20 @@ def validate_spec(spec: Any) -> None:
         or not trigger["request"].strip()
     ):
         raise ValueError("keg trigger must declare the 'request' it answers")
+    also = trigger.get("requests")
+    if also is not None and (
+        not isinstance(also, list)
+        or not all(isinstance(r, str) and r.strip() for r in also)
+    ):
+        raise ValueError("keg trigger 'requests' must be a list of non-empty strings")
+    if trigger.get("sessions") not in (None, "goal_isolated"):
+        raise ValueError("keg trigger 'sessions' must be 'goal_isolated' when set")
+    threshold = trigger.get("match_threshold")
+    if threshold is not None and (
+        isinstance(threshold, bool) or not isinstance(threshold, (int, float))
+        or not 0.0 < float(threshold) <= 1.0
+    ):
+        raise ValueError("keg trigger 'match_threshold' must be a number in (0, 1]")
     inputs, outputs = spec.get("inputs"), spec.get("outputs")
     for label, block in (("inputs", inputs), ("outputs", outputs)):
         if not isinstance(block, Mapping) or not block:
@@ -353,6 +367,20 @@ def keg_of(pattern: Any) -> Optional[Dict[str, Any]]:
     return spec if isinstance(spec, dict) else None
 
 
+def trigger_requests(spec: Mapping[str, Any]) -> List[str]:
+    """Every operator request this keg declares it answers: ``request`` first,
+    then any others in ``requests``. Signed with the rest of the keg."""
+    trigger = spec.get("trigger") or {}
+    out = [str(trigger.get("request") or "")]
+    out += [str(r) for r in (trigger.get("requests") or [])]
+    seen, unique = set(), []
+    for r in out:
+        if r.strip() and r not in seen:
+            seen.add(r)
+            unique.append(r)
+    return unique
+
+
 def keg_record(pattern: Any) -> Dict[str, Any]:
     """The keg's bookkeeping block (version lineage, who signed, feedback),
     stored in the entry's existing ``promotion_evidence`` JSON."""
@@ -379,9 +407,10 @@ def lifecycle(status: str) -> Dict[str, Any]:
     """
     from grove.pattern_cache import (
         STATUS_ACTIVE, STATUS_DEMOTED, STATUS_HALTED, STATUS_REJECTED,
-        STATUS_SUPERSEDED, STATUS_SUSPENDED,
+        STATUS_SUPERSEDED, STATUS_SUSPENDED, STATUS_WATCHING,
     )
     table = {
+        STATUS_WATCHING: ("draft", "watching"),
         STATUS_SUSPENDED: ("draft", "proposed"),
         STATUS_REJECTED: ("draft", "feedback sent"),
         STATUS_ACTIVE: ("stable", "serving"),
