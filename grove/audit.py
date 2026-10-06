@@ -1099,3 +1099,65 @@ def project(goal_report: Mapping[str, Any], units_per_month: int) -> Dict[str, A
             else frontier["cost"] * share   # the covered share never reaches a frontier call
         ),
     }
+
+
+# ── models: what our own records say about each one ───────────────────
+
+
+def model_evidence(home: Any = None) -> List[Dict[str, Any]]:
+    """Each model that has run turns here, with what the records show: how
+    many turns, how many of them did not complete and failed upward to a
+    higher tier, how many decisions it proposed and how many of those the
+    operator revised, and what its turns cost. Read from the turn records and
+    the goals' decision logs; nothing is written. Most-used first."""
+    base = _home(home)
+    prices = _prices(base)
+    intents: Dict[str, Dict[str, Any]] = {}
+    for row in _jsonl(base / "intent_records.jsonl"):
+        if row.get("turn_uid"):
+            intents[row["turn_uid"]] = row        # later lines supersede
+    rows: Dict[str, Dict[str, Any]] = {}
+
+    def _row(model: str) -> Dict[str, Any]:
+        return rows.setdefault(model, {
+            "model": model, "turns": 0, "failed_upward": 0, "proposed": 0,
+            "revised": 0, "cost": 0.0, "priced_turns": 0, "tiers": set()})
+
+    failed: set = set()
+    for record in intents.values():
+        escalation = ((record.get("stages") or {}).get("compilation") or {}).get(
+            "escalation") or {}
+        failed.update(str(a.get("turn_uid")) for a in (escalation.get("attempts") or [])
+                      if a.get("turn_uid"))
+    for uid, record in intents.items():
+        model = record.get("model_used")
+        if not model or record.get("tier_selected") == "T0" or "/" not in str(model):
+            continue                      # no model ran (a keg, a session rule)
+        row, turn = _row(str(model)), _turn(record, prices)
+        row["turns"] += 1
+        row["tiers"].add(record.get("tier_selected"))
+        if uid in failed:
+            row["failed_upward"] += 1
+        if turn["priced"] and turn["cost"] is not None:
+            row["cost"] += turn["cost"]
+            row["priced_turns"] += 1
+    directory = base / "decisions"
+    if directory.is_dir():
+        for log_path in sorted(directory.glob("*.jsonl")):
+            records = _jsonl(log_path)
+            revised = {r.get("ref") for r in records
+                       if r.get("kind") == "decided" and r.get("decision") == "correct"}
+            for record in records:
+                model = (intents.get(record.get("turn_uid") or "") or {}).get("model_used")
+                if record.get("kind") != "proposed" or not model or "/" not in str(model):
+                    continue
+                row = _row(str(model))
+                row["proposed"] += 1
+                if record.get("id") in revised:
+                    row["revised"] += 1
+    out = []
+    for row in rows.values():
+        row["tiers"] = sorted(t for t in row["tiers"] if t)
+        row["cost_per_turn"] = (row["cost"] / row["priced_turns"]) if row["priced_turns"] else None
+        out.append(row)
+    return sorted(out, key=lambda r: -r["turns"])

@@ -1188,3 +1188,34 @@ ul.listing li { padding: 0.7rem 0; }
 .sc-goal .sc-panel-head { align-items: center; }
 .sc-goal .sc-row .sc-mono { white-space: normal; text-align: right; }
 .sc-goal .sc-row > span:first-child { flex: 0 0 auto; max-width: 55%; }
+
+/* ── Models page: the ladder, our own evidence, the catalog ─────────────── */
+.sc-models h3 { margin-top: 28px; }
+.sc-models .tier-cards { display: grid; gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+.sc-models .tier-cards .card { margin: 0; min-width: 0; }
+.sc-models .tier-form select { width: 100%; max-width: 100%; min-width: 0; }
+.sc-models .card-t0 { border: 1px dashed var(--sc-keg); }
+.sc-models .model-flag { color: var(--sc-event); }
+.sc-stack { display: flex; flex-direction: column; gap: 16px; margin-top: 28px; }
+.sc-table { width: 100%; border-collapse: collapse; font-size: 15px; }
+.sc-table th { text-align: left; font-family: var(--font-mono); font-size: 11px;
+  letter-spacing: 0.08em; text-transform: uppercase; color: var(--sc-text-2);
+  padding: 8px 12px 8px 0; border-bottom: 1px solid var(--sc-line); font-weight: 500; }
+.sc-table td { padding: 12px 12px 12px 0; border-bottom: 1px solid var(--sc-line);
+  font-variant-numeric: tabular-nums; }
+.sc-table tr:last-child td { border-bottom: 0; }
+.sc-catalog { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+  column-gap: 40px; }
+.sc-catalog > .sc-eyebrow { grid-column: 1 / -1; margin-top: 16px; }
+.sc-models .sc-row { align-items: flex-start; }
+.sc-models .sc-row > span:first-child { flex: 1 1 auto; min-width: 0; }
+.sc-model-note { display: block; color: var(--sc-text-2); font-size: 13px; margin-top: 2px; }
+.sc-model-tags { display: block; margin-top: 6px; }
+.sc-model-tags .tag { margin-right: 4px; }
+.sc-models .tag-on { border-color: var(--sc-keg); color: var(--sc-keg); }
+.sc-price { white-space: nowrap; }
+.sc-models .sc-row .sc-eyebrow { margin-left: 8px; }
+.sc-older { margin-top: 14px; }
+.sc-older summary { cursor: pointer; color: var(--sc-text-2); font-size: 14px; }
+.sc-table td, .sc-table th { text-align: left; }

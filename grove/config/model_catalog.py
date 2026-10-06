@@ -78,6 +78,20 @@ def _sanitize_text(value: Any, cap: int) -> str:
 _REQUIRED_STR_FIELDS = ("slug", "display_name", "provider")
 _REQUIRED_NUM_FIELDS = ("input_cost_per_mtok", "output_cost_per_mtok")
 _OPTIONAL_FIELDS = ("notes",)
+# What the portal needs to offer the right models for a tier, and to say why a
+# model is or is not on offer. Metadata only — the router never reads any of it.
+#   status            active | candidate | deprecated. Absent means active.
+#   superseded_by     the slug that replaces a deprecated model.
+#   fits              the tiers this model is offered for. Absent means any.
+#   context           context window, in tokens.
+#   tools             whether the model can call tools.
+#   structured_output whether it can be held to a schema (drafting needs it).
+#   verified          the date these facts were checked against the provider.
+STATUS_ACTIVE, STATUS_CANDIDATE, STATUS_DEPRECATED = "active", "candidate", "deprecated"
+_STATUSES = (STATUS_ACTIVE, STATUS_CANDIDATE, STATUS_DEPRECATED)
+_METADATA_FIELDS = ("status", "superseded_by", "fits", "context", "tools",
+                    "structured_output", "verified")
+_OPTIONAL_FIELDS = _OPTIONAL_FIELDS + _METADATA_FIELDS
 # The complete, closed set of catalog fields. Anything else is rejected on load.
 _ALLOWED_FIELDS = frozenset(_REQUIRED_STR_FIELDS + _REQUIRED_NUM_FIELDS + _OPTIONAL_FIELDS)
 # Substrings that mark a field as endpoint/URL/credential-class. These can NEVER
@@ -132,6 +146,26 @@ def _validate_catalog(models: Any, source: Path) -> list[dict]:
                     f"({type(val).__name__}) — costs are display-only but must "
                     f"still be numeric"
                 )
+        status = entry.get("status", STATUS_ACTIVE)
+        if status not in _STATUSES:
+            raise ValueError(f"{where} status must be one of {list(_STATUSES)}, got {status!r}")
+        for field in ("superseded_by", "verified"):
+            if field in entry and not (isinstance(entry[field], str) and entry[field].strip()):
+                raise ValueError(f"{where} field {field!r} must be a non-empty string")
+        fits = entry.get("fits")
+        if fits is not None and not (
+            isinstance(fits, list) and fits
+            and all(isinstance(t, str) and t.strip() for t in fits)
+        ):
+            raise ValueError(f"{where} field 'fits' must be a non-empty list of tier names")
+        for field in ("tools", "structured_output"):
+            if field in entry and not isinstance(entry[field], bool):
+                raise ValueError(f"{where} field {field!r} must be true or false")
+        context = entry.get("context")
+        if context is not None and (
+            isinstance(context, bool) or not isinstance(context, int) or context <= 0
+        ):
+            raise ValueError(f"{where} field 'context' must be a whole number of tokens")
         # Metadata-only contract (G-1a): the field set is closed. Reject any
         # unknown field, and reject endpoint/credential-class fields with a
         # louder message — the catalog must never become routing-load-bearing.
@@ -187,7 +221,15 @@ def merge_catalogs(repo: list[dict], sovereign: list[dict]) -> list[dict]:
     for m in sovereign:
         if m["slug"] not in by_slug:
             order.append(m["slug"])
-        by_slug[m["slug"]] = m
+            by_slug[m["slug"]] = m
+            continue
+        # The override wins on everything it states. What it does not state
+        # about a model's status and capabilities it inherits from the seed —
+        # an override written to change a price must not silently bring a
+        # deprecated model back into the picker.
+        inherited = {k: by_slug[m["slug"]][k] for k in _METADATA_FIELDS
+                     if k in by_slug[m["slug"]] and k not in m}
+        by_slug[m["slug"]] = {**m, **inherited}
     return [by_slug[s] for s in order]
 
 
@@ -289,12 +331,20 @@ def merged_catalog_provenance() -> list[dict]:
 def get_models_for_tier(tier: str, catalog: list[dict]) -> list[dict]:
     """Return the models offered for ``tier``.
 
-    v1: no per-tier filtering — the operator picks any catalog model for any
-    tier, and the routing writer's sandbox validation is the real guardrail.
-    ``tier`` is accepted now so a future policy (e.g. hide apex models from T1)
-    can filter here without changing callers.
+    A model is offered when it is not deprecated and its ``fits`` names the
+    tier (a model with no ``fits`` is offered everywhere). The routing writer's
+    sandbox validation remains the real guardrail; this only keeps the picker
+    to models worth choosing. Cheapest first, by output price.
     """
-    return list(catalog)
+    # A tier no entry names (one the operator added) is offered every model.
+    named = {t for m in catalog for t in (m.get("fits") or [])}
+    offered = [
+        m for m in catalog
+        if m.get("status", STATUS_ACTIVE) != STATUS_DEPRECATED
+        and (tier not in named or not m.get("fits") or tier in m["fits"])
+    ]
+    return sorted(offered, key=lambda m: (m.get("output_cost_per_mtok", 0),
+                                          m.get("input_cost_per_mtok", 0)))
 
 
 # ── approval-card rendering for a catalog write (model-catalog-v1 M-5/G-4) ────
@@ -653,6 +703,9 @@ def serialize_sovereign_catalog(models: list[dict]) -> str:
                                "input_cost_per_mtok", "output_cost_per_mtok") if k in m}
         if m.get("notes"):
             e["notes"] = m["notes"]
+        for k in _METADATA_FIELDS:
+            if k in m:
+                e[k] = m[k]
         ordered.append(e)
     body = yaml.safe_dump({"models": ordered}, sort_keys=False, allow_unicode=True, width=100)
     return _SOVEREIGN_HEADER + body

@@ -2691,22 +2691,69 @@ def _live_tier_preferences() -> dict:
     return tier_prefs if isinstance(tier_prefs, dict) else {}
 
 
-def _model_options_html(catalog: list, current_slug) -> str:
-    """``<option>`` set for the model dropdown, current model selected. A current
-    slug that is off-catalog renders as a selected leading option so the operator
-    sees the truth (mirrors the dock status-select idiom)."""
-    slugs = {m["slug"] for m in catalog}
+def _model_price(entry: dict | None, slug) -> tuple:
+    """(input, output, source) per Mtok for a model. The operator's declared
+    ``model_facts`` — what the scorecard prices turns with — win where they
+    name the model; otherwise the catalog's list price. One price, said once."""
+    try:
+        from grove import audit as audit_mod
+        fact = (audit_mod._prices(None)["facts"] or {}).get(slug) or {}
+    except Exception:  # noqa: BLE001 — a price lookup never blanks a card
+        fact = {}
+    p_in, p_out = fact.get("cost_per_mtok_input"), fact.get("cost_per_mtok_output")
+    if isinstance(p_in, (int, float)) and isinstance(p_out, (int, float)):
+        return p_in, p_out, "facts"
+    if entry:
+        return entry["input_cost_per_mtok"], entry["output_cost_per_mtok"], "catalog"
+    return None, None, None
+
+
+def _model_facts_line(entry: dict | None) -> str:
+    """Context window and capabilities, as far as the catalog states them."""
+    if not entry:
+        return ""
+    bits = []
+    context = entry.get("context")
+    if context:
+        bits.append(f"{round(context / 1_000_000)}M context" if context >= 1_000_000
+                    else f"{round(context / 1000)}K context")
+    if "tools" in entry:
+        bits.append("tools" if entry["tools"] else "no tools")
+    if "structured_output" in entry:
+        bits.append("structured output" if entry["structured_output"]
+                    else "no structured output")
+    return " · ".join(bits)
+
+
+def _model_options_html(catalog: list, current_slug, tier: str | None = None) -> str:
+    """``<option>`` set for the model dropdown, current model selected.
+
+    With ``tier``, only the models offered for that tier (not deprecated, and
+    fitting it), cheapest first, each with its price. The current model is
+    always present and selected, even when it is deprecated or off-catalog, so
+    the operator sees the truth (mirrors the dock status-select idiom)."""
+    from grove.config.model_catalog import STATUS_DEPRECATED, get_models_for_tier
+
+    by_slug = {m["slug"]: m for m in catalog}
+    offered = get_models_for_tier(tier, catalog) if tier else [
+        m for m in catalog if m.get("status") != STATUS_DEPRECATED]
     options: list[str] = []
-    if current_slug and current_slug not in slugs:
+    if current_slug and current_slug not in {m["slug"] for m in offered}:
+        held = by_slug.get(current_slug)
+        why = "not in catalog" if held is None else (
+            "deprecated" if held.get("status") == STATUS_DEPRECATED else "not offered for this tier")
         options.append(
             f'<option value="{_esc(current_slug)}" selected>'
-            f'{_esc(current_slug)} (not in catalog)</option>'
+            f'{_esc(held["display_name"] if held else current_slug)} ({why})</option>'
         )
-    for m in catalog:
+    for m in offered:
         sel = " selected" if m["slug"] == current_slug else ""
-        options.append(
-            f'<option value="{_esc(m["slug"])}"{sel}>{_esc(m["display_name"])}</option>'
-        )
+        label = m["display_name"]
+        if tier:
+            label += f' — ${m["input_cost_per_mtok"]:g} / ${m["output_cost_per_mtok"]:g}'
+            if m.get("status") == "candidate":
+                label += " (candidate)"
+        options.append(f'<option value="{_esc(m["slug"])}"{sel}>{_esc(label)}</option>')
     return "".join(options)
 
 
@@ -2724,13 +2771,21 @@ def render_tier_card(tier: str, config, catalog: list, error: str | None = None,
     by_slug = {m["slug"]: m for m in catalog}
     entry = by_slug.get(current)
     display = entry["display_name"] if entry else (current or "(unbound)")
-    if entry:
-        cost = (
-            f'${entry["input_cost_per_mtok"]} in / '
-            f'${entry["output_cost_per_mtok"]} out per Mtok (display-only)'
-        )
+    p_in, p_out, source = _model_price(entry, current)
+    if source == "facts":
+        cost = f"${p_in:g} in / ${p_out:g} out per Mtok (your declared price)"
+    elif source == "catalog":
+        cost = f"${p_in} in / ${p_out} out per Mtok (display-only)"
     else:
         cost = "cost unknown — model not in catalog"
+    facts_line = _model_facts_line(entry)
+    status = (entry or {}).get("status")
+    flag = ""
+    if status == "deprecated":
+        newer = by_slug.get((entry or {}).get("superseded_by") or "", {}).get("display_name")
+        flag = ("Deprecated" + (f": superseded by {newer}." if newer else "."))
+    elif status == "candidate":
+        flag = "Candidate: on offer, not yet proven here."
 
     tier_e = _esc(tier)
     revert_btn = ""
@@ -2752,12 +2807,14 @@ def render_tier_card(tier: str, config, catalog: list, error: str | None = None,
         f'<div class="card" id="tier-{tier_e}">'
         f'<h4>{tier_e} <span class="badge">{_esc(display)}</span></h4>'
         f'<div class="meta">{_esc(cost)}</div>'
-        f'<form class="tier-form">'
+        + (f'<div class="meta">{_esc(facts_line)}</div>' if facts_line else "")
+        + (f'<div class="meta model-flag">{_esc(flag)}</div>' if flag else "")
+        + f'<form class="tier-form">'
         f'<input type="hidden" name="tier" value="{tier_e}">'
         f'<select name="model_slug" '
         f'hx-get="/portal/fragments/routing/model" hx-trigger="change" '
         f'hx-target="#right-panel" hx-swap="outerHTML">'
-        f'{_model_options_html(catalog, current)}</select>'
+        f'{_model_options_html(catalog, current, tier)}</select>'
         f'<button type="button" class="btn" '
         f'hx-post="/portal/actions/routing/swap" hx-include="closest form" '
         f'hx-target="#tier-{tier_e}" hx-swap="outerHTML">Swap</button>'
@@ -2896,12 +2953,96 @@ def render_binding_row(row: dict, catalog: list, error: str | None = None) -> st
     )
 
 
+def _model_evidence_html(catalog: list) -> str:
+    """What our own records say about each model that has run here."""
+    try:
+        from grove import audit as audit_mod
+        evidence = audit_mod.model_evidence()
+    except Exception as exc:  # noqa: BLE001 — the page never fails for a panel
+        logger.warning("[fragments] model evidence unavailable: %r", exc)
+        return ""
+    names = {m["slug"]: m["display_name"] for m in catalog}
+    if not evidence:
+        rows = ('<div class="sc-note">No model has run a turn on record yet.</div>')
+    else:
+        def _share(part: int, whole: int) -> str:
+            return f"{part} of {whole}" if whole else "—"
+
+        rows = "".join(
+            f'<tr><td>{_esc(names.get(r["model"], r["model"]))}</td>'
+            f'<td>{_esc(", ".join(r["tiers"]) or "—")}</td>'
+            f'<td>{_esc(r["turns"])}</td><td>{_esc(r["failed_upward"])}</td>'
+            f'<td>{_esc(_share(r["revised"], r["proposed"]))}</td><td>'
+            + (f'${r["cost_per_turn"]:.4f}' if r["cost_per_turn"] is not None else "not priced")
+            + '</td></tr>'
+            for r in evidence)
+        rows = ('<table class="sc-table"><thead><tr><th>Model</th><th>Ran at</th>'
+                '<th>Turns</th><th>Failed upward</th><th>Decisions revised</th>'
+                f'<th>Cost a turn</th></tr></thead><tbody>{rows}</tbody></table>')
+    return (
+        '<div class="sc-panel"><h3>What our own records say</h3>'
+        f'{rows}'
+        '<p class="sc-foot">Counted from the turn records and the decision logs, not from '
+        'a benchmark. Failed upward: the turn did not complete and was retried one tier up. '
+        'Revised: decisions the model proposed that you changed. Cost uses your declared '
+        'prices, and only for models that have them.</p></div>')
+
+
+def _catalog_html(catalog: list, config) -> str:
+    """The catalog by family: what is on offer, what is a candidate, and what
+    is deprecated (kept so old turns and rollbacks still resolve)."""
+    bound: dict = {}
+    for tier, entry in (config or {}).items():
+        if isinstance(entry, dict) and entry.get("model"):
+            bound.setdefault(entry["model"], []).append(tier)
+    names = {m["slug"]: m["display_name"] for m in catalog}
+
+    def _row(m: dict) -> str:
+        status = m.get("status", "active")
+        tags = "".join(f'<span class="tag">{_esc(t)}</span>' for t in (m.get("fits") or []))
+        held = "".join(f'<span class="tag tag-on">bound: {_esc(t)}</span>'
+                       for t in sorted(bound.get(m["slug"], [])))
+        note = _model_facts_line(m)
+        if status == "deprecated" and m.get("superseded_by"):
+            note = "superseded by " + names.get(m["superseded_by"], m["superseded_by"])
+        return (
+            f'<div class="sc-row"><span>{_esc(m["display_name"])}'
+            + (f' <span class="sc-eyebrow">{_esc(status.upper())}</span>'
+               if status != "active" else "")
+            + f'<span class="sc-model-note">{_esc(note)}</span>'
+            f'<span class="sc-model-tags">{held}{tags}</span></span>'
+            f'<span class="sc-mono sc-price">${m["input_cost_per_mtok"]:g} / '
+            f'${m["output_cost_per_mtok"]:g}</span></div>')
+
+    families: dict = {}
+    for m in catalog:
+        families.setdefault(m["slug"].split("/")[0], []).append(m)
+    live_rows, old_rows, old_count = "", "", 0
+    for family in sorted(families):
+        current = [m for m in families[family] if m.get("status") != "deprecated"]
+        old = [m for m in families[family] if m.get("status") == "deprecated"]
+        if current:
+            live_rows += (f'<div class="sc-eyebrow">{_esc(family.upper())}</div>'
+                          + "".join(_row(m) for m in current))
+        old_rows += "".join(_row(m) for m in old)
+        old_count += len(old)
+    deprecated = (
+        f'<details class="sc-older"><summary>{old_count} deprecated models, kept so old '
+        f'turns and rollbacks still resolve</summary><div class="sc-rows">{old_rows}</div>'
+        f'</details>' if old_count else "")
+    return (
+        '<div class="sc-panel"><h3>The catalog</h3>'
+        f'<div class="sc-rows sc-catalog">{live_rows}</div>{deprecated}'
+        '<p class="sc-foot">Prices are input / output per million tokens, list price when '
+        'the entry was checked. A candidate is on offer but has not run here yet.</p></div>')
+
+
 def render_binding_fragment(config, catalog: list, rows: list) -> str:
-    """The grouped binding page (binding-governance-surfaces-v1): Telemetry /
-    Primary (T1–T3 tier cards, the existing swap surface) / Auxiliary
-    (per-worker binding rows, Producers then Observers). One fragment, one
-    catalog authority — every dropdown on this page feeds from the SAME
-    ``load_catalog()`` list."""
+    """The Models page: the ladder (Telemetry and T1–T3 tier cards, the swap
+    surface), what our own records say about each model, the auxiliary
+    per-worker bindings (Producers then Observers), and the catalog by family.
+    One fragment, one catalog authority — every dropdown on this page feeds
+    from the SAME ``load_catalog()`` list."""
     telemetry_cards = "".join(
         render_tier_card(t, (config or {}).get(t), catalog)
         for t in _swappable_tiers() if t == "Telemetry"
@@ -2910,6 +3051,11 @@ def render_binding_fragment(config, catalog: list, rows: list) -> str:
         render_tier_card(t, (config or {}).get(t), catalog)
         for t in _swappable_tiers() if t != "Telemetry"
     )
+    t0_card = (
+        '<div class="card card-t0"><h4>T0 <span class="badge">No model</span></h4>'
+        '<div class="meta">$0 — kegs and signed session rules answer here.</div>'
+        '<div class="meta">Work arrives at this rung by being proven on the ones '
+        'below and signed.</div></div>')
     producers = [r for r in rows if r.get("group") == "producer"]
     observers = [r for r in rows if r.get("group") != "producer"]
     producer_rows = "".join(render_binding_row(r, catalog) for r in producers)
@@ -2923,15 +3069,19 @@ def render_binding_fragment(config, catalog: list, rows: list) -> str:
         aux_html = '<p class="placeholder">No fleet skills registered.</p>'
 
     return (
-        '<div id="binding-panel">'
-        "<h2>Model bindings</h2>"
+        '<div id="binding-panel" class="sc sc-models">'
+        '<header class="sc-head"><div><div class="sc-eyebrow">MODELS</div>'
+        "<h2>Model bindings</h2></div></header>"
         '<p class="meta">Tier swaps apply to every turn at that tier. A skill '
         "pin applies to that skill's fleet worker runs; the interactive agent "
-        "keeps the turn tier.</p>"
+        "keeps the turn tier. The picker offers the models that fit each tier, "
+        "cheapest first.</p>"
+        "<h3>The ladder</h3>"
+        f'<div class="tier-cards">{t0_card}{primary_cards}</div>'
         "<h3>Telemetry</h3>"
         f'<div class="tier-cards">{telemetry_cards}</div>'
-        "<h3>Primary</h3>"
-        f'<div class="tier-cards">{primary_cards}</div>'
+        f'<section class="sc-stack">{_model_evidence_html(catalog)}'
+        f'{_catalog_html(catalog, config)}</section>'
         "<h3>Auxiliary</h3>"
         f"{aux_html}"
         "</div>"
