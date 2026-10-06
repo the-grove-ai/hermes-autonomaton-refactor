@@ -145,6 +145,7 @@ def _refusal(exc: DecisionRefused) -> str:
 
 def _next(work: DecisionWork) -> Dict[str, Any]:
     work.check_turn(turn_provenance.current())
+    work.check_one_step_per_turn(turn_provenance.current())
     waiting = work.pending()
     if waiting is not None:
         return {
@@ -188,6 +189,7 @@ def _next(work: DecisionWork) -> Dict[str, Any]:
 def _record(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
     prov = turn_provenance.current()
     work.check_turn(prov)  # before reading the item: refuse a tainted turn first
+    work.check_one_step_per_turn(prov)
     path = work.next_item()
     if path is None and work.pending() is None:
         raise DecisionRefused("queue_empty", "Every invoice in the queue is coded.")
@@ -264,6 +266,10 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
             )
         elif p["summary"]:
             parts.append(p["summary"])
+    parts.append(
+        "Stop here and tell the operator it is recorded. Do not fetch or code "
+        "the next invoice in this turn; they will ask for it."
+    )
     if work.last_observation_error:
         parts.append(
             "The watcher failed after recording this decision: "
@@ -403,7 +409,9 @@ GL_CODING_SCHEMA = {
         "proposed gl_code with one line of reasoning. verb='decide' stores "
         "the operator's answer: decision='confirm', or decision='correct' "
         "with corrected_gl_code. Always ask the operator to confirm or "
-        "correct each coding before moving on. Use only what this tool "
+        "correct each coding before moving on. One invoice per request: after "
+        "decide, stop — never call next or record again in the same turn; the "
+        "operator asks for each invoice. Use only what this tool "
         "returns to choose a code. If the tool refuses, relay its `message` "
         "to the operator as written — it already says what happens next — "
         "and do not add instructions of your own (never tell the operator "

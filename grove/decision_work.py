@@ -603,6 +603,29 @@ class DecisionWork:
             if r.get("kind") == KIND_SET_ASIDE
         }
 
+    def check_one_step_per_turn(self, provenance: Optional[Mapping[str, Any]]) -> None:
+        """Refuse to start the next item in the same turn that recorded the
+        operator's decision on the last one.
+
+        The operator asks for each item. That keeps every item's tier an
+        honest answer to "who decided this": when standard work covers the
+        next item it is served with no model at all, which can only happen if
+        the request reaches the Dispatcher as its own turn — not if a model,
+        already running to record a confirmation, carries on into the next
+        item by itself. Ordinary flow, not an abnormality."""
+        turn_uid = (provenance or {}).get("turn_uid")
+        if not turn_uid:
+            return
+        for record in reversed(self.log.run_records()):
+            if record.get("kind") == KIND_DECIDED:
+                if record.get("turn_uid") == turn_uid:
+                    raise DecisionRefused(
+                        "one_step_per_turn",
+                        "The operator's decision is recorded. Stop here: the "
+                        "next item starts when the operator asks for it.",
+                    )
+                return
+
     def next_item(self) -> Optional[Path]:
         """The first queued item with no proposal in the current run that has
         not been set aside for manual handling."""

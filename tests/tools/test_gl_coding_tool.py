@@ -79,7 +79,18 @@ def work(tmp_path, monkeypatch):
     turn_provenance.reset(token)
 
 
+_turn = {"n": 100}
+
+
 def _call(**args):
+    # Each call is its own turn unless a test says otherwise: the operator
+    # asks for each invoice, and the tool holds the model to that.
+    prov = turn_provenance.current()
+    if prov is not None and args.get("verb") != "apply_keg" and not args.pop("_same_turn", False):
+        _turn["n"] += 1
+        turn_provenance.set_current({**prov, "turn_uid": f"t{_turn['n']}",
+                                     "turn_id": f"s#{_turn['n']}"})
+    args.pop("_same_turn", None)
     return json.loads(gl.gl_coding(args))
 
 
@@ -119,7 +130,7 @@ def test_code_confirm_then_correct(work):
     confirmed = _call(verb="decide", decision="confirm")
     assert confirmed["status"] == "confirmed" and confirmed["final_gl_code"] == "6110"
     assert confirmed["keg"] is None and confirmed["keg_halted"] is False
-    assert confirmed["message"] == "No keg was involved in this coding."
+    assert confirmed["message"].startswith("No keg was involved in this coding.")
 
     assert _call(verb="next")["item_id"] == "02_BO"
     _call(verb="record", gl_code="6300", reasoning="supplies")
@@ -315,3 +326,21 @@ def test_refusal_message_carries_the_next_step_and_no_manual_instruction(work, m
     from grove import reissue
     assert reissue.take("chat-9")["request"] == "code the next invoice."
     assert "never tell the operator" in gl.GL_CODING_SCHEMA["description"]
+
+
+def test_one_invoice_per_request_the_model_cannot_run_on_after_a_confirmation(work):
+    # Live 2026-10-06: a "confirm" turn recorded the decision and then coded
+    # the NEXT invoice with the model in the same turn — so an invoice a signed
+    # keg would have answered with no model call was coded by a model instead.
+    _call(verb="next")
+    _call(verb="record", gl_code="6110", reasoning="hosting")
+    confirmed = _call(verb="decide", decision="confirm")
+    assert "Do not fetch or code the next invoice in this turn" in confirmed["message"]
+    for verb in ("next", "record"):
+        out = _call(verb=verb, gl_code="6300", reasoning="x", _same_turn=True)
+        assert out["refused"] == "one_step_per_turn", verb
+        assert "andon_id" not in out                    # ordinary flow, not an abnormality
+    assert work.pending() is None                       # nothing was coded
+    # The operator's next request is a new turn, and proceeds.
+    assert _call(verb="next")["item_id"] == "02_BO"
+    assert "One invoice per request" in gl.GL_CODING_SCHEMA["description"]
