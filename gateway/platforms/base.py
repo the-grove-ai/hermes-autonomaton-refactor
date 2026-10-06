@@ -1512,6 +1512,22 @@ class BasePlatformAdapter(ABC):
         """Check if adapter is currently connected."""
         return self._running
     
+    def offer_reply_actions(self, chat_id: str, actions: Dict[str, Any]) -> None:
+        """Remember buttons to attach to the next reply sent to a chat."""
+        pending = getattr(self, "_reply_actions", None)
+        if pending is None:
+            pending = self._reply_actions = {}
+        pending[str(chat_id)] = dict(actions)
+
+    def take_reply_actions(self, chat_id: str) -> Optional[Dict[str, Any]]:
+        return (getattr(self, "_reply_actions", None) or {}).pop(str(chat_id), None)
+
+    async def attach_reply_actions(self, chat_id: str, result: Any) -> None:
+        """Attach offered buttons to the reply just sent. Platforms with
+        inline buttons override this; the default drops them, and the
+        operator types the same words instead."""
+        self.take_reply_actions(chat_id)
+
     def set_message_handler(self, handler: MessageHandler) -> None:
         """
         Set the handler for incoming messages.
@@ -3189,6 +3205,14 @@ class BasePlatformAdapter(ABC):
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)
+                    # Buttons offered for this reply (a work session's item
+                    # card). Attached after delivery; a failure here never
+                    # costs the reply — the operator can always type.
+                    try:
+                        await self.attach_reply_actions(str(event.source.chat_id), result)
+                    except Exception as _actions_exc:
+                        logger.warning(
+                            "[%s] could not attach reply actions: %r", self.name, _actions_exc)
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors

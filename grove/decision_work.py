@@ -470,6 +470,15 @@ def _portal(fragment: str) -> str:
     return f"{base}/portal#fragments/{fragment}"
 
 
+# A button press as the message the gateway delivers for it: the action and
+# the id of the item whose card carried the button.
+BUTTON_PRESS = re.compile(r"(confirm|revise)\s+#(\S+)", re.IGNORECASE)
+
+
+def button_message(action: str, item_id: str) -> str:
+    return f"{action} #{item_id}"
+
+
 _PHRASE_RE = re.compile(r"[^\w\s']+")
 
 
@@ -1298,13 +1307,37 @@ class DecisionWork:
             # How it fired: an exact phrase or value (the only way a decision
             # is recorded), or overlap at the threshold (routing only).
             "match": (None if action is None else
+                      "button" if action.get("button") else
                       "exact" if action.get("action") in ("confirm", "revise", "revise_prompt")
                       else "overlap"),
         }
 
+    def offer_buttons(self, record: Mapping[str, Any],
+                      provenance: Optional[Mapping[str, Any]]) -> bool:
+        """Offer the goal's declared buttons on the card for ``record``. Each
+        button carries the item's id, so a press is always about THAT item."""
+        ws = self.config.work_session
+        session_id = (provenance or {}).get("session_id")
+        if not ws.enabled or not ws.buttons or not session_id:
+            return False
+        from grove import reissue
+        reissue.offer_actions(str(session_id), {
+            "goal": self.config.goal_id, "item_id": record["item_id"],
+            "buttons": [[action, label] for action, label in ws.buttons],
+        })
+        return True
+
     def _session_action(self, message: Any) -> Optional[Dict[str, Any]]:
         ws = self.config.work_session
         waiting = self.pending()
+        pressed = BUTTON_PRESS.fullmatch(str(message or "").strip())
+        if pressed:
+            # A button press, delivered as a message that names its item. It
+            # is acted on only for that item: a press on an old card is
+            # refused when the step runs, never applied to the item waiting.
+            kind, item_id = pressed.group(1).lower(), pressed.group(2)
+            return {"action": "confirm" if kind == "confirm" else "revise_prompt",
+                    "item_id": item_id, "button": True}
         if waiting is not None:
             if says(message, ws.confirm):
                 return {"action": "confirm", "item_id": waiting["item_id"]}
@@ -1458,12 +1491,13 @@ class DecisionWork:
         if kind == "batch":
             return self._batch_step(provenance, action.get("inputs_for"))
         waiting = self.pending()
+        named = action.get("item_id")
+        if named and (waiting is None or named != waiting["item_id"]):
+            raise DecisionRefused("stale_card", "That card is out of date.")
         if waiting is None:
             raise DecisionRefused("nothing_pending", "No decision is waiting for confirmation.")
-        named = action.get("item_id")
-        if named and named != waiting["item_id"]:
-            raise DecisionRefused("stale_card", "That card is out of date.")
         if kind == "present":
+            self.offer_buttons(waiting, provenance)
             return {"reply": self.card(waiting, fields), "item_id": waiting["item_id"],
                     "decided": False, "presented": True}
         if kind == "revise_prompt":

@@ -6954,6 +6954,14 @@ class GatewayRunner:
                 await self._post_turn_reissue(event, source, _quick_key)
             except Exception as _reissue_exc:
                 logger.error("remedy re-issue failed: %r", _reissue_exc)
+            # Reply actions: a work session's item card may offer buttons.
+            # Handed to the adapter here, before it sends this turn's reply,
+            # so they land on that reply. An adapter with no buttons ignores
+            # them and the operator types instead.
+            try:
+                self._post_turn_reply_actions(source)
+            except Exception as _actions_exc:
+                logger.error("reply actions could not be offered: %r", _actions_exc)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -10092,6 +10100,21 @@ class GatewayRunner:
                 self._enqueue_fifo(_quick_key, cont_event, adapter)
         except Exception as exc:
             logger.debug("goal continuation: enqueue failed: %s", exc)
+
+    def _post_turn_reply_actions(self, source: Any) -> None:
+        """Pass any buttons offered during the turn (``grove.reissue``) to the
+        chat's adapter, keyed by chat, for the reply it is about to send."""
+        from grove import reissue
+
+        try:
+            entry = self.session_store.get_or_create_session(source)
+        except Exception:
+            return
+        actions = reissue.take_actions(getattr(entry, "session_id", "") or "")
+        adapter = self.adapters.get(source.platform)
+        offer = getattr(adapter, "offer_reply_actions", None)
+        if actions and callable(offer):
+            offer(str(source.chat_id), actions)
 
     async def _post_turn_reissue(self, event: MessageEvent, source: Any, quick_key: str) -> None:
         """Carry out a re-issue armed during the turn that just ended

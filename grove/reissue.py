@@ -147,6 +147,31 @@ def stopped(session_id: Optional[str], turn_uid: Optional[str]) -> Optional[Dict
     return record if isinstance(record, dict) and record.get("turn_uid") == turn_uid else None
 
 
+def offer_actions(session_id: str, actions: Mapping[str, Any]) -> None:
+    """Offer the operator buttons on this turn's reply (a pending item's
+    card): ``{"item_id", "buttons": [[action, label], ...]}``. Read once by
+    the gateway as the turn ends. The buttons are a convenience over typing;
+    what a press may do is decided when it arrives, never here."""
+    path = _dir() / ("actions-" + _path(str(session_id)).name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(dict(actions), sort_keys=True), encoding="utf-8")
+
+
+def take_actions(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Consume the reply actions offered for a session's turn, if any."""
+    if not session_id:
+        return None
+    path = _dir() / ("actions-" + _path(str(session_id)).name)
+    if not path.exists():
+        return None
+    try:
+        actions = json.loads(path.read_text(encoding="utf-8"))
+    except ValueError:
+        actions = None
+    path.unlink()
+    return actions if isinstance(actions, dict) and actions.get("buttons") else None
+
+
 def take(session_id: str) -> Optional[Dict[str, Any]]:
     """Consume the armed re-issue for a session, if any. Exactly once."""
     path = _path(str(session_id))

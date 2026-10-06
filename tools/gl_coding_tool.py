@@ -380,6 +380,7 @@ def _apply_keg(work: DecisionWork, args: Dict[str, Any]) -> str:
     if work.config.work_session.enabled:
         # The work session's card, from the goal's own template: the same
         # card a model-decided invoice gets.
+        work.offer_buttons(record, prov)
         return work.card(record, _item_fields(work, record["item_id"]))
     code = record["output"]["gl_code"]
     account = ""

@@ -573,3 +573,64 @@ def test_batch_respects_the_kill_switch_and_the_signed_rule(env):
     on = env.work(session=BATCH)
     assert dw.session_rule(on.config)["work_session"]["batch"] == ["work the backlog"]
     assert "batch" not in dw.session_rule(env.work().config)["work_session"]
+
+
+# ── buttons: a press is a message that names its item ─────────────────
+
+
+def test_a_card_offers_buttons_that_carry_the_item_id(env):
+    work = env.work()
+    env.add("billing", "outage")
+    env.propose(work)
+    work.session_step({"action": "present"}, env.prov(tier="T0"))
+    assert reissue.take_actions("sess") == {
+        "goal": GOAL, "item_id": "m01",
+        "buttons": [["confirm", "Confirm"], ["revise", "Revise"]]}
+    assert reissue.take_actions("sess") is None               # offered once
+    # No buttons declared, or the switch off: nothing is offered.
+    plain = env.work(session={k: v for k, v in SESSION.items() if k != "buttons"})
+    plain.session_step({"action": "present"}, env.prov(tier="T0"))
+    assert reissue.take_actions("sess") is None
+
+
+def test_a_press_decides_only_the_item_its_card_was_for(env):
+    work = env.work()
+    env.add("billing", "outage")
+    env.propose(work)
+    press = dw.button_message("confirm", "m01")
+    assert work.session_action(press) == {"action": "confirm", "item_id": "m01", "button": True}
+    assert work.last_match["match"] == "button"
+    work.session_step(work.session_action(press), env.prov(tier="T0"))
+    env.propose(work, tag="ops")                              # m02 is now the one waiting
+    # The same press again — the old card's button — is refused, and m02 is untouched.
+    for old in (dw.button_message("confirm", "m01"), dw.button_message("revise", "m01")):
+        with pytest.raises(DecisionRefused) as stale:
+            work.session_step(work.session_action(old), env.prov(tier="T0"))
+        assert str(stale.value) == "That card is out of date."
+    assert work.pending()["item_id"] == "m02"
+    # With nothing pending at all, an old press is still just out of date.
+    work.session_step({"action": "confirm"}, env.prov(tier="T0"))
+    with pytest.raises(DecisionRefused) as stale:
+        work.session_step(work.session_action(dw.button_message("confirm", "m02")),
+                          env.prov(tier="T0"))
+    assert stale.value.reason == "stale_card"
+    # Revise on the live card asks what it should be; it decides nothing.
+    env.add("billing")
+    env.propose(work)
+    out = work.session_step(work.session_action(dw.button_message("revise", "m03")),
+                            env.prov(tier="T0"))
+    assert out["reply"] == "What should it be?" and out["decided"] is False
+
+
+def test_the_dispatcher_answers_a_stale_press_plainly(env):
+    work = env.work()
+    env.add("billing", "outage")
+    env.propose(work)
+    work.session_step({"action": "confirm"}, env.prov(tier="T0"))
+    reissue.take("sess")
+    env.propose(work, tag="ops")
+    d, agent, written, said = _dispatcher(env, work)
+    result = d._session_intercept(agent, dw.button_message("confirm", "m01"), None)
+    assert result["final_response"] == "That card is out of date."
+    assert written[0]["outcome"] == "pending" and "failure_kind" not in written[0]
+    assert work.pending()["item_id"] == "m02" and reissue.take("sess") is None

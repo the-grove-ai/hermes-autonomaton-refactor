@@ -16,7 +16,7 @@ import tempfile
 import threading
 import html as _html
 import re
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -477,6 +477,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Work-session item cards that still carry buttons: item id →
+        # (chat id, message id). In memory only; after a restart an old
+        # card's press is still refused by its item id.
+        self._ws_cards: Dict[str, Tuple[int, int]] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -2541,6 +2545,46 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_slash_confirm failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def _ws_clear_buttons(self, keep: Optional[str] = None) -> None:
+        """Remove the buttons from every item card except ``keep``: an item
+        that is decided, or no longer the one waiting, offers nothing."""
+        for item_id in [i for i in self._ws_cards if i != keep]:
+            card_chat, card_message = self._ws_cards.pop(item_id)
+            try:
+                await self._bot.edit_message_reply_markup(
+                    chat_id=card_chat, message_id=card_message, reply_markup=None)
+            except Exception as exc:
+                logger.debug("[%s] could not clear buttons on %s: %s", self.name, item_id, exc)
+
+    async def attach_reply_actions(self, chat_id: str, result: Any) -> None:
+        """Put a work session's Confirm and Revise buttons on the item card
+        just sent. Each button carries the item's id, so a press is always
+        about that item; buttons on earlier cards are removed."""
+        actions = self.take_reply_actions(chat_id)
+        if not actions or not self._bot:
+            return
+        if not getattr(result, "success", False) or not getattr(result, "message_id", None):
+            return
+        item_id = str(actions.get("item_id") or "")
+        codes = {"confirm": "c", "revise": "r"}
+        row = []
+        for action, label in actions.get("buttons") or []:
+            data = f"ws:{codes.get(action, '')}:{item_id}"
+            if action not in codes or len(data.encode("utf-8")) > 64:
+                # Telegram caps callback data at 64 bytes. No button is better
+                # than one that cannot say which item it is about.
+                logger.error("[%s] no %r button for %s: not expressible as callback data",
+                             self.name, action, item_id)
+                return
+            row.append(InlineKeyboardButton(str(label), callback_data=data))
+        if not row:
+            return
+        await self._ws_clear_buttons(keep=None)
+        await self._bot.edit_message_reply_markup(
+            chat_id=int(chat_id), message_id=int(result.message_id),
+            reply_markup=InlineKeyboardMarkup([row]))
+        self._ws_cards[item_id] = (int(chat_id), int(result.message_id))
+
     async def send_clarify(
         self,
         chat_id: str,
@@ -3239,6 +3283,56 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._send_message_with_thread_fallback(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Work-session item cards (ws:c:<item> | ws:r:<item>) ---
+        if data.startswith("ws:"):
+            parts = data.split(":", 2)
+            if len(parts) != 3 or parts[1] not in ("c", "r") or not parts[2]:
+                await query.answer(text="That button is not valid.")
+                return
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to decide this.")
+                return
+            action = "confirm" if parts[1] == "c" else "revise"
+            item_id = parts[2]
+            await query.answer()
+            if action == "confirm":
+                # Decided (or about to be refused as out of date): either way
+                # this card's buttons have done their job.
+                self._ws_cards.pop(item_id, None)
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
+            # The press is delivered as the operator's own message, naming its
+            # item, so a button and a typed word take exactly the same path —
+            # and a press on an old card is refused, never applied to the item
+            # now waiting.
+            from grove.decision_work import button_message
+            is_group = query_chat_type in {ChatType.GROUP, ChatType.SUPERGROUP}
+            source = self.build_source(
+                chat_id=str(query_chat_id),
+                chat_name=getattr(query_chat, "title", None)
+                or getattr(query_chat, "full_name", None),
+                chat_type="group" if is_group else "dm",
+                user_id=caller_id,
+                user_name=getattr(query.from_user, "full_name", None),
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            )
+            await self.handle_message(MessageEvent(
+                text=button_message(action, item_id),
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=None,
+            ))
             return
 
         # --- Clarify callbacks (cl:clarify_id:idx | cl:clarify_id:other) ---
