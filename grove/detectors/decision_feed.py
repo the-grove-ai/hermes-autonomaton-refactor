@@ -85,6 +85,8 @@ def observe(
                 "served": proposed.get("output"),
                 "corrected": decided.get("output"),
                 "keg": keg_ref,
+                # Why, in the operator's words, when they said.
+                "operator_said": decided.get("operator_said"),
             },
             observed_input={"served": proposed.get("output"),
                             "corrected": decided.get("output")},

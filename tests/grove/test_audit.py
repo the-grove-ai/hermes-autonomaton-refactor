@@ -504,6 +504,7 @@ def test_the_trace_reads_each_decision_step_by_step_from_records(tmp_path, monke
         "goal": GOAL, "run": 3, "item_id": "m4", "inputs": {"channel": "chan-m4"},
         "proposed": {"tag": "finance"}, "reasoning": "", "decided_by": "keg",
         "keg_version": 1, "tier": "T0", "model": "pattern_cache", "question_asked": None,
+        "operator_said": [],
         "final": {"tag": "ops"}, "verdict": "revised", "reviewed_by_operator": True,
         "turn_uid": "u-m4", "record_hash": m4["turn"]["record_hash"]}
     lines = audit.trace_export(home).splitlines()

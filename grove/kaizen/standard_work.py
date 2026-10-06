@@ -142,11 +142,16 @@ def _draft_prompt(
         lines.append(f"  if {rule.get('if')} -> {outcome}")
     lines += ["", "Past cases:"]
     for case in history:
+        reviewed = case["confirmed"] is not None
         lines.append(
             f"  {case['ref']}: inputs={json.dumps(case['inputs'])} "
             f"answered={json.dumps(case['served'])} "
-            f"operator={json.dumps(case['confirmed'])}"
-            + ("  <-- CORRECTED" if case["confirmed"] != case["served"] else "")
+            + (f"operator={json.dumps(case['confirmed'])}" if reviewed
+               else "operator=(not reviewed: no evidence either way)")
+            + ("  <-- CORRECTED" if reviewed and case["confirmed"] != case["served"] else "")
+            # The operator's own reason is the best evidence of what differs.
+            + (f"  operator said: {json.dumps(case['operator_said'])}"
+               if case.get("operator_said") else "")
         )
     lines += ["", reason, ""]
     if target is not None:

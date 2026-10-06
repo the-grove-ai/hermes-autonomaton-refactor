@@ -775,6 +775,10 @@ def _goal_standard_work_html(goal) -> str:
     if cfg.evidence is not None:
         reads.append(("Evidence for a keg", f"{cfg.evidence.threshold} confirmed decisions",
                       "matching the table"))
+    reads.append(
+        ("Session memory", "stays in the records", "work turns are never summarized")
+        if cfg.session_memory == dw.SESSION_MEMORY_RECORDS_ONLY else
+        ("Session memory", "summarized", "sessions are compacted like any conversation"))
     sources = "".join(
         f'<div class="sc-row"><span>{_esc(a)}</span><span class="sc-mono">{_esc(b)}'
         f'<span class="sc-quiet"> · {_esc(c)}</span></span></div>' for a, b, c in reads)
@@ -5221,6 +5225,8 @@ def _trace_html(report) -> str:
                     f'<div>{_esc(it["question"]["text"])}</div>'
                     f'<div class="sc-quiet">Nothing was decided on this turn.</div>',
                     _trace_turn_line(it["question"]))
+            if it.get("said"):
+                steps += _step("YOU SAID", f'<div>“{_esc(it["said"])}”</div>', mine=True)
             steps += _step(
                 "DECIDED · " + _clock(it["at"]),
                 f'<div><strong>{_esc(it["proposed_text"])}</strong></div>'
@@ -5244,6 +5250,8 @@ def _trace_html(report) -> str:
                     how = {"button": "by button", "exact": "by typing"}.get(r.get("how"), "")
                     body = f'<div>You confirmed it{" " + how if how else ""}.</div>'
                     label = "YOU CONFIRMED · " + _clock(r["at"])
+                if r.get("said"):
+                    body += f'<div>You said: “{_esc(r["said"])}”</div>'
                 steps += _step(label, body, _trace_turn_line(r),
                                mine=r["decision"] == "correct")
             for ev in it["loop"]:

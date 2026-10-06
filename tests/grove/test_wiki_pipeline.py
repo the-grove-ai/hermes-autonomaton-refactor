@@ -448,3 +448,46 @@ def test_written_page_is_index_parseable(monkeypatch, tmp_path):
     assert len(results) == 1
     assert results[0].source_type == "researcher_brief"
     assert results[0].confidence == 0.9
+
+
+# ── the Evaluator's ladder (live, 2026-10-06) ───────────────────────────
+# The Evaluator was the one call with no truncation ladder: every long work
+# session was cut at its small cap, and retried at the same cap on each start.
+
+
+class _CappedEval(_FakeT1):
+    """An Evaluator that is cut at any cap below ``needs``."""
+
+    def __init__(self, needs):
+        super().__init__(_page_args(), _verdict())
+        self.needs = needs
+
+    def __call__(self, prompt, *, system=None, tool=None, max_tokens=4096):
+        if tool["name"] == "wiki_evaluation" and max_tokens < self.needs:
+            self.calls.append((tool["name"], max_tokens))
+            raise T1TruncationError("cap-cut")
+        return super().__call__(prompt, system=system, tool=tool, max_tokens=max_tokens)
+
+
+def test_evaluator_truncation_raised_cap_retry_succeeds(monkeypatch, tmp_path):
+    import grove.wiki.pipeline as pipe
+
+    fake = _install(monkeypatch, _CappedEval(needs=pipe._EVAL_MAX_TOKENS + 1))
+    page = compact(_doc(tmp_path), wiki_root=tmp_path / "wiki")
+    assert isinstance(page, CanonicalPage)
+    evals = [cap for name, cap in fake.calls if name == "wiki_evaluation"]
+    # Once at the cap, once at the raised cap — never a second try at the same cap.
+    assert evals == [pipe._EVAL_MAX_TOKENS, pipe._EVAL_RAISED_MAX_TOKENS]
+    assert pipe._EVAL_RAISED_MAX_TOKENS > pipe._EVAL_MAX_TOKENS
+
+
+def test_evaluator_double_truncation_fails_loud_and_names_both_caps(monkeypatch, tmp_path):
+    import grove.wiki.pipeline as pipe
+
+    fake = _install(monkeypatch, _CappedEval(needs=10 ** 9))
+    with pytest.raises(T1TruncationError) as failed:
+        compact(_doc(tmp_path), wiki_root=tmp_path / "wiki")
+    assert str(pipe._EVAL_MAX_TOKENS) in str(failed.value)
+    assert str(pipe._EVAL_RAISED_MAX_TOKENS) in str(failed.value)
+    assert len([1 for name, _ in fake.calls if name == "wiki_evaluation"]) == 2   # bounded
+    assert not list((tmp_path / "wiki").rglob("*.md"))                           # nothing written

@@ -8231,14 +8231,23 @@ class GatewayRunner:
 
                 # If no new messages found (edge case), fall back to simple user/assistant
                 if not new_messages:
+                    # A turn answered with no model (a T0 pattern, a work
+                    # session's confirm) was already written to the session
+                    # database by the Dispatcher. Writing it again here put
+                    # every such exchange in the transcript TWICE — and the
+                    # model then read "confirm" twice and tried to act on the
+                    # second one. Keep the JSONL backup; skip the database.
+                    _already = bool(agent_result.get("transcript_persisted"))
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
-                        {"role": "user", "content": message_text, "timestamp": ts}
+                        {"role": "user", "content": message_text, "timestamp": ts},
+                        skip_db=_already,
                     )
                     if response:
                         self.session_store.append_to_transcript(
                             session_entry.session_id,
-                            {"role": "assistant", "content": response, "timestamp": ts}
+                            {"role": "assistant", "content": response, "timestamp": ts},
+                            skip_db=_already,
                         )
                 else:
                     # The agent already persisted these messages to SQLite via

@@ -745,6 +745,7 @@ def trace(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dict[st
                 "decision": d.get("decision"), "word": verdict_word.get(d.get("decision"), "?"),
                 "output": dict(d.get("output") or {}), "at": d.get("ts"),
                 "after": d.get("after"), "by": d.get("by"),
+                "said": d.get("operator_said"),
                 **_step_turn(d.get("turn_uid")),
             } for d in rulings.get(p["id"], [])]
             final = ruled[-1] if ruled else None
@@ -774,6 +775,7 @@ def trace(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dict[st
                 "keg": keg, "tier": p.get("tier") or turn["tier"],
                 "reasoning": (p.get("reasoning") or "").strip(), "why": why,
                 "at": p.get("ts"), "batch": p.get("batch"), "turn": turn,
+                "said": p.get("operator_said"),
                 "question": question, "rulings": ruled,
                 "verdict": final["word"] if final else "awaiting the operator",
                 "revised": bool(final and final["decision"] == DECISION_CORRECT),
@@ -787,6 +789,12 @@ def trace(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dict[st
                     "keg_version": keg.get("version") if keg else None,
                     "tier": p.get("tier") or turn["tier"], "model": turn["model"],
                     "question_asked": question["text"] if question else None,
+                    # The operator's own words on this item: an answer to the
+                    # question, or the reason given with a revision.
+                    "operator_said": [
+                        w for w in ([p.get("operator_said")]
+                                    + [d.get("operator_said") for d in rulings.get(p["id"], [])])
+                        if w],
                     "final": dict(final["output"]) if final else None,
                     "verdict": final["word"] if final else None,
                     "reviewed_by_operator": bool(

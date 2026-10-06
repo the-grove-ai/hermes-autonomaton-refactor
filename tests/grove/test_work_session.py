@@ -964,3 +964,148 @@ def test_the_goal_page_shows_the_goals_standard_work_from_its_own_records(env, m
     plain = fragments.render_goal_detail(None, goal)
     assert "Tag every message" in plain and "Attached artifacts" in plain
     assert "STANDARD WORK" not in plain and "sc-tiles" not in plain
+
+
+# ── a work session's knowledge stays in its records ───────────────────
+
+
+def _row(n, said, *, work, sid="sess"):
+    return {"session_id": sid, "turn_id": f"{sid}#{n}", "user_message_stem": said,
+            "stages": {"telemetry": {"goal_session": GOAL} if work else {}}}
+
+
+def _transcript(*turns):
+    out = []
+    for said, reply in turns:
+        out += [{"role": "user", "content": said}, {"role": "assistant", "content": reply}]
+    return out
+
+
+def test_an_isolated_goal_keeps_its_sessions_out_of_memory_by_default(env, tmp_path):
+    on = env.work()
+    assert on.config.session_memory == dw.SESSION_MEMORY_RECORDS_ONLY      # follows isolation
+    declared = dw.load_config(_goal(tmp_path, {**SESSION}))
+    assert declared.session_memory == "records_only"
+    goal = _goal(tmp_path)
+    goal.extra["decision_work"]["session_memory"] = "compact"
+    assert dw.load_config(goal).session_memory == "compact"                # the operator's call
+    goal.extra["decision_work"]["session_memory"] = "sometimes"
+    with pytest.raises(ValueError, match="session_memory"):
+        dw.load_config(goal)
+
+
+def test_work_turns_are_taken_out_and_only_the_conversation_is_left(env):
+    work = env.work()
+    env.add("billing")
+    env.propose(work)                              # this session recorded a decision
+    assert dw.goals_worked_in("sess") == [GOAL] and dw.goals_worked_in("other") == []
+    transcript = _transcript(
+        ("let's tag some messages", "Message 1 of 1: billing … Confirm or revise?"),
+        ("ok", "Confirmed: finance."),
+        ("pause", "Paused at message 1 of 1."),
+        ("what did we decide about the offsite?", "You settled on March."),
+        ("thanks, book it", "Booked."))
+    rows = [_row(1, "let's tag some messages", work=True), _row(2, "ok", work=True),
+            _row(3, "pause", work=True),
+            _row(4, "what did we decide about the offsite?", work=False),
+            _row(5, "thanks, book it", work=False)]
+    kept, report = dw.conversation_only("sess", transcript, rows)
+    assert [m["content"] for m in kept if m["role"] == "user"] == [
+        "what did we decide about the offsite?", "thanks, book it"]
+    assert (report["goals"], report["turns"], report["work_turns"], report["kept_turns"]) == (
+        [GOAL], 5, 3, 2)
+    assert not any("finance" in str(m["content"]) for m in kept)       # no decision leaks
+    # A session that did no goal's work is untouched.
+    same, untouched = dw.conversation_only("other", transcript, rows)
+    assert same == transcript and untouched["goals"] == []
+
+
+def test_when_in_doubt_the_whole_session_stays_out(env):
+    work = env.work()
+    env.add("billing")
+    env.propose(work)
+    transcript = _transcript(("let's tag some messages", "…"), ("ok", "Confirmed: finance."))
+    # Records from before turns were marked: nothing can be told apart.
+    old = [{"session_id": "sess", "turn_id": "sess#1", "user_message_stem": "let's tag some messages",
+            "stages": {"telemetry": {}}},
+           {"session_id": "sess", "turn_id": "sess#2", "user_message_stem": "ok",
+            "stages": {"telemetry": {}}}]
+    kept, report = dw.conversation_only("sess", transcript, old)
+    assert kept == [] and "predate" in report["reason"]
+    # A transcript that does not line up with its turn records.
+    rows = [_row(1, "let's tag some messages", work=True), _row(2, "something else", work=False)]
+    kept, report = dw.conversation_only("sess", transcript, rows)
+    assert kept == [] and "could not be matched" in report["reason"]
+    # The same exchange saved twice (transcripts before 2026-10-06) still lines up.
+    doubled = _transcript(("let's tag some messages", "…"), ("ok", "Confirmed."), ("ok", "Confirmed."),
+                          ("unrelated question", "Answer."))
+    rows = [_row(1, "let's tag some messages", work=True), _row(2, "ok", work=True),
+            _row(3, "unrelated question", work=False)]
+    kept, report = dw.conversation_only("sess", doubled, rows)
+    assert [m["content"] for m in kept if m["role"] == "user"] == ["unrelated question"]
+    assert report["work_turns"] == 3
+
+
+def test_a_goal_that_chooses_to_be_summarized_is(env, tmp_path, monkeypatch):
+    goal = _goal(tmp_path)
+    goal.extra["decision_work"]["session_memory"] = "compact"
+    cfg = dw.load_config(goal)
+    monkeypatch.setattr(dw, "config_for_goal", lambda goal_id, dock=None: cfg)
+    work = DecisionWork(cfg)
+    env.add("billing")
+    env.propose(work)
+    transcript = _transcript(("let's tag some messages", "…"))
+    kept, report = dw.conversation_only("sess", transcript, [_row(1, "let's tag some messages", work=True)])
+    assert kept == transcript and report["goals"] == []
+
+
+def test_the_operators_own_words_are_kept_with_the_ruling(env):
+    work = env.work()
+    env.add("billing", "outage")
+    # An answer to the model's question travels with the item it produced.
+    answered = env.prov(request="it's a refund dispute, so legal")
+    record = work.record(item_id="m01", inputs={"channel": "billing"}, output={"tag": "other"},
+                         reasoning="operator says legal", provenance=answered)
+    assert record["operator_said"] == "it's a refund dispute, so legal"
+    # A revision explained in the operator's words keeps the explanation.
+    why = env.prov(request="no, refund disputes go to finance")
+    ruled = work.decide(decision="correct", corrected_output={"tag": "finance"}, provenance=why)
+    assert ruled["operator_said"] == "no, refund disputes go to finance"
+    # ...and Kaizen is handed it, as the best evidence of what differs.
+    [case] = work.history()
+    assert case["operator_said"] == "no, refund disputes go to finance"
+    # A button, an exact phrase, or a bare request for the work carries no reasoning.
+    reissue.take("sess")
+    env.propose(work, tag="ops")
+    quiet = work.log.run_records()[-1]
+    assert "operator_said" not in quiet                        # "tag the next message"
+    out = work.session_step({"action": "confirm"}, env.prov(tier="T0", request="ok"))
+    assert "operator_said" not in [r for r in work.log.run_records() if r["kind"] == "decided"][-1]
+
+
+def test_a_no_model_turn_is_saved_to_the_transcript_once():
+    # Live, 2026-10-06: every keg serve and every T0 confirm was in the session
+    # transcript twice — written by the Dispatcher, then again by the gateway.
+    # The model read "confirm" twice and spent a call acting on the second.
+    import inspect
+    from gateway import run as gw
+
+    result = Dispatcher._t0_result_dict(SimpleNamespace(), SimpleNamespace(), "Confirmed.")
+    assert result["transcript_persisted"] is True and result["messages"] == []
+    source = inspect.getsource(gw)
+    fallback = source[source.index("# If no new messages found (edge case)"):]
+    fallback = fallback[:fallback.index("else:")]
+    assert 'agent_result.get("transcript_persisted")' in fallback
+    assert fallback.count("skip_db=_already") == 2            # the user line and the reply
+
+
+def test_compaction_and_memory_mining_both_honor_the_split():
+    import inspect
+    from grove import dispatcher as disp
+
+    mined = inspect.getsource(disp.Dispatcher._session_is_goal_isolated)
+    assert "goals_worked_in" in mined                         # the lasting record, not the latch
+    compacted = inspect.getsource(disp.Dispatcher._extract_memory_from_dormant_sessions)
+    split = compacted.index("conversation_only(")
+    assert split < compacted.index("filter_transcript_for_extraction(transcript)")
+    assert split < compacted.index("compact_session(")        # work is out before any summary

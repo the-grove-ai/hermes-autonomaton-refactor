@@ -34,6 +34,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
+# What becomes of a session's content once the work is done.
+#   records_only — the work's knowledge lives in its records (the decision
+#       log, the ledger, the keg). Work turns are never summarized into the
+#       Cellar or mined into memory; only what was said OUTSIDE the work is.
+#   compact — the session is summarized like any other conversation.
+# A goal that will not READ ambient memory does not WRITE to it either, so an
+# isolated goal defaults to records_only.
+SESSION_MEMORY_RECORDS_ONLY = "records_only"
+SESSION_MEMORY_COMPACT = "compact"
+
 ISOLATION_SOURCES_ONLY = "sources_only"
 ON_UNCLEAN_OPEN_CLEAN = "open_clean_session"
 
@@ -214,6 +224,8 @@ class DecisionWorkConfig:
     # Optional: a folder of further items that are NOT in the queue until
     # they are released into it (work that "arrives later" — a backlog).
     backlog: Optional[Path] = None
+    # See SESSION_MEMORY_*.
+    session_memory: str = SESSION_MEMORY_RECORDS_ONLY
 
     @property
     def isolated(self) -> bool:
@@ -307,6 +319,15 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
     on_unclean = raw.get("on_unclean")
     if on_unclean not in (None, ON_UNCLEAN_OPEN_CLEAN):
         raise ValueError(f"goal {goal.id!r}: unknown on_unclean {on_unclean!r}")
+
+    session_memory = raw.get("session_memory")
+    if session_memory is None:
+        session_memory = (SESSION_MEMORY_RECORDS_ONLY if isolation == ISOLATION_SOURCES_ONLY
+                          else SESSION_MEMORY_COMPACT)
+    if session_memory not in (SESSION_MEMORY_RECORDS_ONLY, SESSION_MEMORY_COMPACT):
+        raise ValueError(
+            f"goal {goal.id!r}: session_memory must be "
+            f"{SESSION_MEMORY_RECORDS_ONLY!r} or {SESSION_MEMORY_COMPACT!r}")
 
     item_name = ("item", "items")
     name_raw = raw.get("item_name")
@@ -402,6 +423,7 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         item_name=item_name,
         work_session=session,
         backlog=(_resolve(root, raw["backlog"]) if raw.get("backlog") else None),
+        session_memory=session_memory,
     )
 
 
@@ -586,6 +608,148 @@ def isolating_goal_for(
         if session_rule_grant(cfg, store=grants) is not None:
             return goal.id
     return None
+
+
+# ── what a session's content becomes ──────────────────────────────────
+
+
+def goals_worked_in(session_id: str, *, directory: Optional[Path] = None) -> List[str]:
+    """The goals a session recorded decisions for, read off the decision
+    logs. This — not the isolation latch, which a pause or a reset clears —
+    is the lasting record that a session did a goal's work."""
+    base = Path(directory) if directory is not None else default_decisions_dir()
+    if not base.is_dir():
+        return []
+    needle = f'"session_id": "{session_id}"'
+    out = []
+    for path in sorted(base.glob("*.jsonl")):
+        try:
+            if needle in path.read_text(encoding="utf-8"):
+                out.append(path.stem)
+        except OSError:
+            continue
+    return out
+
+
+def _turns(transcript: List[Mapping[str, Any]]) -> List[List[Mapping[str, Any]]]:
+    """A transcript as turns: each begins at an operator message and runs to
+    the next. Anything before the first operator message is dropped."""
+    turns: List[List[Mapping[str, Any]]] = []
+    for message in transcript:
+        if not isinstance(message, Mapping):
+            continue
+        if message.get("role") == "user":
+            turns.append([message])
+        elif turns:
+            turns[-1].append(message)
+    return turns
+
+
+def _said(message: Mapping[str, Any]) -> str:
+    content = message.get("content")
+    if isinstance(content, list):
+        content = " ".join(
+            str(p.get("text", "")) for p in content if isinstance(p, Mapping))
+    return " ".join(str(content or "").casefold().split())[:40]
+
+
+def conversation_only(
+    session_id: str, transcript: List[Mapping[str, Any]],
+    intent_rows: List[Mapping[str, Any]], *, dock: Any = None,
+    directory: Optional[Path] = None,
+) -> Tuple[List[Mapping[str, Any]], Dict[str, Any]]:
+    """A session's transcript with a goal's WORK turns taken out, leaving only
+    what was said outside the work — and a report of what was done.
+
+    A session that worked a ``records_only`` goal keeps its knowledge in that
+    goal's records; its work turns must never reach a summarizer. Which turns
+    were work is read off each turn's own record (``goal_session`` in its
+    telemetry). A turn is matched to its record by the operator's words, in
+    order. When the two cannot be matched — or the session's records predate
+    the marker — NOTHING is returned: leaving a work turn in is the failure
+    to avoid, so when in doubt the whole session stays out.
+
+    A session that worked no such goal is returned unchanged."""
+    goals = goals_worked_in(session_id, directory=directory)
+    held: List[str] = []
+    for goal_id in goals:
+        try:
+            cfg = config_for_goal(goal_id, dock=dock)
+        except ValueError:
+            held.append(goal_id)       # no longer declared: keep its work out
+            continue
+        if cfg.session_memory == SESSION_MEMORY_RECORDS_ONLY:
+            held.append(goal_id)
+    turns = _turns(transcript)
+    report: Dict[str, Any] = {"goals": held, "turns": len(turns), "work_turns": 0,
+                              "kept_turns": len(turns), "reason": None}
+    if not held:
+        return list(transcript), report
+
+    latest: Dict[int, Mapping[str, Any]] = {}
+    for row in intent_rows:
+        if not isinstance(row, Mapping):
+            # The intent store hands back record objects; read them as rows.
+            import dataclasses
+            row = dataclasses.asdict(row) if dataclasses.is_dataclass(row) else vars(row)
+        if row.get("session_id") != session_id:
+            continue
+        try:
+            ordinal = int(str(row.get("turn_id", "")).rsplit("#", 1)[1])
+        except (IndexError, ValueError):
+            continue
+        latest[ordinal] = row
+    records = [latest[k] for k in sorted(latest)]
+    marked = any(
+        "goal_session" in ((r.get("stages") or {}).get("telemetry") or {}) for r in records)
+    if not marked:
+        report.update(work_turns=len(turns), kept_turns=0,
+                      reason="its turn records predate the work marker")
+        return [], report
+
+    kept: List[Mapping[str, Any]] = []
+    cursor, last = 0, None
+    for turn in turns:
+        said = _said(turn[0])
+        found = None
+        for k in range(cursor, min(cursor + 3, len(records))):
+            if " ".join(str(records[k].get("user_message_stem") or "").casefold().split())[:40] == said:
+                found = k
+                break
+        if found is not None:
+            telemetry = (records[found].get("stages") or {}).get("telemetry") or {}
+            is_work = bool(telemetry.get("goal_session"))
+            cursor, last = found + 1, (said, is_work)
+        elif last is not None and last[0] == said:
+            is_work = last[1]          # the same exchange, saved twice
+        else:
+            report.update(work_turns=len(turns), kept_turns=0,
+                          reason="its transcript could not be matched to its turn records")
+            return [], report
+        if is_work:
+            report["work_turns"] += 1
+        else:
+            kept.extend(turn)
+    report["kept_turns"] = len(turns) - report["work_turns"]
+    return kept, report
+
+
+def _operator_said(provenance: Optional[Mapping[str, Any]],
+                   cfg: "DecisionWorkConfig") -> Optional[str]:
+    """The operator's own words behind a decision, when they said something
+    of substance: an explanation with a revision, an answer to a question.
+    Not kept when the turn ran with no model (a button, an exact phrase) or
+    when the message only asked for the work — those carry no reasoning."""
+    prov = provenance or {}
+    said = str(prov.get("request") or "").strip()
+    if not said or prov.get("tier") == "T0" or prov.get("session_step"):
+        return None
+    if BUTTON_PRESS.fullmatch(said) or asks_for_work(said, cfg):
+        return None
+    ws = cfg.work_session
+    if ws.enabled and (says(said, ws.confirm) or says(said, ws.revise)):
+        return None
+    return said[:500]
 
 
 # ── starting over, and work that arrives later ────────────────────────
@@ -1289,6 +1453,9 @@ class DecisionWork:
             "turn_id": prov.get("turn_id"),
             "turn_uid": prov.get("turn_uid"),
             **({"batch": self.current_batch()} if self.current_batch() else {}),
+            # What the operator said that led to this answer (an answer to a
+            # question the model asked), in their words.
+            **({"operator_said": said} if (said := _operator_said(prov, self.config)) else {}),
         })
 
     def current_batch(self) -> Optional[str]:
@@ -1427,6 +1594,7 @@ class DecisionWork:
             "item_id": item_id, "decision": decision, "output": final,
             "after": verdict.get("decision"), "session_id": prov.get("session_id"),
             "turn_id": prov.get("turn_id"), "turn_uid": prov.get("turn_uid"),
+            **({"operator_said": said} if (said := _operator_said(prov, self.config)) else {}),
         })
         self._observe(record, ruled)
         return ruled
@@ -1489,6 +1657,8 @@ class DecisionWork:
             "session_id": prov.get("session_id"),
             "turn_id": prov.get("turn_id"),
             "turn_uid": prov.get("turn_uid"),
+            # The operator's own words with this ruling, when they gave any.
+            **({"operator_said": said} if (said := _operator_said(prov, self.config)) else {}),
         })
         self._observe(waiting, decided)
         self.present_next_after(decided, prov)
@@ -1917,6 +2087,8 @@ class DecisionWork:
                 "note": _note(inputs.get(label_key)) if label_key else "",
                 "decision": verdict["decision"],
                 "turn_id": record.get("turn_id"),
+                # The operator's own words on this item, as evidence for a rule.
+                "operator_said": verdict.get("operator_said") or record.get("operator_said"),
             })
         return cases
 

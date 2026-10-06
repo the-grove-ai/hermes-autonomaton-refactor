@@ -957,6 +957,9 @@ class Dispatcher:
         # must never be mined as a cacheable answer.
         self._current_turn_session_reply: Optional[str] = None
         self._current_turn_reissued_clean: bool = False
+        # The goal this turn's work session belongs to, kept for the turn's
+        # record even if the turn itself pauses the session.
+        self._current_turn_goal_session: Optional[str] = None
         self._isolation_by_session: Dict[str, str] = {}
         self._last_applied_isolated_sections: Any = None
         # Sprint 48 — per-turn tool invocations (name + args) for the T0
@@ -1473,6 +1476,20 @@ class Dispatcher:
             for sid in session_ids[:MAX_SESSIONS_PER_INIT]:
                 try:
                     transcript = self.session.get_messages_as_conversation(sid)
+                    # A goal's work stays in its records. Take the work turns
+                    # out BEFORE anything is summarized; what is left is only
+                    # what was said outside the work, if anything.
+                    from grove.decision_work import conversation_only
+                    transcript, _split = conversation_only(
+                        sid, transcript, self._intent_store.filter(session_id=sid))
+                    if _split["goals"]:
+                        logger.info(
+                            "[grove.dispatcher] session %s did work for %s: %d of %d "
+                            "turn(s) kept out of compaction%s",
+                            sid, ", ".join(_split["goals"]), _split["work_turns"],
+                            _split["turns"],
+                            f" ({_split['reason']})" if _split["reason"] else "",
+                        )
                     filtered = filter_transcript_for_extraction(transcript)
                     # source_mtime: latest intent record timestamp (D7).
                     session_records = self._intent_store.filter(session_id=sid)
@@ -2145,6 +2162,7 @@ class Dispatcher:
         self._current_turn_isolation = self._resolve_turn_isolation(
             agent, user_message,
         )
+        self._current_turn_goal_session = self._current_turn_isolation
         self._current_turn_t0_handback = None
         self._current_turn_escalation = None
         self._current_turn_withheld = None
@@ -2977,6 +2995,11 @@ class Dispatcher:
                 "ordinal": self._current_turn_id,
                 "surface": getattr(agent, "platform", None) or self._platform,
                 "started_at": self._current_turn_started_at,
+                # The goal whose work session this turn ran in. Present only
+                # on such turns: it is how a later summarizer knows which
+                # turns were the goal's work and must stay in its records.
+                **({"goal_session": self._current_turn_goal_session}
+                   if getattr(self, "_current_turn_goal_session", None) else {}),
             },
             "recognition": {
                 "status": classification_status,
@@ -4470,6 +4493,10 @@ class Dispatcher:
             "estimated_cost_usd": 0.0,
             "cost_status": "t0_cache_hit",
             "cost_source": "pattern_cache",
+            # The Dispatcher has already written this exchange to the session
+            # transcript (_persist_t0_turn). A surface that also persists
+            # turns must not write it a second time.
+            "transcript_persisted": True,
         }
 
     def _maybe_demote_on_correction(self, pattern_id: Optional[str]) -> None:
@@ -5843,6 +5870,12 @@ class Dispatcher:
         try:
             from grove.decision_work import isolation_meta_key
 
+            from grove.decision_work import goals_worked_in
+
+            # The lasting record first: a pause or a reset clears the latch,
+            # but the decisions a session recorded say it did a goal's work.
+            if goals_worked_in(str(session_id)):
+                return True
             get_meta = getattr(self.session, "get_meta", None) if self.session is not None else None
             if not callable(get_meta):
                 return bool(self._isolation_by_session.get(str(session_id)))

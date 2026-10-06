@@ -257,13 +257,9 @@ def compact(
         role="writer",
     )
 
-    # 2. Evaluator (always).
+    # 2. Evaluator (always) — the same truncation ladder as the page calls.
     verdict = _validate_verdict(
-        call_t1(
-            _eval_prompt(normalized, semantic.body),
-            tool=_EVAL_TOOL,
-            max_tokens=_EVAL_MAX_TOKENS,
-        )
+        _call_eval_tool(_eval_prompt(normalized, semantic.body))
     )
 
     # 3. Editor (only on fail; at most once; no re-evaluation).
@@ -478,6 +474,37 @@ def project_memory(
 
 
 # ── parsing / validation (fail loud) ────────────────────────────────────
+
+
+# The Evaluator's one retry on a cap-hit. A long source (a 40-item work
+# session) makes it spend its small cap before the verdict is written; the
+# page calls' cap is the proven-sufficient size.
+_EVAL_RAISED_MAX_TOKENS = _WRITER_MAX_TOKENS
+
+
+def _call_eval_tool(prompt: str) -> Any:
+    """One forced wiki_evaluation call, guarded by the truncation ladder.
+
+    Live, 2026-10-06: the Evaluator was the one pipeline call with no ladder.
+    Every long session was cap-cut at ``_EVAL_MAX_TOKENS``, the compaction
+    failed, and it was retried at the SAME cap on every start — and an
+    identical-at-cap retry is a deterministic failure (P0: 0/6). A cap-hit
+    now gets ONE retry at a raised cap; a second cap-hit raises, loud, with
+    both caps named."""
+    try:
+        return call_t1(prompt, tool=_EVAL_TOOL, max_tokens=_EVAL_MAX_TOKENS)
+    except T1TruncationError:
+        logger.warning(
+            "[wiki] evaluator call truncated at max_tokens=%d; retrying once "
+            "at %d.", _EVAL_MAX_TOKENS, _EVAL_RAISED_MAX_TOKENS,
+        )
+        try:
+            return call_t1(prompt, tool=_EVAL_TOOL, max_tokens=_EVAL_RAISED_MAX_TOKENS)
+        except T1TruncationError as exc:
+            raise T1TruncationError(
+                f"evaluator output truncated at {_EVAL_MAX_TOKENS} tokens and again "
+                f"at the raised cap of {_EVAL_RAISED_MAX_TOKENS}: {exc}"
+            ) from exc
 
 
 def _call_page_tool(
