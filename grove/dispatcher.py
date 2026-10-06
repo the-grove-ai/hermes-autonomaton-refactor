@@ -895,6 +895,13 @@ class Dispatcher:
         self._pattern_store: Optional[Any] = None
         self._current_turn_start: Optional[float] = None
         self._current_turn_tools_yielded: List[str] = []
+        # goal isolation — the decision-work goal this turn's SESSION is
+        # isolated to (None for an ordinary session), the in-memory latch used
+        # when there is no session database, and the last isolation set a
+        # prompt was composed under (a change forces a recompose).
+        self._current_turn_isolation: Optional[str] = None
+        self._isolation_by_session: Dict[str, str] = {}
+        self._last_applied_isolated_sections: Any = None
         # Sprint 48 — per-turn tool invocations (name + args) for the T0
         # pattern compiler's EXECUTABLE evidence. Captured alongside the
         # names; only single-invocation turns yield a clean executable
@@ -2069,6 +2076,12 @@ class Dispatcher:
             getattr(self, "_next_turn_parent_artifact_ids", None) or []
         )
         self._next_turn_parent_artifact_ids = None
+        # goal isolation — decided here, BEFORE the T0 short-circuit and
+        # before classification, so a session is latched on its first turn
+        # whichever tier answers it.
+        self._current_turn_isolation = self._resolve_turn_isolation(
+            agent, user_message,
+        )
         # Sprint 35 — pre-construction classification + tier binding.
         # Fires AFTER the per-turn reset block above so the reset
         # cannot null out the captured classification. Pre-Sprint-35
@@ -5017,6 +5030,7 @@ class Dispatcher:
             # any recompose (tier change, compression, session_register change)
             # applies the current tier's context gate.
             tier_context_blocks=getattr(agent, "_tier_context_blocks", None),
+            isolated_sections=getattr(agent, "_isolated_sections", None),
             tier=getattr(agent, "_tier_name", None),  # Sprint 75 — identity gate
             # K6 (D3) — the routed tier's cellar budget, read off the resolved
             # TierBudget on the agent. None on a construction-time / non-routed
@@ -5175,6 +5189,77 @@ class Dispatcher:
         self._tier_budgets_cache = budgets
         return budgets
 
+    # ── goal isolation ──────────────────────────────────────────────────
+
+    def _resolve_turn_isolation(self, agent: Any, user_message: Any) -> Optional[str]:
+        """The decision-work goal this turn's session is isolated to, or None.
+
+        Isolation is a property of the SESSION, latched on its first turn: a
+        session whose first message opens work on an isolating goal (matched
+        deterministically against that goal's declared keywords — no model) is
+        isolated for its whole life, and every later turn in it composes no
+        recalled knowledge. A session that began any other way is never
+        isolated; the goal's own tool then refuses to record a decision in it
+        and tells the operator to start a new session. The latch is kept in the
+        session database so it survives a restart.
+
+        Never raises. On any fault the turn is treated as NOT isolated and the
+        fault is logged at ERROR: the tool's refusal is then the backstop, so a
+        failure here fails closed at the point of action, never open.
+        """
+        try:
+            from grove.decision_work import isolating_goal_for, isolation_meta_key
+
+            session_id = self.session_id or getattr(agent, "session_id", None)
+            if not session_id:
+                return None
+            sid = str(session_id)
+            get_meta = getattr(self.session, "get_meta", None) if self.session is not None else None
+            set_meta = getattr(self.session, "set_meta", None) if self.session is not None else None
+            key = isolation_meta_key(sid)
+            stored = get_meta(key) if callable(get_meta) else self._isolation_by_session.get(sid)
+            if stored is not None:
+                return stored or None
+            goal = None
+            if self._turn_counter <= 1 and isinstance(user_message, str):
+                goal = isolating_goal_for(user_message)
+            if callable(set_meta):
+                set_meta(key, goal or "")
+            else:
+                self._isolation_by_session[sid] = goal or ""
+            if goal:
+                logger.info(
+                    "[grove.dispatcher] session %s isolated to goal %s — "
+                    "recalled context excluded for the session", sid, goal,
+                )
+            return goal
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "[grove.dispatcher] could not resolve goal isolation for turn "
+                "%s: %r — treating the session as not isolated",
+                self._current_turn_id, exc,
+            )
+            return None
+
+    def turn_provenance(self, agent: Any) -> Dict[str, Any]:
+        """What the running turn has read and who is answering it — the
+        snapshot a governed tool checks before it writes
+        (``grove.turn_provenance``). Read-only over Dispatcher-owned state."""
+        composed = getattr(agent, "_composed_prompt", None)
+        sections = sorted((getattr(composed, "sections", None) or {}).keys())
+        decision = self._current_turn_routing_decision
+        return {
+            "session_id": self.session_id or getattr(agent, "session_id", None),
+            "turn_id": self._current_turn_id,
+            "turn_uid": self._current_turn_uid,
+            "tier": getattr(decision, "tier", None) or getattr(agent, "_tier_name", None),
+            "model": getattr(agent, "model", None),
+            "cellar_hits": int(getattr(agent, "_cellar_retrieval_hits", 0) or 0),
+            "sections": sections,
+            "tools_yielded": list(self._current_turn_tools_yielded),
+            "isolation_goal": self._current_turn_isolation,
+        }
+
     def _apply_tier_budget(self, agent: Any, tier: Optional[str]) -> None:
         """Resolve THIS turn's tier budget once and thread both carriers from
         it (Phase 4a — context side; the tools-side read lands in 4b).
@@ -5202,6 +5287,11 @@ class Dispatcher:
         agent._tier_context_blocks = frozenset(budget.context)
         agent._tier_name = tier  # Sprint 75 — the routed tier name for the
         # identity composer (gates which identity layers ride this tier).
+        # goal isolation — an isolated session composes no recalled knowledge.
+        from grove.decision_work import RECALL_SECTIONS
+        agent._isolated_sections = (
+            RECALL_SECTIONS if getattr(self, "_current_turn_isolation", None) else None
+        )
         self._maybe_recompose_for_tier(agent)
 
     def _maybe_recompose_for_tier(self, agent: Any) -> None:
@@ -5223,9 +5313,18 @@ class Dispatcher:
             self._last_applied_tier_context_blocks = getattr(
                 agent, "_tier_context_blocks", None,
             )
+            self._last_applied_isolated_sections = getattr(
+                agent, "_isolated_sections", None,
+            )
             return
         current = getattr(agent, "_tier_context_blocks", None)
         blocks_changed = current != self._last_applied_tier_context_blocks
+        # goal isolation — entering or leaving an isolated session changes what
+        # may be composed; a cached prompt must never carry recall across.
+        isolated = getattr(agent, "_isolated_sections", None)
+        if isolated != getattr(self, "_last_applied_isolated_sections", None):
+            blocks_changed = True
+            self._last_applied_isolated_sections = isolated
         # skill-adoption-v1 C3 — a change in THIS turn's primary skill (vs the slug
         # the injected prompt was last composed with) forces a recompose so the
         # payload loads or displaces. A None primary NEVER forces — the prior

@@ -198,6 +198,11 @@ class PromptComposer:
             frozenset(_raw_blocks) if _raw_blocks is not None else None
         )
         gated_blocks: Set[str] = set()
+        # goal isolation — registration names this turn must not compose at
+        # all (a decision-work goal that answers from its declared sources
+        # only; see grove.decision_work). Independent of the tier allow-list:
+        # a tier can never switch an isolated section back on.
+        isolated: FrozenSet[str] = frozenset(context.get("isolated_sections") or ())
         # composer-observability-v1 (Wave 1, F1) — compose-scoped exception
         # ledger, keyed by registration NAME (the emission join key). LOCAL by
         # design (Gemini advisory B): if compose() raises before the emission
@@ -224,6 +229,12 @@ class PromptComposer:
         }
         for reg in self._sections.values():
             if not reg.enabled:
+                continue
+            if reg.name in isolated:
+                gated_blocks.add(_PROVIDER_GATEABLE_BLOCK.get(reg.name, reg.name))
+                logger.debug(
+                    "[composer] goal isolation: section %r excluded", reg.name,
+                )
                 continue
             # Sprint 73 (D5) — centralized tier context gate. A gateable
             # block absent from the tier's allow-list is dropped here,

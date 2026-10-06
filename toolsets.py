@@ -71,6 +71,10 @@ _GROVE_CORE_TOOLS = [
     # filter self.tools, never saw these tools). zones.schema.yaml governs
     # review_proposals=green, approve_proposal/reject_proposal=yellow.
     "review_proposals", "approve_proposal", "reject_proposal",
+    # Decision work — a Dock goal's declared queue of items, each decided once
+    # and confirmed (grove/decision_work.py). One adapter tool per domain; like
+    # the flywheel tools it must reach every surface, so it is core.
+    "gl_coding",
     # Session history search
     "session_search",
     # Clarifying questions

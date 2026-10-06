@@ -13114,6 +13114,19 @@ class AIAgent:
         from grove import capability_feed as _capfeed
         _start = _time.perf_counter()
         _status = "ok"
+        # Hand the tool this turn's provenance (what it read, who is answering)
+        # so a governed tool can refuse before it writes. A fault here leaves
+        # the snapshot unset, and a tool that requires it then refuses.
+        from grove import turn_provenance as _turn_provenance
+        _prov_token = None
+        try:
+            _prov_disp = getattr(self, "_dispatcher_singleton", None)
+            if _prov_disp is not None:
+                _prov_token = _turn_provenance.set_current(
+                    _prov_disp.turn_provenance(self)
+                )
+        except Exception as _prov_exc:
+            logger.error("turn provenance unavailable for %s: %r", function_name, _prov_exc)
         try:
             return self._invoke_tool_impl(
                 function_name, function_args, effective_task_id,
@@ -13124,6 +13137,11 @@ class AIAgent:
             _status = "error"
             raise
         finally:
+            if _prov_token is not None:
+                try:
+                    _turn_provenance.reset(_prov_token)
+                except Exception:
+                    pass
             try:
                 self._emit_capability_feed_record(
                     function_name, _status,

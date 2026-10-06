@@ -19,6 +19,7 @@ Exit status 0 when the chain is intact, 1 otherwise.
 from __future__ import annotations
 
 import sqlite3
+import json
 import sys
 from pathlib import Path
 
@@ -46,6 +47,52 @@ def _read_anchors(db_path: Path) -> dict:
     return {k[len(CHAIN_HEAD_KEY_PREFIX):]: v for k, v in rows}
 
 
+def _run_reports(home: Path, store_path: Path) -> tuple:
+    """For each goal's decision log: the current run, how many decisions it
+    holds and whether every one of them has its turn in the audit trail.
+    Returns ``(lines, problems)``. A decision whose turn record is missing is
+    an audit gap and is reported as a problem."""
+    from grove.decision_work import KIND_PROPOSED, DecisionLog
+
+    directory = home / "decisions"
+    if not directory.is_dir():
+        return [], []
+    uids = set()
+    with open(store_path, encoding="utf-8") as fh:
+        for line in fh:
+            if not line.strip():
+                continue
+            try:
+                uids.add(json.loads(line).get("turn_uid"))
+            except ValueError:
+                continue  # verify_chain already reports an unreadable line
+    lines, problems = [], []
+    for log_path in sorted(directory.glob("*.jsonl")):
+        log = DecisionLog(log_path.stem, directory=directory)
+        try:
+            run = log.current_run()
+            proposed = [r for r in log.run_records() if r.get("kind") == KIND_PROPOSED]
+        except ValueError as exc:
+            problems.append({"line": None, "turn_id": log_path.name, "problem": str(exc)})
+            continue
+        if run is None:
+            continue
+        found = sum(1 for r in proposed if r.get("turn_uid") in uids)
+        label = f" ({run['label']})" if run.get("label") else ""
+        lines.append(
+            f"  Run {run.get('run_number', '?')}{label} · {log_path.stem}\n"
+            f"    Decisions in this run    {len(proposed):,}\n"
+            f"    With a turn on record    {found:,} of {len(proposed):,}"
+        )
+        for r in proposed:
+            if r.get("turn_uid") not in uids:
+                problems.append({
+                    "line": None, "turn_id": r.get("turn_id") or r.get("item_id"),
+                    "problem": f"decision {r.get('item_id')} has no turn in the audit trail",
+                })
+    return lines, problems
+
+
 def main() -> int:
     from grove.intent_store import verify_chain
 
@@ -65,7 +112,9 @@ def main() -> int:
         report = verify_chain(fh, anchors=anchors)
 
     chained_sessions = sum(1 for s in report["sessions"].values() if s["chained"])
-    problems = report["problems"]
+    problems = list(report["problems"])
+    run_lines, run_problems = _run_reports(home, path) if live else ([], [])
+    problems += run_problems
     bar = "=" * 62
     print(bar)
     print("  AUDIT CHAIN CHECK")
@@ -80,6 +129,8 @@ def main() -> int:
               "(newest record still present)")
     else:
         print("  Sessions tail-checked      not run (needs the live session database)")
+    for block in run_lines:
+        print(block)
     print(bar)
     if not problems:
         if report["chained"]:
@@ -91,7 +142,11 @@ def main() -> int:
     print(f"  RESULT: CHAIN BROKEN — {len(problems)} problem(s)")
     print(bar)
     for p in problems:
-        where = f"line {p['line']}" if p.get("line") else f"session {p['session_id']}"
+        where = (
+            f"line {p['line']}" if p.get("line")
+            else f"session {p['session_id']}" if p.get("session_id")
+            else "decision log"
+        )
         print(f"  {where}  {p['turn_id'] or ''}  {p['problem']}")
     return 1
 
