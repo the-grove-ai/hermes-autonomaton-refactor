@@ -628,22 +628,31 @@ class KegProposalResult:
     backtest: Optional[Dict[str, Any]] = None
 
 
-def backtest_keg(spec: Dict[str, Any], history: List[Dict[str, Any]]) -> Dict[str, Any]:
+def backtest_keg(spec: Dict[str, Any], history: List[Dict[str, Any]],
+                 prior: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Replay ``spec`` over ``history`` and return the backtest envelope.
 
     Each history case is ``{"ref", "label", "inputs", "served", "confirmed"}``:
     ``served`` is what standard work produced at the time, ``confirmed`` is the
-    operator's ground truth for that case (None when never confirmed). A case is
+    operator's FINAL decision for that case, after any revision (None when the
+    operator never ruled on it). ``prior`` is the spec of the signed version
+    this keg would replace. The replay asks one question of each case: would
+    the proposed version treat it differently from how it is treated TODAY —
+    by the version being replaced where that answers it, otherwise by the
+    operator's final decision. It never compares against an answer that an
+    earlier version gave and the operator has since revised. A case is
 
-    * ``unchanged`` — the keg answers exactly what was served;
-    * ``would_change`` — the keg answers differently (``agrees_with_confirmed``
-      says whether the new answer matches the operator's ground truth);
-    * ``not_covered`` — the keg does not answer it; it routes to the
-      interpreter. Counted on its own, never as "unchanged".
+    * ``unchanged`` — the keg answers exactly as today;
+    * ``would_change`` — the keg answers differently, or hands back a case
+      the replaced version answers (``agrees_with_confirmed`` says whether
+      the change matches the operator's final decision);
+    * ``not_covered`` — the keg does not answer it and neither does the
+      version it replaces; it routes to the interpreter under both. Counted
+      on its own, never as "unchanged".
 
-    A case marked ``served_by_keg`` that this keg would NOT answer (it defers,
-    or no rule matches) is a ``would_change``: work standard work used to
-    answer goes back to the interpreter.
+    With no ``prior`` given (a first version, or an older caller), ``served``
+    is the comparison and a case marked ``served_by_keg`` stands in for "the
+    replaced version answers it".
 
     Cases come back changed first, then not covered, then unchanged, so a
     reviewer reads the edge cases before the routine ones."""
@@ -653,19 +662,30 @@ def backtest_keg(spec: Dict[str, Any], history: List[Dict[str, Any]]) -> Dict[st
     for index, case in enumerate(history):
         served = dict(case.get("served") or {})
         confirmed = case.get("confirmed")
-        answer = evaluate(spec, case.get("inputs") or {})
-        deferred = answer is None and defers(spec, case.get("inputs") or {})
-        if answer is None and case.get("served_by_keg"):
-            # Standard work answered this case before; this keg would hand it
+        inputs = case.get("inputs") or {}
+        answer = evaluate(spec, inputs)
+        deferred = answer is None and defers(spec, inputs)
+        # What the version being replaced does with this case today.
+        if prior is not None:
+            before = evaluate(prior, inputs)
+            answered_today = before is not None
+            stands = (dict(before) if before is not None
+                      else dict(confirmed) if confirmed is not None else served)
+        else:
+            before = served if case.get("served_by_keg") else None
+            answered_today = bool(case.get("served_by_keg"))
+            stands = served
+        if answer is None and answered_today:
+            # Standard work answers this case today; this keg would hand it
             # back to the interpreter. That IS a change. It agrees with the
-            # operator when they corrected the old answer; handing back an
-            # answer they confirmed loses good coverage and is a conflict.
+            # operator when they revised that answer; handing back an answer
+            # they confirmed loses good coverage and is a conflict.
             result = BACKTEST_WOULD_CHANGE
-            agrees = None if confirmed is None else dict(confirmed) != served
+            agrees = None if confirmed is None else dict(confirmed) != dict(before or {})
         elif answer is None:
             result, agrees = BACKTEST_NOT_COVERED, None
         else:
-            same = all(answer.get(k) == served.get(k) for k in answer)
+            same = all(answer.get(k) == stands.get(k) for k in answer)
             result = BACKTEST_UNCHANGED if same else BACKTEST_WOULD_CHANGE
             agrees = None if confirmed is None else all(
                 answer.get(k) == confirmed.get(k) for k in answer
@@ -819,7 +839,9 @@ def propose_keg(
     pattern_id = f"keg:{slug}:v{version}:{digest[:12]}"
     # The slug in a keg's bookkeeping is what ties versions together; read it
     # with its lineage (see keg_record) rather than by parsing this id.
-    backtest = backtest_keg(spec, history)
+    prior_entry = pattern_store.get(prior_id) if prior_id else None
+    backtest = backtest_keg(
+        spec, history, prior=(keg_mod.keg_of(prior_entry) if prior_entry is not None else None))
 
     def _result(status: str, detail: str, proposal_id: Optional[str] = None):
         return KegProposalResult(

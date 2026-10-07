@@ -593,3 +593,40 @@ def test_the_loop_carries_no_domain_vocabulary():
     for word in ("vendor", "invoice", "gl_code", "ledger code", "coding"):
         for src in sources:
             assert word not in src.lower(), word
+
+
+def test_the_replay_compares_against_the_version_being_replaced_and_the_final_decision():
+    """Live, 2026-10-06: an item revised under v1 kept showing as "would
+    change" on every later card, though v2 already handed it back. The replay
+    asks whether the proposed version treats a case differently from TODAY."""
+    spec = lambda rules: {"inputs": INPUTS, "conditions": rules}
+    v1 = [{"if": "channel == 'courses'", "then": {"tag": "finance"}}] + RULES_V1
+    v2 = [{"defer": True, "if": "channel == 'courses'"}] + RULES_V1
+    v3 = [{"if": "channel == 'social'", "then": {"tag": "comms"}}] + v2
+    history = [
+        _case("m1", "billing", "finance", "finance"),
+        dict(_case("m12", "courses", "finance", "training"), served_by_keg=True),  # revised
+        _case("m30", "social", "comms", "comms"),          # a model answered; confirmed
+        _case("m31", "social", "comms", "comms"),
+        _case("m40", "press", "comms", "comms"),           # no rule, then or now
+    ]
+    # The fix itself: v2 hands back a case v1 answers. That IS a change, and it
+    # agrees with the revision.
+    fix = backtest_keg(spec(v2), history, prior=spec(v1))
+    [changed] = [c for c in fix["cases"] if c["result"] == "would_change"]
+    assert changed["ref"] == "m12" and changed["agrees_with_confirmed"] is True
+    # A later version: v2 already hands m12 back, so v3 changes nothing about
+    # it. Not covered under both, and marked as handed back.
+    later = backtest_keg(spec(v3), history, prior=spec(v2))
+    assert (later["unchanged"], later["would_change"], later["not_covered"]) == (3, 0, 2)
+    m12 = next(c for c in later["cases"] if c["ref"] == "m12")
+    assert (m12["result"], m12["deferred"]) == ("not_covered", True)
+    # The newly covered cases answer exactly what the operator confirmed: unchanged.
+    assert {c["ref"] for c in later["cases"] if c["result"] == "unchanged"} == {"m1", "m30", "m31"}
+    # A new answer that differs from what the replaced version gives is a change.
+    other = [{"if": "channel == 'billing'", "then": {"tag": "ops"}}] + v2
+    clash = backtest_keg(spec(other), history, prior=spec(v2))
+    [m1] = [c for c in clash["cases"] if c["result"] == "would_change"]
+    assert m1["ref"] == "m1" and m1["agrees_with_confirmed"] is False
+    # All three outcomes are always reported.
+    assert set(later) >= {"unchanged", "would_change", "not_covered"}

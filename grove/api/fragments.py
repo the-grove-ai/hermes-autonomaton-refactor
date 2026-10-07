@@ -5037,10 +5037,19 @@ def _tickets_html(g) -> str:
     kinds = "; ".join(
         f'v{c["version"]}: {"an exception" if c["kind"] == "exception" else "an enhancement"}'
         for c in changes)
+    # Counted by signature, never by rule: a version that adds several rules
+    # is still one change the operator reviewed and signed once.
+    grew, before = [], None
+    for v in sorted(g.get("versions") or [], key=lambda v: v.get("version") or 0):
+        if before is not None and (v.get("decides") or 0) - before >= 2:
+            grew.append(f"v{v['version']} is one signature though it adds "
+                        f"{(v.get('decides') or 0) - before} rules")
+        before = v.get("decides") or 0
     signed = _tile("CHANGES SIGNED", str(n), _esc(f"{names}. {kinds}."),
                    "Counted from the Kaizen ledger: keg versions the operator signed in the "
-                   "portal in this run. An alias, a revocation and a draft sent back are not "
-                   "counted.")
+                   "portal in this run, one per signature, not one per rule. "
+                   + ("".join(f"{text}. " for text in grew))
+                   + "A phrase alias, a revocation and a draft sent back are not counted.")
     filed = _tile("ENGINEERING TICKETS FILED", "0",
                   _esc("The 1 change was proposed by Mylo and signed by the operator. It "
                        "needed no code change." if n == 1 else
@@ -5259,8 +5268,10 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         + '</header>')
 
     # 2. Tiles
-    def _tile(eyebrow, figure, text):
-        return (f'<div class="sc-tile"><div class="sc-eyebrow">{_esc(eyebrow)}</div>'
+    def _tile(eyebrow, figure, text, hover=""):
+        return (f'<div class="sc-tile"'
+                + (f' title="{_esc(hover)}"' if hover else "")
+                + f'><div class="sc-eyebrow">{_esc(eyebrow)}</div>'
                 f'<div class="sc-figure">{_esc(figure)}</div><div class="sc-note">'
                 f'{_esc(text)}</div></div>')
 
@@ -5277,14 +5288,24 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
           f"{_compact(model['tokens'])} tokens.")
     signed_rows = [s for s in g["signatures"]]
     if signed_rows:
-        figure = " → ".join(f"v{s['version']}" for s in signed_rows)
-        text = " ".join(
+        # The version now in force, large; how many were signed, under it. The
+        # whole path, with when each was signed, is in the hover.
+        n_signed = len(signed_rows)
+        figure = f"v{signed_rows[-1]['version']}"
+        text = ("1 version, signed." if n_signed == 1
+                else f"{n_signed} versions, each signed.")
+        path = " → ".join(f"v{s['version']}" for s in signed_rows)
+        took = " ".join(
             f"v{s['version']} signed {_span(s['seconds'])} after"
             + (" it was proposed." if i == 0 else ".")
             for i, s in enumerate(signed_rows))
+        when = "; ".join(
+            f"v{s['version']} on {str(s.get('signed_at') or '')[:16].replace('T', ' ')} UTC"
+            for s in signed_rows if s.get("signed_at"))
+        signed_hover = f"{path}. {took}" + (f" Signed: {when}." if when else "")
     else:
-        figure, text = "—", "No keg version signed in this run."
-    signed = _tile("SIGNED BY THE OPERATOR", figure, text)
+        figure, text, signed_hover = "—", "No keg version signed in this run.", ""
+    signed = _tile("SIGNED BY THE OPERATOR", figure, text, signed_hover)
     brake = g["brake"]
     misses = len(brake["misses"])
     if misses:

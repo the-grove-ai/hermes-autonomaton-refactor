@@ -756,7 +756,10 @@ def test_signed_changes_are_counted_as_tickets_avoided_and_the_estimate_is_decla
     assert (t["count"], t["exceptions"], t["review_seconds"], t["hours"]) == (2, 1, 24.0, 24.0)
     assert t["dollars"] == pytest.approx(2118.24)
     assert t["break_even"] == pytest.approx(1000 / (12 * 88.26))      # 0.94 tickets a month
-    html = fragments._tickets_html({"tickets": t})
+    html = fragments._tickets_html({"tickets": t, "versions": [
+        {"version": 1, "decides": 6}, {"version": 2, "decides": 6}, {"version": 3, "decides": 8}]})
+    assert ("one per signature, not one per rule. v3 is one signature though it adds 2 "
+            "rules.") in html
     for text in ("The fixes that usually become engineering tickets",
                  "CHANGES SIGNED · MEASURED", "keg v1, keg v2. v1: an enhancement; v2: an "
                  "exception.", "ENGINEERING TICKETS FILED · MEASURED", "No ticket system is "
