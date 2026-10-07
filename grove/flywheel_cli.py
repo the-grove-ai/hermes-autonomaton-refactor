@@ -2476,6 +2476,13 @@ def _record_kaizen_disposition(
     elif proposal.type in (PROPOSAL_TYPE_SESSION_RULE, PROPOSAL_TYPE_KAIZEN_REQUEST):
         fields["loop_step"] = "signed" if disposition == "applied" else "feedback"
     ledger.record("kaizen_disposition", **fields)
+    # A session held for the operator's ruling on this proposal is released,
+    # and brought its next item, whatever the ruling was.
+    try:
+        from grove import reissue
+        reissue.proposal_resolved(proposal.proposal_id)
+    except Exception:  # noqa: BLE001 — the disposition stands; the hold lifts on the next request
+        logger.exception("[flywheel] could not release holds for %s", proposal.proposal_id)
     if proposal.type == PROPOSAL_TYPE_REMEDY and disposition == "applied":
         ledger.record(
             "remedy_applied",

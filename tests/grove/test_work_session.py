@@ -1245,3 +1245,114 @@ def test_backlog_stages_are_declared_and_a_bare_folder_is_one_stage(tmp_path):
                      (7, "a folder or a list of stages")):
         with pytest.raises(ValueError, match=why):
             cfg(bad)
+
+
+# ── a proposal is its own card, and the session waits for the ruling ──
+# Live, run 12 (2026-10-07): "Kaizen proposed keg v4" arrived as a line inside
+# a confirmation reply and was missed; the rule went unsigned for the rest of
+# the run.
+
+
+def _earn_a_proposal(env):
+    """Three confirmed decisions matching the reference table: Kaizen proposes v1."""
+    work = env.work(session={**SESSION, "pause": ["pause"]})
+    env.add("billing", "outage", "billing", "outage", "billing")
+    out = None
+    for _ in range(3):
+        env.propose(work, tag={"billing": "finance", "outage": "ops"}[work.next_item().read_text()])
+        out = work.session_step({"action": "confirm"}, env.prov(tier="T0"))
+        if _ < 2:
+            reissue.take("sess")
+    return work, out
+
+
+def test_a_proposal_arrives_as_its_own_card_and_the_session_holds(env):
+    from grove.eval.proposal_queue import read_all
+
+    work, out = _earn_a_proposal(env)
+    [proposal] = [p for p in read_all() if (p.payload or {}).get("keg")]
+    # Not a line inside the confirmation reply.
+    assert "Kaizen proposed" not in out["reply"] and out["reply"].startswith("Confirmed:")
+    [card] = reissue.take_cards("sess")
+    assert card["proposal_id"] == proposal.proposal_id
+    assert card["text"].startswith("Kaizen proposed keg v1. It needs your signature.")
+    assert "The work pauses here until you sign it, send it back, or tap Later." in card["text"]
+    link, later = card["buttons"]
+    assert link["label"] == "Review and sign"
+    short = proposal.proposal_id.split(":")[-1][:12]
+    assert link["url"].endswith(f"#fragments/proposals/pending?type=signature&at=proposal-{short}")
+    assert later == ["Later", f"proposal later #{short}"]
+    # The next item is NOT brought: the session is held after the item in hand.
+    assert out["next_armed"] is False and reissue.take("sess") is None
+    assert reissue.held("sess")["proposal_id"] == proposal.proposal_id
+    # Asking for the work says what it is waiting on, with no model.
+    asked = work.session_action("next", session_id="sess")
+    assert asked["action"] == "hold_signature"
+    reply = work.session_step(asked, env.prov(tier="T0"))["reply"]
+    assert reply.startswith("Paused for your signature on keg v1.") and "Review and sign: " in reply
+    assert reissue.take("sess") is None and work.pending() is None
+
+
+def test_later_carries_on_and_leaves_the_proposal_waiting(env):
+    from grove.eval.proposal_queue import read_all
+
+    work, _ = _earn_a_proposal(env)
+    [proposal] = [p for p in read_all() if (p.payload or {}).get("keg")]
+    press = dw.proposal_message(proposal.proposal_id)
+    action = work.session_action(press, session_id="sess")
+    assert action == {"action": "proposal_later", "button": True,
+                      "proposal": proposal.proposal_id.split(":")[-1][:12]}
+    out = work.session_step(action, env.prov(tier="T0"))
+    assert out["reply"] == "OK, later. Keg v1 stays under To sign. Carrying on."
+    assert out["next_armed"] is True and reissue.take("sess")["request"] == "tag the next message"
+    assert reissue.held("sess") is None
+    assert [p.proposal_id for p in read_all() if (p.payload or {}).get("keg")] == [
+        proposal.proposal_id]                                  # still waiting to be signed
+    # The card is spent: a second tap is answered plainly.
+    with pytest.raises(DecisionRefused) as stale:
+        work.session_step(action, env.prov(tier="T0"))
+    assert stale.value.reason == "stale_card"
+    # A press is never a change of subject while the next item is on its way.
+    assert work.waits(press) is True and work.waits("what's the weather") is False
+
+
+def test_signing_or_sending_back_lifts_the_hold_and_wakes_the_chat(env, monkeypatch):
+    from grove import flywheel_cli as fc
+    from grove.eval.proposal_queue import read_all
+
+    work, _ = _earn_a_proposal(env)
+    [proposal] = [p for p in read_all() if (p.payload or {}).get("keg")]
+    woken = []
+    monkeypatch.setattr(reissue, "_waker", lambda session_id, info: woken.append(
+        (session_id, info["goal"], info["proposal_id"])))
+    assert fc.cli_approve(proposal.proposal_id.split(":")[-1][:12]) == 0
+    assert woken == [("sess", GOAL, proposal.proposal_id)] and reissue.held("sess") is None
+    # With no chat to wake (another surface, a restart), the hold still lifts
+    # on the operator's next request.
+    monkeypatch.setattr(reissue, "_waker", None)
+    reissue.hold("sess", {"goal": GOAL, "proposal_id": "sha256:gone", "what": "keg v9"})
+    assert work.session_action("next", session_id="sess") is None      # routed as usual
+    assert reissue.held("sess") is None
+
+
+def test_a_batch_already_running_is_not_interrupted(env):
+    work = env.work(session=BATCH)
+    _serve_keg()
+    env.add("billing", "outage", "billing")
+    out = work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    # The keg pass decides everything it covers in one turn; no card, no hold.
+    assert out["batch"]["coded"] == 3 and reissue.take_cards("sess") == []
+    assert reissue.held("sess") is None
+
+
+def test_releasing_a_backlog_stage_goes_on_the_ledger(env, tmp_path):
+    from grove.kaizen_ledger import default_ledger_dir
+
+    work, cfg = _staged(env, tmp_path)
+    assert dw.release_backlog(cfg) == 2
+    events = []
+    for path in sorted(default_ledger_dir().glob("*.jsonl")):
+        events += [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    [released] = [e for e in events if e.get("action") == "backlog_released"]
+    assert (released["event_type"], released["stage"], released["items"], released["goal"]) == (
+        "operator_applied", "Month 2", 2, GOAL)

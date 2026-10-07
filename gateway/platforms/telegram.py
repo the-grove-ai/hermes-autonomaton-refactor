@@ -2592,8 +2592,14 @@ class TelegramAdapter(BasePlatformAdapter):
         for card in self.take_cards(chat_id):
             if not self._bot:
                 return
-            row = []
-            for label, message in card.get("buttons") or []:
+            row, links = [], []
+            for button in card.get("buttons") or []:
+                if isinstance(button, dict):
+                    # A link out (to the proposal in the portal), not a reply.
+                    links.append((str(button.get("label")), str(button.get("url"))))
+                    row.append(InlineKeyboardButton(links[-1][0], url=links[-1][1]))
+                    continue
+                label, message = button
                 data = f"cd:{message}"
                 if len(data.encode("utf-8")) > 64:
                     logger.error("[%s] no %r button: not expressible as callback data",
@@ -2610,7 +2616,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 kwargs["reply_markup"] = InlineKeyboardMarkup([row])
             kwargs.update(self._thread_kwargs_for_send(
                 chat_id, thread_id, metadata, reply_to_message_id=None))
-            await self._send_message_with_thread_fallback(**kwargs)
+            try:
+                await self._send_message_with_thread_fallback(**kwargs)
+            except Exception as exc:
+                if not links:
+                    raise
+                # The platform refused a link button (some refuse a bare
+                # address). The card still goes out: the link in its text,
+                # the reply buttons as they were.
+                logger.warning("[%s] link button refused (%r); sending the link as text",
+                               self.name, exc)
+                kwargs["text"] += "".join(f"\n{label}: {url}" for label, url in links)
+                plain = [b for b in row if not getattr(b, "url", None)]
+                if plain:
+                    kwargs["reply_markup"] = InlineKeyboardMarkup([plain])
+                else:
+                    kwargs.pop("reply_markup", None)
+                await self._send_message_with_thread_fallback(**kwargs)
 
     async def send_clarify(
         self,

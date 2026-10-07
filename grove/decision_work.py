@@ -783,6 +783,12 @@ def button_message(action: str, item_id: str) -> str:
 # A press on a question card (not an item card): the answer and the id of the
 # proposal the card was about.
 ALIAS_PRESS = re.compile(r"alias\s+(yes|later)\s+#(\S+)", re.IGNORECASE)
+# "Later" on a proposal card: carry on with the work; the proposal stays waiting.
+PROPOSAL_PRESS = re.compile(r"proposal\s+later\s+#(\S+)", re.IGNORECASE)
+
+
+def proposal_message(proposal_id: str) -> str:
+    return f"proposal later #{proposal_id.split(':')[-1][:12]}"
 
 
 def alias_message(answer: str, proposal_id: str) -> str:
@@ -1130,6 +1136,14 @@ def release_backlog(cfg: "DecisionWorkConfig") -> int:
     if added and cfg.work_session.enabled:
         from grove import reissue
         reissue.note_goal(cfg.goal_id, "backlog_released")
+    if added:
+        # When the stage arrived is part of the record: it is where "release
+        # to last item done" is measured from.
+        from grove.kaizen_ledger import KaizenLedger
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        KaizenLedger(f"operator-{stamp}").record(
+            "operator_applied", action="backlog_released", goal=cfg.goal_id,
+            applied_by="operator", stage=upcoming["label"], items=added)
     return added
 
 
@@ -1620,6 +1634,9 @@ class DecisionWork:
         is an answer about the vocabulary (a press on a question card, a
         phrase taken back). It is not a change of subject: it waits its turn
         and the session goes on."""
+        if (self.config.work_session.enabled
+                and PROPOSAL_PRESS.fullmatch(str(message or "").strip())):
+            return True
         learning = getattr(self.config, "adaptation", None)
         if not (self.config.work_session.enabled and learning and learning.enabled):
             return False
@@ -1695,9 +1712,13 @@ class DecisionWork:
                     lines.append(
                         f"Keg v{record.get('version')} halted: covered {many} go back to "
                         f"the model until you rule on the fix.")
+            from grove import reissue
             from grove.eval.proposal_queue import read_all
+            carded = {h["proposal_id"] for h in reissue.holds()}
             for proposal in read_all():
                 keg = (proposal.payload or {}).get("keg") or {}
+                if proposal.proposal_id in carded:
+                    continue          # on its own card, with its own buttons
                 if (keg.get("dock_goal") == self.config.goal_id
                         and str(proposal.created_at or "") >= str(since or "")):
                     lines.append(f"Kaizen proposed keg v{keg.get('version')}. "
@@ -1969,6 +1990,7 @@ class DecisionWork:
             **({"operator_said": said} if (said := _operator_said(prov, self.config)) else {}),
         })
         self._observe(record, ruled)
+        self._hold_for_signature(prov)
         return ruled
 
     def _observe(self, proposed: Mapping[str, Any], decided: Mapping[str, Any]) -> None:
@@ -2033,10 +2055,57 @@ class DecisionWork:
             **({"operator_said": said} if (said := _operator_said(prov, self.config)) else {}),
         })
         self._observe(waiting, decided)
+        self._hold_for_signature(prov)
         self.present_next_after(decided, prov)
         return decided
 
     # -- the work session -------------------------------------------------
+
+    def _hold_for_signature(self, provenance: Mapping[str, Any]) -> int:
+        """Kaizen answered this decision with a change to standard work. Put
+        it in front of the operator as its own card — never a line inside
+        another reply — and hold the session after the item in hand until they
+        sign it, send it back, or say later. A batch already running is one
+        turn and is not interrupted. Returns how many cards were offered."""
+        self.cards_offered = 0
+        cfg = self.config
+        session_id = provenance.get("session_id")
+        if not (cfg.work_session.enabled and session_id
+                and provenance.get("isolation_goal") == cfg.goal_id):
+            return 0
+        from grove import reissue
+
+        many = cfg.item_name[1]
+        for event in self.last_observations:
+            answer = event.get("answer") or {}
+            if answer.get("kind") != "standard_work" or not answer.get("artifact"):
+                continue
+            pid = str(answer["artifact"])
+            detail = answer.get("detail") or {}
+            what = f"keg v{detail['version']}" if detail.get("version") else "a change"
+            replay = (
+                f"Replayed on {detail['replayed']} {many}: {detail.get('unchanged')} unchanged, "
+                f"{detail.get('would_change')} would change, {detail.get('not_covered')} "
+                f"not covered.\n" if detail.get("replayed") is not None else "")
+            short = pid.split(":")[-1][:12]
+            reissue.offer_card(str(session_id), {
+                "proposal_id": pid,
+                "text": (f"Kaizen proposed {what}. It needs your signature.\n{replay}"
+                         f"The work pauses here until you sign it, send it back, or tap Later."),
+                "buttons": [
+                    {"label": "Review and sign",
+                     "url": _portal(f"proposals/pending?type=signature&at=proposal-{short}")},
+                    ["Later", proposal_message(pid)],
+                ],
+            })
+            reissue.hold(str(session_id), {"goal": cfg.goal_id, "proposal_id": pid, "what": what})
+            self.cards_offered += 1
+        return self.cards_offered
+
+    @staticmethod
+    def _proposal_waiting(proposal_id: Any) -> bool:
+        from grove.eval.proposal_queue import read
+        return read(str(proposal_id)) is not None
 
     def present_next_after(self, decided: Mapping[str, Any],
                            provenance: Mapping[str, Any]) -> bool:
@@ -2058,6 +2127,8 @@ class DecisionWork:
             return False
         from grove import reissue
 
+        if reissue.held(str(session_id)):
+            return False          # held for the operator's signature: nothing is brought
         reissue.arm({
             "request": cfg.keg.request, "authorized": getattr(grant, "id", None),
             "turn_uid": provenance.get("turn_uid"),
@@ -2102,7 +2173,7 @@ class DecisionWork:
         self.last_match = None
         if not ws.enabled:
             return None
-        action = self._session_action(message)
+        action = self._held_action(message, session_id) or self._session_action(message)
         if action is None and session_id and self.pending() is None and (
                 asks_for_work(str(message or ""), self.config)
                 or routes(message, ws.batch, self.config)):
@@ -2115,6 +2186,32 @@ class DecisionWork:
                 action = {"action": "ask_again", "question": question}
         self.last_match = self.match_trace(message, action)
         return action
+
+    def _held_action(self, message: Any, session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        """What a message is while the session is held for a signature: a
+        press on the proposal card's Later, or a request for the work, which
+        is answered with what it is waiting on. A hold whose proposal has been
+        signed or sent back in the meantime is lifted here, and the message is
+        read as usual."""
+        pressed = PROPOSAL_PRESS.fullmatch(str(message or "").strip())
+        if pressed:
+            return {"action": "proposal_later", "proposal": pressed.group(1), "button": True}
+        if not session_id:
+            return None
+        from grove import reissue
+
+        hold = reissue.held(str(session_id))
+        if not hold or hold.get("goal") != self.config.goal_id:
+            return None
+        if not self._proposal_waiting(hold["proposal_id"]):
+            reissue.release_hold(str(session_id))
+            return None
+        if self.pending() is None and (
+                asks_for_work(str(message or ""), self.config)
+                or routes(message, self.config.work_session.batch, self.config)):
+            return {"action": "hold_signature", "what": hold.get("what"),
+                    "proposal": str(hold["proposal_id"])}
+        return None
 
     def match_trace(self, message: Any, action: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
         """How a work-session message scored against the goal's declared
@@ -2144,7 +2241,8 @@ class DecisionWork:
             "match": (None if action is None else
                       "button" if action.get("button") else
                       "exact" if action.get("action") in (
-                          "confirm", "revise", "revise_prompt", "hold", "forget")
+                          "confirm", "revise", "revise_prompt", "hold", "forget",
+                          "hold_signature")
                       else "overlap"),
         }
 
@@ -2310,7 +2408,9 @@ class DecisionWork:
                     f"Keg v{keg.get('version')} halted: covered {many} go back to the "
                     f"model until you rule on the fix.")
             answer = event.get("answer") or {}
-            if answer.get("kind") == "standard_work":
+            if answer.get("kind") == "standard_work" and getattr(self, "cards_offered", 0):
+                pass      # on its own card, with its own buttons
+            elif answer.get("kind") == "standard_work":
                 version = (answer.get("detail") or {}).get("version")
                 lines.append(
                     "Kaizen proposed " + (f"keg v{version}" if version else "a change")
@@ -2343,6 +2443,8 @@ class DecisionWork:
                     "item_id": None, "decided": False, "presented": False}
         if kind == "batch":
             return self._batch_step(provenance, action.get("inputs_for"))
+        if kind in ("proposal_later", "hold_signature"):
+            return self._signature_step(action, provenance)
         if kind == "ask_again":
             return {"reply": "Still waiting on your answer:\n" + str(action.get("question")),
                     "item_id": None, "decided": False, "presented": False}
@@ -2374,6 +2476,34 @@ class DecisionWork:
             raise DecisionRefused("unknown_action", f"Unknown work-session action {kind!r}.")
         return {"reply": "\n".join([lead] + self.notices()), "item_id": waiting["item_id"],
                 "decided": True, "presented": False, "next_armed": self.next_armed}
+
+    def _signature_step(self, action: Mapping[str, Any],
+                        provenance: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
+        """Answer a message that arrived while the session is held for a
+        signature. Nothing here decides an item or signs anything."""
+        from grove import reissue
+
+        prov = dict(provenance or {})
+        session_id = str(prov.get("session_id") or "")
+        out = {"item_id": None, "decided": False, "presented": False}
+        if action.get("action") == "hold_signature":
+            short = str(action.get("proposal") or "").split(":")[-1][:12]
+            link = _portal(f"proposals/pending?type=signature&at=proposal-{short}")
+            return {**out, "reply": (
+                f"Paused for your signature on {action.get('what') or 'a proposal'}.\n"
+                f"Review and sign: {link}\nOr tap Later on its card to carry on.")}
+        hold = reissue.held(session_id)
+        named = str(action.get("proposal") or "")
+        if not hold or not str(hold["proposal_id"]).split(":")[-1].startswith(named):
+            raise DecisionRefused("stale_card", "That card is out of date.")
+        reissue.release_hold(session_id)
+        what = str(hold.get("what") or "The proposal")
+        still = self._proposal_waiting(hold["proposal_id"])
+        armed = (self.present_next_after({"id": hold["proposal_id"]}, prov)
+                 if self.pending() is None else False)
+        lead = (f"OK, later. {what[0].upper() + what[1:]} stays under To sign." if still
+                else f"{what[0].upper() + what[1:]} is no longer waiting.")
+        return {**out, "reply": lead + " Carrying on.", "next_armed": armed}
 
     def _batch_step(self, provenance: Optional[Mapping[str, Any]],
                     inputs_for: Any) -> Dict[str, Any]:

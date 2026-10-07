@@ -1301,3 +1301,8 @@ ul.listing li { padding: 0.7rem 0; }
 #main-nav .lvl1 a, #main-nav .nav-sub.lvl1 { padding-left: 1.6rem; }
 #main-nav .lvl2 a, #main-nav .nav-sub.lvl2 { padding-left: 2.4rem; }
 #main-nav .lvl3 a { padding-left: 3.2rem; }
+
+/* A new item to sign: the nav entry stands out until it is opened. */
+#main-nav .nav-new a { background: rgba(232, 145, 90, 0.16); box-shadow: inset 3px 0 0 var(--sc-event, #E8915A); }
+#main-nav .nav-new .nav-badge { animation: nav-pulse 1.4s ease-in-out infinite; }
+@keyframes nav-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.25); } }

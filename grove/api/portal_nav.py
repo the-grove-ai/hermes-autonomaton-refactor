@@ -155,7 +155,10 @@ def render_nav(nav: Mapping[str, Any], *, goals: List[Dict[str, str]],
 
     def link(label: str, target: str, badge: Optional[str], cls: str) -> str:
         count = (_nav_badge(int(live.get(badge, 0))) if badge else "")
-        return (f'<li class="{cls}"><a href="/portal#{_esc(target)}">{_esc(label)}'
+        # The count rides on the entry so the shell can tell when it has grown.
+        mark = (f' data-badge="{_esc(badge)}" data-count="{int(live.get(badge, 0))}"'
+                if badge else "")
+        return (f'<li class="{cls}"{mark}><a href="/portal#{_esc(target)}">{_esc(label)}'
                 f'{count}</a></li>')
 
     def item(entry: Mapping[str, Any], depth: int) -> str:

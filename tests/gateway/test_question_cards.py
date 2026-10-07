@@ -142,3 +142,41 @@ def test_an_answer_while_the_next_item_is_on_its_way_waits_and_does_not_pause(
     # Anything else is still a change of subject.
     assert say("what's the weather") is True
     assert reissue.take_pause("sess", "what's the weather")["notice"] is True
+
+
+def test_a_card_can_carry_a_link_and_survives_a_refused_link(monkeypatch):
+    buttons = []
+
+    def button(label, callback_data=None, url=None):
+        made = SimpleNamespace(label=label, callback_data=callback_data, url=url)
+        buttons.append(made)
+        return made
+
+    a = _adapter(monkeypatch)
+    monkeypatch.setattr(tg, "InlineKeyboardButton", button)
+    card = {"text": "Kaizen proposed keg v3. It needs your signature.",
+            "buttons": [{"label": "Review and sign", "url": "http://portal/#p"},
+                        ["Later", "proposal later #abc123def456"]]}
+    a.offer_cards("77", [card])
+    asyncio.run(a.send_offered_cards("77"))
+    [message] = a.sent
+    assert [(b.label, b.url, b.callback_data) for b in message["reply_markup"][0]] == [
+        ("Review and sign", "http://portal/#p", None),
+        ("Later", None, "cd:proposal later #abc123def456")]
+    # The platform refuses the link button: the card still goes out, with the
+    # link in its text and Later still a button.
+    a.sent.clear()
+    calls = {"n": 0}
+
+    async def flaky(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("Wrong HTTP URL")
+        a.sent.append(kwargs)
+
+    a._send_message_with_thread_fallback = flaky
+    a.offer_cards("77", [card])
+    asyncio.run(a.send_offered_cards("77"))
+    [message] = a.sent
+    assert message["text"].endswith("\nReview and sign: http://portal/#p")
+    assert [b.label for b in message["reply_markup"][0]] == ["Later"]

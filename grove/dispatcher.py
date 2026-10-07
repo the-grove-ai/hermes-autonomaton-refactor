@@ -5785,10 +5785,11 @@ class Dispatcher:
         proposal it names; an item card is refused in one line, because an
         item is decided only inside its own session. Returns None for any
         message that is not a press."""
-        from grove.decision_work import ALIAS_PRESS, BUTTON_PRESS
+        from grove.decision_work import ALIAS_PRESS, BUTTON_PRESS, PROPOSAL_PRESS
 
         text = user_message.strip()
-        alias, item = ALIAS_PRESS.fullmatch(text), BUTTON_PRESS.fullmatch(text)
+        alias = ALIAS_PRESS.fullmatch(text)
+        item = BUTTON_PRESS.fullmatch(text) or PROPOSAL_PRESS.fullmatch(text)
         if not alias and not item:
             return None
         outcome, failure = "pending", {}

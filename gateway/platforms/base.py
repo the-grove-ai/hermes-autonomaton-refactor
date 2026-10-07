@@ -1543,8 +1543,14 @@ class BasePlatformAdapter(ABC):
         """Send the cards offered for a chat. Platforms with inline buttons
         override this; the default sends the text and says what to type."""
         for card in self.take_cards(chat_id):
-            options = " or ".join(f"“{message}”" for _label, message in card.get("buttons") or [])
             text = str(card.get("text") or "")
+            says = []
+            for button in card.get("buttons") or []:
+                if isinstance(button, dict):       # a link, not a reply
+                    text += f"\n{button.get('label')}: {button.get('url')}"
+                else:
+                    says.append(f"“{button[1]}”")
+            options = " or ".join(says)
             await self.send(chat_id, text + (f"\nReply {options}." if options else ""),
                             metadata=metadata)
 

@@ -402,3 +402,87 @@ def take(session_id: str) -> Optional[Dict[str, Any]]:
         record = None
     path.unlink()
     return record if isinstance(record, dict) else None
+
+
+# ── held for a signature ──────────────────────────────────────────────
+# When Kaizen proposes a change to standard work during a work session, the
+# session pauses after the item in hand: the proposal is put in front of the
+# operator as its own card, and the next item is not brought until they sign
+# it, send it back, or say "later". The hold is a transient note, like every
+# other in this module; the proposal and its disposition are the records.
+
+
+def hold(session_id: str, info: Mapping[str, Any]) -> None:
+    """Hold a session for the operator's ruling on a proposal:
+    ``{"goal", "proposal_id", "what"}``."""
+    path = _dir() / ("hold-" + _path(str(session_id)).name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({**dict(info), "session_id": str(session_id)},
+                               sort_keys=True), encoding="utf-8")
+
+
+def held(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """The hold on a session, if any, without lifting it."""
+    if not session_id:
+        return None
+    path = _dir() / ("hold-" + _path(str(session_id)).name)
+    try:
+        info = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return info if isinstance(info, dict) and info.get("proposal_id") else None
+
+
+def release_hold(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Lift a session's hold. Returns what it was held for, or None."""
+    info = held(session_id)
+    if session_id:
+        (_dir() / ("hold-" + _path(str(session_id)).name)).unlink(missing_ok=True)
+    return info
+
+
+def holds() -> list:
+    """Every hold in force, as its own note."""
+    out = []
+    directory = _dir()
+    if directory.is_dir():
+        for path in sorted(directory.glob("hold-*")):
+            try:
+                info = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(info, dict) and info.get("proposal_id") and info.get("session_id"):
+                out.append(info)
+    return out
+
+
+# The gateway registers how to bring a held session its next item (it owns the
+# chat and its queue). Process-local: the portal and the chat surfaces run in
+# the same gateway process. With none registered, a lifted hold simply waits
+# for the operator's next request.
+_waker = None
+
+
+def set_waker(waker: Any) -> None:
+    global _waker
+    _waker = waker
+
+
+def proposal_resolved(proposal_id: str) -> list:
+    """A proposal was signed, sent back or withdrawn: lift every hold that
+    waited on it and bring each of those sessions its next item. Returns the
+    session ids released."""
+    released = []
+    for info in holds():
+        if info["proposal_id"] != proposal_id:
+            continue
+        release_hold(info["session_id"])
+        released.append(info["session_id"])
+        if _waker is not None:
+            try:
+                _waker(info["session_id"], info)
+            except Exception:  # noqa: BLE001 — the hold is lifted either way
+                import logging
+                logging.getLogger(__name__).exception(
+                    "[reissue] could not wake session %s", info["session_id"])
+    return released

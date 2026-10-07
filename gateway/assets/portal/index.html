@@ -59,7 +59,7 @@
                  counts track the queue. -->
             <ul class="nav-list" id="main-nav"
                 hx-get="/portal/fragments/nav/main"
-                hx-trigger="load, proposal-disposition from:body, fleet-disposition from:body"
+                hx-trigger="load, every 20s, proposal-disposition from:body, fleet-disposition from:body"
                 hx-swap="innerHTML"></ul>
             <!-- Without scripts the plain links below still reach every page. -->
             <noscript>
@@ -238,6 +238,21 @@
         var landing = document.getElementById('nav-landing');
         if (landing && landing.dataset.landing) {
           window.location.hash = landing.dataset.landing;
+        }
+      }
+      if (el && el.id === 'main-nav') {
+        // Something new to sign: the entry is highlighted until it is opened.
+        // "New" means the count is above what this browser last saw.
+        var sign = el.querySelector('[data-badge="to_sign"]');
+        if (sign) {
+          var now = parseInt(sign.dataset.count || '0', 10);
+          var seen = parseInt(sessionStorage.getItem('toSignSeen') || '0', 10);
+          if (now > seen) { sign.classList.add('nav-new'); }
+          else { sessionStorage.setItem('toSignSeen', String(now)); }
+          sign.addEventListener('click', function() {
+            sessionStorage.setItem('toSignSeen', String(now));
+            sign.classList.remove('nav-new');
+          });
         }
       }
       if (el && el.id === 'center-panel') {

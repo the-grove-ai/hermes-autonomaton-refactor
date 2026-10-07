@@ -10205,6 +10205,47 @@ class GatewayRunner:
         offer_cards = getattr(adapter, "offer_cards", None)
         if cards and callable(offer_cards):
             offer_cards(str(source.chat_id), cards)
+        # A session held for the operator's signature: remember where its chat
+        # is, so that when the proposal is ruled on (in the portal, on another
+        # surface) the gateway can bring this chat its next item.
+        session_id = getattr(entry, "session_id", "") or ""
+        if session_id and reissue.held(session_id):
+            held = getattr(self, "_held_sources", None)
+            if held is None:
+                held = self._held_sources = {}
+                reissue.set_waker(self._wake_held_session)
+            held[session_id] = source
+
+    def _wake_held_session(self, session_id: str, info: Any) -> None:
+        """A proposal a session was held for has been ruled on. Bring that
+        chat its next item: the goal's own request, put through the pipeline
+        like any other turn. Called in the gateway's own event loop."""
+        import asyncio
+
+        source = (getattr(self, "_held_sources", None) or {}).pop(str(session_id), None)
+        if source is None:
+            return
+        asyncio.get_running_loop().create_task(
+            self._resume_held_session(source, str((info or {}).get("goal") or "")))
+
+    async def _resume_held_session(self, source: Any, goal: str) -> None:
+        from grove.decision_work import config_for_goal
+
+        try:
+            cfg = config_for_goal(goal)
+            adapter = self.adapters.get(source.platform)
+            if adapter is None or cfg.keg is None:
+                return
+            advancing = getattr(self, "_ws_advance", None)
+            if advancing is None:
+                advancing = self._ws_advance = {}
+            advancing[self._session_key_for_source(source)] = {"goal": goal}
+            await adapter.handle_message(MessageEvent(
+                text=str(cfg.keg.request), message_type=MessageType.TEXT, source=source,
+                message_id=None, channel_prompt=None,
+            ))
+        except Exception as exc:  # noqa: BLE001 — the operator can always ask for the next item
+            logger.error("could not resume a held session for %s: %r", goal, exc)
 
     async def _post_turn_reissue(self, event: MessageEvent, source: Any, quick_key: str) -> None:
         """Carry out a re-issue armed during the turn that just ended
