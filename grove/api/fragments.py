@@ -5300,12 +5300,15 @@ def _audit_integrity_html(report) -> str:
             classes = ["sc-node", "sc-keg" if link["keg"] else "sc-model"]
             if link["corrected"]:
                 classes.append("sc-ring")
+            running = bool(link.get("in_flight"))
             if not link["on_record"]:
-                classes.append("sc-missing")
+                classes.append("sc-pending" if running else "sc-missing")
             said = (f'Decision {link["order"]}, decided by '
                     f'{"the keg" if link["keg"] else "a model"}'
                     + (", revised by the operator" if link["corrected"] else "")
-                    + (", turn on record" if link["on_record"] else ", NO turn on record"))
+                    + (", turn on record" if link["on_record"]
+                       else ", its turn is still running" if running
+                       else ", NO turn on record"))
             nodes += (
                 f'<div class="sc-link" role="img" aria-label="{_esc(said)}">'
                 f'<span class="{" ".join(classes)}">'
@@ -5314,7 +5317,9 @@ def _audit_integrity_html(report) -> str:
         chains += (
             f'<section class="sc-panel"><div class="sc-panel-head"><h2>This run, link by '
             f'link</h2><div class="sc-lead"><strong>{run["with_turn"]} of '
-            f'{run["decisions"]}</strong> decisions have their turn on record</div></div>'
+            f'{run["decisions"]}</strong> decisions have their turn on record'
+            + (f' · {run["in_flight"]} from a turn still running' if run.get("in_flight") else "")
+            + '</div></div>'
             f'<div class="sc-scroll"><div class="sc-chain{" sc-dense" if len(links) > 30 else ""}">'
             f'<span class="sc-chain-line"></span>'
             f'{nodes}</div></div>'

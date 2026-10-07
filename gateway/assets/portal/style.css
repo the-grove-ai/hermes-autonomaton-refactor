@@ -1226,3 +1226,4 @@ ul.listing li { padding: 0.7rem 0; }
 .sc-version .sc-row { font-size: 14px; padding: 8px 0; }
 .sc-version .sc-row .sc-mono { white-space: normal; text-align: right; }
 .sc-version .sc-row > span:first-child { flex: 0 0 auto; margin-right: 16px; }
+.sc-node.sc-pending { border-style: dashed; opacity: 0.7; }

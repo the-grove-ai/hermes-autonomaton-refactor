@@ -638,3 +638,44 @@ def test_learning_cost_is_read_from_the_ledger_and_never_estimated(tmp_path):
     assert (out["backtests"], out["from_table"], out["drafts"], out["unrecorded"]) == (3, 1, 2, 1)
     assert (out["calls"], out["input"], out["output"]) == (2, 4000, 1500)
     assert out["cost"] == pytest.approx(0.003 + 0.040) and out["priced"] is True
+
+
+def test_a_decision_whose_turn_is_still_running_is_not_a_break(tmp_path):
+    """Live, 2026-10-06: the audit page was opened while a turn was coding an
+    item. The decision was on the log; the turn's record is written when the
+    turn ends. The panel said the chain was broken, and seconds later it was
+    not. A missing turn is a break only once the turn has had time to end."""
+    from datetime import datetime, timedelta, timezone
+
+    log = DecisionLog(GOAL, directory=tmp_path / "decisions")
+    log.append({"kind": "run_started", "run_id": "r", "run_number": 1, "label": ""})
+    now = datetime.now(timezone.utc)
+    log.append({"kind": "proposed", "run_id": "r", "item_id": "done", "turn_uid": "u1",
+                "ts": (now - timedelta(minutes=30)).isoformat()})
+    log.append({"kind": "proposed", "run_id": "r", "item_id": "running", "turn_uid": "u2",
+                "ts": (now - timedelta(seconds=5)).isoformat()})
+    out = audit._run_check(tmp_path, {"u1"})
+    assert out["problems"] == []
+    assert (out["runs"][0]["with_turn"], out["runs"][0]["in_flight"]) == (1, 1)
+    assert [(l["on_record"], l["in_flight"]) for l in out["links"]] == [(True, False), (False, True)]
+    tile = audit.check_tiles({
+        "chained_sessions": 1, "unchained": 0, "chained": 1, "records": 1, "live": True,
+        "anchored": 1, "ledger": {"chained": 0, "files": 0, "unchained": 0},
+        "runs": out["runs"]})[-1]
+    assert tile["text"].endswith(
+        "1 more is from a turn still running, and will be checked when it ends.")
+    # A later decision's turn is on record: the one before it is a hole, however recent.
+    log.append({"kind": "proposed", "run_id": "r", "item_id": "after", "turn_uid": "u1",
+                "ts": now.isoformat()})
+    out = audit._run_check(tmp_path, {"u1"})
+    assert [p["problem"] for p in out["problems"]] == [
+        "decision running has no turn in the audit trail"]
+    assert "in_flight" not in out["runs"][0]
+    # Still without its turn after the window: a break.
+    old = DecisionLog("other-goal", directory=tmp_path / "decisions")
+    old.append({"kind": "run_started", "run_id": "q", "run_number": 1, "label": ""})
+    old.append({"kind": "proposed", "run_id": "q", "item_id": "lost", "turn_uid": "u9",
+                "ts": (now - timedelta(seconds=audit.IN_FLIGHT_SECONDS + 1)).isoformat()})
+    out = audit._run_check(tmp_path, {"u1"})
+    assert "decision lost has no turn in the audit trail" in [
+        p["problem"] for p in out["problems"]]

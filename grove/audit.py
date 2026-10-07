@@ -141,6 +141,25 @@ def _ledger_check(home: Path) -> Dict[str, Any]:
     return out
 
 
+# A decision is written during its turn; the turn's own record is written
+# when the turn ends. One of the run's newest decisions, this young, with no
+# turn yet is a turn still running, not a break. Past this window — or with a
+# later decision's turn already on record — a missing turn IS a break.
+IN_FLIGHT_SECONDS = 180
+
+
+def _in_flight(record: Mapping[str, Any], now: Any = None) -> bool:
+    from datetime import datetime, timezone
+
+    made = _when(record.get("ts"))
+    if made is None:
+        return False
+    if made.tzinfo is None:
+        made = made.replace(tzinfo=timezone.utc)
+    now = now or datetime.now(timezone.utc)
+    return 0 <= (now - made).total_seconds() < IN_FLIGHT_SECONDS
+
+
 def _run_check(home: Path, turn_uids: set) -> Dict[str, Any]:
     from grove.decision_work import (
         DECISION_CORRECT, KIND_DECIDED, KIND_PROPOSED, DecisionLog,
@@ -163,9 +182,18 @@ def _run_check(home: Path, turn_uids: set) -> Dict[str, Any]:
         if run is None:
             continue
         found = sum(1 for r in proposed if r.get("turn_uid") in turn_uids)
+        # Only the run's NEWEST decisions can be from a turn still running:
+        # once any later decision has its turn on record, an earlier one
+        # without a turn is a hole, however recent.
+        running: set = set()
+        for r in reversed(proposed):
+            if r.get("turn_uid") in turn_uids or not _in_flight(r):
+                break
+            running.add(r.get("id"))
         out["runs"].append({
             "goal": log_path.stem, "run_number": run.get("run_number"),
             "label": run.get("label") or "", "decisions": len(proposed), "with_turn": found,
+            **({"in_flight": len(running)} if running else {}),
         })
         # The latest ruling on each item decides how its link is drawn.
         latest = {r.get("ref"): r.get("decision") for r in records
@@ -177,9 +205,10 @@ def _run_check(home: Path, turn_uids: set) -> Dict[str, Any]:
             "goal": log_path.stem, "order": n, "item_id": r.get("item_id"),
             "keg": bool(r.get("keg")), "corrected": r.get("id") in corrected,
             "on_record": r.get("turn_uid") in turn_uids,
+            "in_flight": r.get("id") in running,
         } for n, r in enumerate(proposed, 1)]
         for r in proposed:
-            if r.get("turn_uid") not in turn_uids:
+            if r.get("turn_uid") not in turn_uids and r.get("id") not in running:
                 out["problems"].append({
                     "where": f"decision log {log_path.name}",
                     "subject": r.get("turn_id") or r.get("item_id") or "",
@@ -335,7 +364,10 @@ def check_tiles(report: Mapping[str, Any]) -> List[Dict[str, Any]]:
     for run in report["runs"]:
         tiles.append({
             "label": "DECISIONS THIS RUN", "count": run["with_turn"], "of": run["decisions"],
-            "text": "with the turn that produced them on record.",
+            "text": "with the turn that produced them on record."
+                    + (f" {run['in_flight']} more {_s(run['in_flight'], 'is', 'are')} from a "
+                       f"turn still running, and will be checked when it ends."
+                       if run.get("in_flight") else ""),
             "run": f"Run {run['run_number']} · {run['goal']}",
         })
     return tiles
