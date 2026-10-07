@@ -5033,8 +5033,10 @@ def _tickets_html(g) -> str:
                    "portal in this run. An alias, a revocation and a draft sent back are not "
                    "counted.")
     filed = _tile("ENGINEERING TICKETS FILED", "0",
-                  _esc(f"Each of the {n} change{'' if n == 1 else 's'} was proposed by Mylo "
-                       f"and signed by the operator. None needed a code change."),
+                  _esc("The 1 change was proposed by Mylo and signed by the operator. It "
+                       "needed no code change." if n == 1 else
+                       f"Each of the {n} changes was proposed by Mylo and signed by the "
+                       f"operator. None needed a code change."),
                   "Measured from the ledger: every change to this goal's standard work in this "
                   "run is a signed proposal. No ticket system is connected, so this is the "
                   "count of changes that went to engineering through this system: none.")
@@ -5107,7 +5109,7 @@ def _returns_html(g, proj, scale: int, toggle: str) -> str:
     times = total / price
     pace = tickets["per_month"]
     pace_text = f"{pace:g} signed change{'' if pace == 1 else 's'} a month"
-    volume = f"{scale:,} {many} a month"
+    volume = f"{scale:,} model calls a month"
     if per_month >= price:
         verdict = "It pays for itself on avoided tickets alone; volume is upside."
     elif total >= price:
@@ -5459,7 +5461,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
               f'as signed</h3><div class="sc-versions">{cards}</div></div></section>')
 
     # 5. At volume
-    proj = audit_mod.project(g, scale)
+    proj = audit_mod.project_calls(g, scale)
     toggles = "".join(
         f'<button type="button" aria-pressed="{"true" if n == scale else "false"}" '
         f'hx-get="/portal/fragments/audit/economics?scale={n}" '
@@ -5499,9 +5501,19 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         avoided, every, kept = proj["avoided"], proj["all_model"], proj["with_keg"]
         rest = cov["of"] - cov["covered"]
         lede = (f'Scaled from this run. Keg v{_esc(cov["version"])} answers {cov["covered"]} of '
-                f'{cov["of"]} {_esc(many)} with no model. '
+                f'{cov["of"]} {_esc(many)} with no model, so '
+                f'{audit_mod._pct(cov["covered"], cov["of"])} of those calls are never made. '
                 + (f'The other {rest} still call{"s" if rest == 1 else ""} one.' if rest else
                    "None still calls one."))
+        basis = proj["per_call"]
+        basis_text = (
+            "Per-call basis, measured this run: "
+            + (f"${basis['cost'] * 1000:,.2f} per 1,000 model calls; "
+               if basis["cost"] is not None else "no price declared; ")
+            + (f"{basis['seconds']:.1f} s a call; " if basis["seconds"] is not None else "")
+            + (f"{basis['calls_per_unit']:.1f} calls per model-decided {one}; "
+               if basis["calls_per_unit"] else "")
+            + f"the keg avoids {audit_mod._pct(cov['covered'], cov['of'])} of them.")
         # Two figures, same size, different trust: measured is green, the
         # estimate stays white and says ESTIMATE in its own label.
         cut = (avoided["cost"] / every["cost"]) if every["cost"] else None
@@ -5528,7 +5540,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                 f'ESTIMATE</span> · FRONTIER MODEL</div>'
                 f'<div class="sc-save-figure">{_whole(saved)}'
                 f'<span class="sc-unit"> / month</span></div>'
-                f'<div class="sc-note">If every {_esc(one)} were on '
+                f'<div class="sc-note">If those calls were on '
                 f'{_esc(str(g["frontier"]["model"]).split("/")[-1])} · '
                 f'{_whole(proj["all_frontier"]["cost"])} down to '
                 f'{_whole(proj["frontier_with_keg"])}</div></div>')
@@ -5548,7 +5560,8 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         same = (f' Coverage and cost cut are both {cover_pct} here; they are not the same '
                 f'figure.' if cut_pct is not None and cover_pct == f"{cut_pct}%" else "")
         body = (
-            f'<p class="sc-lead">{lede}</p><div class="sc-saves">{cards}</div>'
+            f'<p class="sc-lead" title="{_esc(basis_text)}">{lede}</p>'
+            f'<div class="sc-saves">{cards}</div>'
             f'<div class="sc-facts">{chips}</div>'
             f'<p class="sc-foot">Measured figures use routing-config prices, scaled from this '
             f'run. Frontier figures price the same mix at that model\'s rates.{same}</p>')
@@ -5565,8 +5578,8 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     volume = (
         f'<div class="sc-econ" id="sc-volume-{key}">{returns}{_tickets_html(g)}'
         f'<section class="sc-panel" aria-labelledby="sc-vol-{key}">'
-        f'<div class="sc-panel-head"><h2 id="sc-vol-{key}">At {scale:,} {_esc(many)} a month'
-        f'</h2>{own_toggle}</div>{body}{table}</section></div>')
+        f'<div class="sc-panel-head"><h2 id="sc-vol-{key}">If your agents make {scale:,} '
+        f'model calls a month today</h2>{own_toggle}</div>{body}{table}</section></div>')
 
     # 6. Footer — the methodology caveats, unchanged in substance.
     footer = (
@@ -5928,10 +5941,10 @@ SCALES_DEFAULT = 1_000_000      # the volume the page opens on
 def _audit_scale(request: web.Request) -> int:
     from grove.audit import SCALES
     try:
-        scale = int(request.query.get("scale", SCALES[-1]))
+        scale = int(request.query.get("scale", SCALES_DEFAULT))
     except ValueError:
-        scale = SCALES[-1]
-    return scale if scale in SCALES else SCALES[-1]
+        scale = SCALES_DEFAULT
+    return scale if scale in SCALES else SCALES_DEFAULT
 
 
 def _demo_panel_html(note: str = "") -> str:

@@ -344,7 +344,7 @@ def test_audit_page_shows_the_same_figures_and_its_limits(home):
     eco = fragments._audit_economics_html(audit.economics(home), 1_000_000, chain=chain)
     for text in ("2 of 4 items decided with no model.", "Every one traceable.",
                  "100×", "0.10 s with the keg, 10.0 s with a model",
-                 "At 1,000,000 items a month", "Every item decided by a model",
+                 "If your agents make 1,000,000 model calls a month today", "Every item decided by a model",
                  "Avoided", "ESTIMATE · FRONTIER MODEL",
                  "Audit chain intact: 8 intent records, 1 chained ledger events.",
                  "NOT priced", "Not included:", "confirmation turn is separate"):
@@ -370,7 +370,9 @@ def test_scorecard_reads_the_loop_off_the_records(tmp_path, monkeypatch):
                  "#4 · chan-m4 · keg v1 · no model call · 0.10 s · operator revised "
                  "finance → ops · andon raised · keg halted",
                  "hands back when channel == &#x27;chan-m4&#x27;", "SERVING", "REPLACED",
-                 "At 10,000 messages a month</h2>", "Scaled from this run. Keg v2 answers",
+                 "If your agents make 10,000 model calls a month today</h2>",
+                 "Scaled from this run. Keg v2 answers", "of those calls are never made.",
+                 "Per-call basis, measured this run:",
                  "SAVINGS · MEASURED", " down to ", "Show the working",
                  "No model</div>", "Fewer model calls</div>", "Less time deciding</div>",
                  "Measured figures use routing-config prices, scaled from this run."):
@@ -836,7 +838,7 @@ def test_what_one_dock_returns_is_computed_and_claims_only_what_the_numbers_show
 
     html = card(1000.0, 3618.0)
     # Two changes in two months is one a month: 1 × 12 × $88.26 = $1,059.
-    for text in ("What one dock returns in a month", "<strong>4.7×</strong> the dock's price at ", "at 1,000,000 invoices a month.",
+    for text in ("What one dock returns in a month", "<strong>4.7×</strong> the dock's price at ", "at 1,000,000 model calls a month.",
                  "It pays for itself on avoided tickets alone; volume is upside.",
                  "$1,059</div>", "1 signed change a month × 12 hours × $88.26.",
                  "Measured: 2 changes signed in 2 months.", "MODEL COST SAVED · MEASURED",
@@ -857,3 +859,24 @@ def test_what_one_dock_returns_is_computed_and_claims_only_what_the_numbers_show
     assert "come to $1,095 against a $3,000 price." in short and "<strong>0.4×</strong>" in short
     # No price declared, or nothing signed: no card.
     assert card(None, 3618.0) == ""
+
+
+def test_volume_is_stated_in_model_calls_and_scaled_from_the_measured_per_call_basis():
+    g = {"model_avg": {"cost": 0.006, "seconds": 15.0, "model_calls": 3.0, "tokens": 9000.0},
+         "keg_avg": {"cost": 0.0, "seconds": 0.1},
+         "coverage": {"share": 0.75}, "frontier": {"cost": 0.06}}
+    p = audit.project_calls(g, 1_000_000)
+    # A million calls is a third of a million model-decided items, at 3 calls each.
+    assert p["all_model"]["model_calls"] == pytest.approx(1_000_000)
+    assert p["avoided"]["model_calls"] == pytest.approx(750_000)
+    assert p["with_keg"]["model_calls"] == pytest.approx(250_000)
+    # Measured cost per call: $0.006 / 3 = $0.002; three quarters of the calls avoided.
+    assert p["per_call"] == {"calls_per_unit": 3.0, "cost": pytest.approx(0.002),
+                             "seconds": pytest.approx(5.0), "share_avoided": 0.75}
+    assert p["avoided"]["cost"] == pytest.approx(1_000_000 * 0.75 * 0.002)
+    assert p["all_frontier"]["cost"] == pytest.approx(1_000_000 / 3 * 0.06)
+    assert audit.SCALES == (100_000, 1_000_000, 10_000_000)
+    # No model call measured: nothing can be scaled, and nothing is invented.
+    empty = audit.project_calls({**g, "model_avg": {"cost": None, "seconds": None,
+                                                    "model_calls": None, "tokens": None}}, 1000)
+    assert empty["avoided"]["cost"] is None and empty["per_call"]["cost"] is None

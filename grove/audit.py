@@ -50,8 +50,10 @@ NOT_INCLUDED = {
     ),
 }
 
-# Scales the Audit page can project a run to: units of work per month.
-SCALES = (10_000, 100_000, 1_000_000)
+# Scales the Audit page can project a run to: MODEL CALLS a month, as the
+# reader's agents make them today. Calls, not units of work: a reader knows
+# their call volume, and it is the same unit whatever the work is.
+SCALES = (100_000, 1_000_000, 10_000_000)
 
 
 def _home(home: Optional[Path]) -> Path:
@@ -1370,7 +1372,29 @@ def _loop(home: Path, goal: str, run: Mapping[str, Any],
     }
 
 
-def project(goal_report: Mapping[str, Any], units_per_month: int) -> Dict[str, Any]:
+def project_calls(goal_report: Mapping[str, Any], calls_per_month: int) -> Dict[str, Any]:
+    """Project the run to a monthly volume stated in MODEL CALLS: "if your
+    agents make this many model calls a month today". The calls are what an
+    all-model month makes; the run's measured calls per model-decided unit
+    turn them into units of work, and :func:`project` does the rest. Adds the
+    per-call basis the page shows: measured cost and seconds per model call,
+    and the share of calls the serving keg avoids."""
+    model = goal_report["model_avg"]
+    per_unit = model.get("model_calls") or 0.0
+    units = (calls_per_month / per_unit) if per_unit else 0.0
+    out = project(goal_report, units)
+    out["calls"] = int(calls_per_month)
+    out["per_call"] = {
+        "calls_per_unit": per_unit or None,
+        "cost": (model["cost"] / per_unit) if per_unit and model.get("cost") is not None else None,
+        "seconds": ((model["seconds"] / per_unit)
+                    if per_unit and model.get("seconds") is not None else None),
+        "share_avoided": goal_report["coverage"]["share"],
+    }
+    return out
+
+
+def project(goal_report: Mapping[str, Any], units_per_month: float) -> Dict[str, Any]:
     """Project one goal's measured per-unit figures to a monthly volume.
 
     Three ways of doing the same volume of work, each from MEASURED per-unit
@@ -1380,7 +1404,7 @@ def project(goal_report: Mapping[str, Any], units_per_month: int) -> Dict[str, A
       ``with_keg``     — the serving keg takes the share it covers, at T0;
       ``all_frontier`` — every unit at the frontier tier's declared prices.
     """
-    n = int(units_per_month)
+    n = units_per_month
     model, keg = goal_report["model_avg"], goal_report["keg_avg"]
     share = goal_report["coverage"]["share"]
     keg_seconds = keg["seconds"] if keg["seconds"] is not None else 0.0
