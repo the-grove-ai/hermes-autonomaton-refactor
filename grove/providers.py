@@ -58,6 +58,8 @@ def route_for_agent(
     explicit_model: Optional[str] = None,
     tier_source: Optional[str] = None,
     classify: bool = True,
+    request: Optional[str] = None,
+    goal: Optional[str] = None,
 ) -> Optional[RoutingDecision]:
     """Consult the Cognitive Router for the tier an agent should run on.
 
@@ -99,6 +101,9 @@ def route_for_agent(
         complexity_signal=(
             classification.complexity_signal if classification else None
         ),
+        # What the turn is, established by the caller with no model.
+        request=request,
+        goal=goal,
     )
     # tier-ux: a /tier session override and a --tier flag both reach
     # route() as operator_tier and yield reason="operator_override".

@@ -147,7 +147,8 @@ class TestPreConstructionTiming:
         """
         import grove.providers as providers_mod
 
-        def fake_route_for_agent(*, message, explicit_model=None, explicit_tier=None, tier_source=None):
+        def fake_route_for_agent(*, message, explicit_model=None, explicit_tier=None, tier_source=None,
+                                 request=None, goal=None):
             providers_mod._last_classification = classification
             providers_mod._last_pre_route_decision = pre_route
             return decision
@@ -183,7 +184,8 @@ class TestPreConstructionTiming:
             pattern_cache_hit=False,
         )
 
-        def fake_route(*, message, explicit_model=None, explicit_tier=None, tier_source=None):
+        def fake_route(*, message, explicit_model=None, explicit_tier=None, tier_source=None,
+                       request=None, goal=None):
             import grove.providers as providers_mod
             providers_mod._last_classification = mock_classification_result
             providers_mod._last_pre_route_decision = None

@@ -3946,9 +3946,14 @@ class Dispatcher:
             current_pre_route_decision,
             resolve_tier_to_runtime,
         )
+        # What this turn IS, known with no model: a routing rule may match on
+        # it (``match: {request: goal}``), so a goal's own declared request is
+        # routed by declaration and not by how a classifier reads the sentence.
+        _request, _goal = self._turn_request(user_message)
         decision = route_for_agent(
             message=user_message, explicit_model=None,
             explicit_tier=self._take_reissue_tier(agent),
+            request=_request, goal=_goal,
         )
         if decision is None:
             # Vanilla install (no routing config) OR caller pre-set the
@@ -5899,6 +5904,26 @@ class Dispatcher:
         self._current_turn_escalation = {
             "attempts": pin["attempts"], "andon_id": pin["andon_id"]}
         return pin["tier"]
+
+    def _turn_request(self, user_message: Any) -> "Tuple[Optional[str], Optional[str]]":
+        """Recognition stage. ``(request kind, goal id)`` for this turn, from
+        facts established with no model: the session's goal, and whether the
+        message is that goal's own declared work request (the same phrase
+        match that opens the work). ``(None, goal)`` for any other message. A
+        fault is logged loud and the turn is routed on the classifier alone."""
+        goal = getattr(self, "_current_turn_isolation", None)
+        if not goal:
+            return None, None
+        try:
+            from grove.decision_work import asks_for_work, config_for_goal
+            from grove.router import REQUEST_GOAL
+            cfg = config_for_goal(str(goal))
+            mine = isinstance(user_message, str) and asks_for_work(user_message, cfg)
+            return (REQUEST_GOAL if mine else None), str(goal)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[grove.dispatcher] could not tell whether turn %s is goal %s's "
+                         "own request: %r", self._current_turn_id, goal, exc)
+            return None, str(goal)
 
     def _turn_hold(self) -> Optional[Dict[str, str]]:
         """Execution stage. The proposal this turn's session is held for, if

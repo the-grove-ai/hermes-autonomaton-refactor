@@ -241,6 +241,17 @@ class RoutingRule:
     intents: frozenset
     min_confidence: Optional[float]
     max_confidence: Optional[float]
+    # What the turn IS, known with no model (see REQUEST_KINDS), and which
+    # goal it belongs to. Matched like any other criterion; empty: not tested.
+    request: frozenset = frozenset()
+    goals: frozenset = frozenset()
+
+
+# The kinds of request a rule may match on. These are facts the Dispatcher
+# establishes deterministically, before and apart from the classifier:
+#   goal   the turn is a goal's own declared work request (its phrase matched).
+REQUEST_GOAL = "goal"
+REQUEST_KINDS = frozenset({REQUEST_GOAL})
 
 
 class CognitiveRouter:
@@ -358,6 +369,8 @@ class CognitiveRouter:
         zone: Optional[str] = None,
         operator_tier: Optional[str] = None,
         operator_model: Optional[str] = None,
+        request: Optional[str] = None,
+        goal: Optional[str] = None,
     ) -> RoutingDecision:
         """Select a cognitive tier for an interaction.
 
@@ -374,7 +387,9 @@ class CognitiveRouter:
 
         ``intent``, ``confidence`` and ``complexity_signal`` are the
         telemetry classifier's read of the request; the routing_rules
-        match against them. ``action`` is accepted for the telemetry
+        match against them. ``request`` and ``goal`` are what the turn IS,
+        established by the Dispatcher with no model (REQUEST_KINDS); a rule
+        may match on those too, alone or with the classifier's read. ``action`` is accepted for the telemetry
         record and is not matched on.
         """
         # 1. Operator tier override — forces a tier.
@@ -450,6 +465,8 @@ class CognitiveRouter:
                 intent=intent,
                 confidence=confidence,
                 complexity=complexity_signal,
+                request=request,
+                goal=goal,
             ):
                 continue
             if rule.action == "step_up":
@@ -724,6 +741,8 @@ def _rule_matches(
     intent: Optional[str],
     confidence: Optional[float],
     complexity: Optional[str],
+    request: Optional[str] = None,
+    goal: Optional[str] = None,
 ) -> bool:
     """True when every match criterion the rule declares is satisfied.
 
@@ -732,6 +751,10 @@ def _rule_matches(
     signal) counts as unsatisfied — an unclassifiable request never
     matches a rule that needs the classification.
     """
+    if rule.request and request not in rule.request:
+        return False
+    if rule.goals and goal not in rule.goals:
+        return False
     if rule.complexity and complexity not in rule.complexity:
         return False
     if rule.intents and intent not in rule.intents:
@@ -756,6 +779,18 @@ def _as_frozenset(value) -> frozenset:
     raise ValueError(f"expected a string or list of strings, got {value!r}")
 
 
+def _request_kinds(value, name: str) -> frozenset:
+    """A rule's ``match.request``: one or more of REQUEST_KINDS. Anything
+    else is refused at load, so a typo never silently matches nothing."""
+    kinds = _as_frozenset(value)
+    unknown = sorted(kinds - REQUEST_KINDS)
+    if unknown:
+        raise ValueError(
+            f"routing_rules.{name}.match.request has unknown value(s) {unknown}; "
+            f"it can be {sorted(REQUEST_KINDS)}")
+    return kinds
+
+
 def _as_float(value, label: str) -> Optional[float]:
     """Coerce a numeric YAML value to float; ``None`` passes through."""
     if value is None:
@@ -771,7 +806,7 @@ def _as_float(value, label: str) -> Optional[float]:
 # locked here — any name parses; only the SHAPE is constrained.
 _SET_TIER_RULE_KEYS = frozenset({"enabled", "target_tier", "match"})
 _SET_TIER_MATCH_KEYS = frozenset(
-    {"complexity", "intents", "min_confidence", "max_confidence"}
+    {"complexity", "intents", "min_confidence", "max_confidence", "request", "goals"}
 )
 _ESCALATION_RULE_KEYS = frozenset({"enabled", "action", "match"})
 _ESCALATION_MATCH_KEYS = frozenset({"intents", "max_confidence"})
@@ -904,6 +939,8 @@ def _parse_routing_rules(routing: dict, default_threshold: float) -> list:
                     match.get("max_confidence"),
                     f"routing_rules.{name}.match.max_confidence",
                 ),
+                request=_request_kinds(match.get("request"), name),
+                goals=_as_frozenset(match.get("goals")),
             )
         )
 
