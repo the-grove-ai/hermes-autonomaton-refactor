@@ -398,3 +398,36 @@ def test_the_command_line_does_the_same_two_things(node, capsys):
     assert cli.main(["restore", "before-month-3", "--now"]) == 0  # gateway stopped
     assert node.decided() == ["m21", "m22"]
     assert checkpoints.admin_log(limit=1)[0]["surface"] == "cli"
+
+
+def test_a_checkpoint_can_be_renamed_and_still_restores_exactly(node):
+    node.month()
+    checkpoints.save("before-month-3")
+    at_save = node.fingerprint(skip=("pattern_cache.db",))
+    renamed = checkpoints.rename("before-month-3", "run1-before-month-3", surface="test")
+    assert (renamed["name"], renamed["renamed_from"]) == ("run1-before-month-3", "before-month-3")
+    assert [m["name"] for m in checkpoints.listing()] == ["run1-before-month-3"]
+    assert checkpoints.verify("run1-before-month-3") == []        # its files were not touched
+    assert checkpoints.admin_log(limit=1)[0]["action"] == "renamed"
+    # The old name is free again, and the renamed one restores exactly.
+    node.month()
+    checkpoints.save("before-month-3")
+    assert _restore(node, "run1-before-month-3")["identical"] is True
+    assert node.fingerprint(skip=("pattern_cache.db",)) == at_save
+    for old, new in (("nope", "x"), ("run1-before-month-3", "before-month-3"),
+                     ("run1-before-month-3", "Bad Name")):
+        with pytest.raises(checkpoints.CheckpointRefused):
+            checkpoints.rename(old, new)
+
+
+def test_the_model_call_count_includes_the_call_that_writes_the_reply():
+    """Found live, 2026-10-07: the count was taken when the model asked for a
+    tool, so the last call of every turn was never counted."""
+    from types import SimpleNamespace
+
+    from grove.dispatcher import _completed_model_calls
+    assert _completed_model_calls(SimpleNamespace(_turn_call_ms=[7886, 2043, 2038]), 2) == 3
+    assert _completed_model_calls(SimpleNamespace(_turn_call_ms=[900]), 0) == 1   # a plain reply
+    assert _completed_model_calls(SimpleNamespace(_turn_call_ms=[]), 0) == 0      # no model ran
+    assert _completed_model_calls(SimpleNamespace(), 2) == 2                      # no list kept
+    assert _completed_model_calls(None, None) == 0

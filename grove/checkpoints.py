@@ -300,6 +300,30 @@ def save(name: str, note: str = "", *, home: Any = None, surface: str = "cli",
     return manifest
 
 
+def rename(old: str, new: str, *, home: Any = None, surface: str = "cli") -> Dict[str, Any]:
+    """Give a saved checkpoint another name. Its files are not touched; only
+    the folder and the name in its manifest change. Logged in the admin log."""
+    base = _home(home)
+    old, new = str(old or "").strip().lower(), str(new or "").strip().lower()
+    source, target = root(base) / old, root(base) / new
+    if not NAME_RE.fullmatch(old) or not (source / "manifest.json").exists():
+        raise CheckpointRefused(f"There is no checkpoint named {old}.")
+    if not NAME_RE.fullmatch(new):
+        raise CheckpointRefused(
+            "A checkpoint name is lower-case letters, digits and hyphens.")
+    if target.exists():
+        raise CheckpointRefused(f"A checkpoint named {new} already exists.")
+    if (pending_restore(base) or {}).get("name") == old:
+        raise CheckpointRefused(f"A restore of {old} is waiting; it cannot be renamed now.")
+    manifest = json.loads((source / "manifest.json").read_text(encoding="utf-8"))
+    manifest["name"], manifest["renamed_from"] = new, old
+    os.replace(source, target)
+    (target / "manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True, indent=1), encoding="utf-8")
+    _log(base, "renamed", name=new, renamed_from=old, surface=surface)
+    return manifest
+
+
 def listing(home: Any = None) -> List[Dict[str, Any]]:
     out = []
     base = root(home)

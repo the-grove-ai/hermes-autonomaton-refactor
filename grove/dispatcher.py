@@ -567,6 +567,19 @@ def _run_guarded_producer(
         _file_producer_failure(producer, exc)
 
 
+def _completed_model_calls(agent: Any, counted_at_tools: Any) -> int:
+    """How many model calls this turn completed.
+
+    The older count is taken when the model asks for a tool, so the last call
+    of a turn (the one that writes the reply, and asks for none) was never in
+    it: every model turn read one call low (found live, 2026-10-07). The agent
+    now lists each completed call's duration; the count is that list's length.
+    The older count stands only for an agent that keeps no such list."""
+    done = getattr(agent, "_turn_call_ms", None)
+    counted = int(counted_at_tools or 0)
+    return max(counted, len(done)) if isinstance(done, list) else counted
+
+
 def _t0_handback_why(response_text: Any) -> Optional[Dict[str, str]]:
     """Why a T0 pattern's tool handed the request back, when the tool said:
     ``{"kind", "rule"?, "key"?, "value"?}`` from the decline's own ``handback`` object. None for
@@ -3667,9 +3680,7 @@ class Dispatcher:
                 ) * 1000.0
 
             session_id = getattr(agent, "session_id", None) or "unknown"
-            api_calls = int(
-                self._current_turn_api_call_count or 0
-            )
+            api_calls = _completed_model_calls(agent, self._current_turn_api_call_count)
             model_used = getattr(agent, "model", None) or None
             if tier_override == "T0":
                 # No model ran. Name what answered instead of the model the

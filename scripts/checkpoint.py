@@ -4,6 +4,7 @@ list what is saved, and put a saved moment back.
 
     scripts/checkpoint.py save before-month-3 --note "months 1 and 2 done"
     scripts/checkpoint.py list
+    scripts/checkpoint.py rename before-month-3 run13-before-month-3
     scripts/checkpoint.py restore before-month-3          # applied when the gateway restarts
     scripts/checkpoint.py restore before-month-3 --now    # only with the gateway STOPPED
 
@@ -31,6 +32,9 @@ def main(argv=None) -> int:
     save.add_argument("--replace", action="store_true",
                       help="keep the earlier checkpoint of this name in the archive")
     sub.add_parser("list")
+    rename = sub.add_parser("rename")
+    rename.add_argument("name")
+    rename.add_argument("new_name")
     restore = sub.add_parser("restore")
     restore.add_argument("name")
     restore.add_argument("--now", action="store_true",
@@ -42,6 +46,9 @@ def main(argv=None) -> int:
             print(f"SAVED {saved['name']} at {saved['saved_at']}")
             for goal in saved.get("goals") or []:
                 print("  ", json.dumps(goal))
+        elif args.verb == "rename":
+            renamed = checkpoints.rename(args.name, args.new_name)
+            print(f"RENAMED {args.name} to {renamed['name']}")
         elif args.verb == "list":
             for m in checkpoints.listing():
                 print(f"{m.get('name'):<28} saved {str(m.get('saved_at'))[:19]}  {m.get('note') or ''}")
