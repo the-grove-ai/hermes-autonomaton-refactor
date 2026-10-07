@@ -1167,3 +1167,81 @@ def test_the_dispatcher_takes_the_pin_at_the_start_of_the_turn(tmp_path, monkeyp
     d._current_turn_pin = d._take_pin(None, "next")
     assert d._take_reissue_tier(None) == "T3"
     assert d._current_turn_escalation == {"attempts": [{"tier": "T2"}], "andon_id": "a1"}
+
+
+# ── a backlog in stages: one release, one batch, one period each ──────
+
+
+def _staged(env, tmp_path):
+    work = env.work(session=BATCH)
+    stages = []
+    for label, items in (("Month 2", ((21, "billing"), (22, "legal"))),
+                         ("Month 3", ((31, "outage"), (32, "billing"), (33, "press")))):
+        folder = tmp_path / label.replace(" ", "").lower()
+        folder.mkdir()
+        for n, channel in items:
+            (folder / f"m{n}.txt").write_text(channel)
+        stages.append((folder, label))
+    cfg = work.config.__class__(**{**work.config.__dict__, "backlog": stages[0][0],
+                                   "backlog_stages": tuple(stages)})
+    return DecisionWork(cfg), cfg
+
+
+def test_a_staged_backlog_is_released_one_stage_at_a_time(env, tmp_path):
+    work, cfg = _staged(env, tmp_path)
+    state = dw.backlog_state(cfg)
+    assert (state["items"], state["released"]) == (5, 0)
+    assert [(s["label"], s["items"], s["released"]) for s in state["stages"]] == [
+        ("Month 2", 2, 0), ("Month 3", 3, 0)]
+    assert dw.next_backlog_stage(cfg)["label"] == "Month 2"
+    assert dw.release_backlog(cfg) == 2                          # the first stage only
+    assert sorted(p.stem for p in work.queue_items()) == ["m21", "m22"]
+    assert dw.next_backlog_stage(cfg)["label"] == "Month 3"
+    assert dw.release_backlog(cfg) == 3 and len(work.queue_items()) == 5
+    assert dw.next_backlog_stage(cfg) is None and dw.release_backlog(cfg) == 0
+    assert dw.withhold_backlog(cfg) == 5 and work.queue_items() == []   # every stage, back out
+
+
+def test_one_batch_per_stage_however_many_keg_passes_it_takes(env, tmp_path):
+    work, cfg = _staged(env, tmp_path)
+    _serve_keg()
+    dw.release_backlog(cfg)                                      # Month 2 arrives
+    first = work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    month2 = first["batch"]["batch"]
+    assert first["batch"]["coded"] == 1 and month2
+    # The exception goes to a model and is confirmed; then a second keg pass
+    # inside the same month does not begin a new batch.
+    reissue.take("sess")
+    env.propose(work, tag="other")
+    work.decide(decision="confirm", provenance=env.prov())
+    reissue.take("sess")
+    (cfg.queue / "m23.txt").write_text("billing")                # a late arrival, same month
+    again = work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    assert again["batch"]["batch"] == month2
+    # A newly released stage begins another.
+    dw.release_backlog(cfg)                                      # Month 3 arrives
+    third = work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    month3 = third["batch"]["batch"]
+    assert month3 and month3 != month2 and third["batch"]["coded"] == 2
+    batches = [r["batch"] for r in work.log.run_records() if r["kind"] == "proposed"]
+    assert batches == [month2, month2, month2, month3, month3]
+
+
+def test_backlog_stages_are_declared_and_a_bare_folder_is_one_stage(tmp_path):
+    def cfg(backlog):
+        goal = _goal(tmp_path, BATCH)
+        goal.extra["decision_work"]["backlog"] = backlog
+        return dw.load_config(goal)
+
+    assert cfg("later").backlog_stages == ((tmp_path / "later", "Month 2"),)
+    staged = cfg([{"folder": "m2", "label": "Month 2 · production"},
+                  {"folder": "m3", "label": "Month 3 · production"}])
+    assert [label for _f, label in staged.backlog_stages] == [
+        "Month 2 · production", "Month 3 · production"]
+    assert staged.backlog == tmp_path / "m2"
+    for bad, why in (([{"folder": "m2"}], "needs a folder and a label"),
+                     ([{"folder": "a", "label": "X"}, {"folder": "b", "label": "X"}],
+                      "labels must be different"),
+                     (7, "a folder or a list of stages")):
+        with pytest.raises(ValueError, match=why):
+            cfg(bad)

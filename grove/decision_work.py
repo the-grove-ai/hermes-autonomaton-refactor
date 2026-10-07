@@ -296,6 +296,10 @@ class DecisionWorkConfig:
     # Optional: a folder of further items that are NOT in the queue until
     # they are released into it (work that "arrives later" — a backlog).
     backlog: Optional[Path] = None
+    # The backlog as STAGES, released one at a time, in order: (folder, label).
+    # A single ``backlog: <folder>`` is one stage. Each stage is a period on
+    # the goal's reports ("Month 2", "Month 3").
+    backlog_stages: Tuple[Tuple[Path, str], ...] = ()
     # See SESSION_MEMORY_*.
     session_memory: str = SESSION_MEMORY_RECORDS_ONLY
     adaptation: Adaptation = field(default_factory=Adaptation)
@@ -491,6 +495,7 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         )
 
     adaptation = _load_adaptation(raw.get("adaptation"), str(goal.id), session)
+    stages = _load_backlog(raw.get("backlog"), str(goal.id), root, session)
 
     resolved = getattr(goal, "resolved_sources", None)
     cfg = DecisionWorkConfig(
@@ -508,12 +513,36 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         on_unclean=on_unclean,
         item_name=item_name,
         work_session=session,
-        backlog=(_resolve(root, raw["backlog"]) if raw.get("backlog") else None),
+        backlog=(stages[0][0] if stages else None),
+        backlog_stages=stages,
         session_memory=session_memory,
         adaptation=adaptation,
         ticket_model=_load_ticket_model(raw.get("ticket_model"), str(goal.id)),
     )
     return _with_learned(cfg)
+
+
+def _load_backlog(raw: Any, goal_id: str, root: Path,
+                  session: WorkSession) -> Tuple[Tuple[Path, str], ...]:
+    """The goal's backlog as stages. ``backlog: <folder>`` is one stage named
+    by the work session's batch label; a list gives each stage its folder and
+    its own label, in the order they are released."""
+    if not raw:
+        return ()
+    if isinstance(raw, str):
+        return ((_resolve(root, raw), session.batch_label),)
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError(f"goal {goal_id!r}: backlog must be a folder or a list of stages")
+    stages = []
+    for entry in raw:
+        if (not isinstance(entry, Mapping) or not isinstance(entry.get("folder"), str)
+                or not isinstance(entry.get("label"), str) or not entry["label"].strip()):
+            raise ValueError(
+                f"goal {goal_id!r}: each backlog stage needs a folder and a label")
+        stages.append((_resolve(root, entry["folder"]), entry["label"].strip()))
+    if len({label for _folder, label in stages}) != len(stages):
+        raise ValueError(f"goal {goal_id!r}: backlog stage labels must be different")
+    return tuple(stages)
 
 
 def _load_ticket_model(raw: Any, goal_id: str) -> Optional[TicketModel]:
@@ -991,25 +1020,71 @@ def _operator_said(provenance: Optional[Mapping[str, Any]],
 # ── starting over, and work that arrives later ────────────────────────
 
 
+def _stages(cfg: "DecisionWorkConfig") -> Tuple[Tuple[Path, str], ...]:
+    """The goal's backlog stages; a bare ``backlog`` folder is one stage."""
+    if cfg.backlog_stages:
+        return cfg.backlog_stages
+    if cfg.backlog is not None:
+        return ((cfg.backlog, cfg.work_session.batch_label),)
+    return ()
+
+
+def _stage_files(folder: Path) -> set:
+    if not folder.is_dir():
+        return set()
+    return {p.name for p in folder.iterdir() if p.is_file() and not p.name.startswith(".")}
+
+
 def backlog_state(cfg: "DecisionWorkConfig") -> Dict[str, Any]:
-    """Where the goal's backlog stands: how many items it holds, and how many
-    of those are in the queue now."""
-    if cfg.backlog is None or not cfg.backlog.is_dir():
-        return {"declared": cfg.backlog is not None, "items": 0, "released": 0}
-    names = {p.name for p in cfg.backlog.iterdir() if p.is_file() and not p.name.startswith(".")}
-    queued = {p.name for p in cfg.queue.iterdir() if p.is_file()} if cfg.queue.is_dir() else set()
-    return {"declared": True, "items": len(names), "released": len(names & queued)}
+    """Where the goal's backlog stands: how many items it holds and how many
+    of those are in the queue now — in all, and stage by stage when the
+    backlog is staged."""
+    stages = _stage_states(cfg)
+    out: Dict[str, Any] = {
+        "declared": bool(stages),
+        "items": sum(s["items"] for s in stages),
+        "released": sum(s["released"] for s in stages),
+    }
+    if len(stages) > 1:
+        out["stages"] = stages         # only when the backlog is staged
+    return out
+
+
+def _stage_states(cfg: "DecisionWorkConfig") -> List[Dict[str, Any]]:
+    queued = ({p.name for p in cfg.queue.iterdir() if p.is_file()}
+              if cfg.queue.is_dir() else set())
+    out = []
+    for index, (folder, label) in enumerate(_stages(cfg)):
+        names = _stage_files(folder)
+        out.append({"index": index, "label": label, "items": len(names),
+                    "released": len(names & queued)})
+    return out
+
+
+def next_backlog_stage(cfg: "DecisionWorkConfig") -> Optional[Dict[str, Any]]:
+    """The first backlog stage not yet fully in the queue — the one a release
+    would put there — or None when every stage is."""
+    for stage in _stage_states(cfg):
+        if stage["items"] and stage["released"] < stage["items"]:
+            return stage
+    return None
 
 
 def release_backlog(cfg: "DecisionWorkConfig") -> int:
-    """Put the backlog's items into the queue (copies; the backlog keeps its
-    own). Returns how many were added. Items already there are left alone."""
+    """Put the NEXT backlog stage's items into the queue (copies; the backlog
+    keeps its own). One stage at a time, in the declared order. Returns how
+    many were added; 0 when every stage is already in the queue."""
     import shutil
 
-    if cfg.backlog is None or not cfg.backlog.is_dir():
+    stages = _stages(cfg)
+    if not stages or not any(f.is_dir() for f, _ in stages):
         raise ValueError(f"goal {cfg.goal_id!r} declares no backlog folder")
+    upcoming = next_backlog_stage(cfg)
+    if upcoming is None:
+        return 0
+    folder = stages[upcoming["index"]][0]
     added = 0
-    for path in sorted(cfg.backlog.iterdir()):
+    for path in sorted(folder.iterdir()):
         target = cfg.queue / path.name
         if path.is_file() and not path.name.startswith(".") and not target.exists():
             shutil.copy2(path, target)
@@ -1021,16 +1096,16 @@ def release_backlog(cfg: "DecisionWorkConfig") -> int:
 
 
 def withhold_backlog(cfg: "DecisionWorkConfig") -> int:
-    """Take the backlog's items back out of the queue: only files the backlog
-    folder itself holds, never anything else. Returns how many were removed."""
-    if cfg.backlog is None or not cfg.backlog.is_dir():
-        return 0
+    """Take the backlog's items back out of the queue, every stage: only
+    files a backlog folder itself holds, never anything else. Returns how
+    many were removed."""
     removed = 0
-    for path in cfg.backlog.iterdir():
-        target = cfg.queue / path.name
-        if path.is_file() and target.is_file():
-            target.unlink()
-            removed += 1
+    for folder, _label in _stages(cfg):
+        for name in _stage_files(folder):
+            target = cfg.queue / name
+            if target.is_file():
+                target.unlink()
+                removed += 1
     return removed
 
 
@@ -1738,6 +1813,7 @@ class DecisionWork:
 
     def batch_pass(
         self, provenance: Optional[Mapping[str, Any]], inputs_for: Any,
+        new_stage: bool = True,
     ) -> Dict[str, Any]:
         """Decide every queued item the serving keg covers, at once and with
         no model, each recorded as ACCEPTED under the keg's own authority.
@@ -1770,7 +1846,10 @@ class DecisionWork:
             out["reason"] = "not_green"
             return out
         run = self._run()
-        batch_id = uuid.uuid4().hex
+        # One batch per backlog stage. A further keg pass inside the same stage
+        # (after a new rule is signed, say) continues that stage's batch; only
+        # a newly released stage begins another.
+        batch_id = (None if new_stage else self.current_batch()) or uuid.uuid4().hex
         out["batch"] = batch_id
         for path in todo:
             try:
@@ -2266,8 +2345,10 @@ class DecisionWork:
             raise DecisionRefused(
                 "no_reader", "This goal's tool did not say how to read its items.")
         from grove import reissue
-        reissue.goal_note(self.config.goal_id, take=True)     # the pass runs once
-        result = self.batch_pass(provenance, inputs_for)
+        released = reissue.goal_note(self.config.goal_id, take=True)   # the pass runs once
+        result = self.batch_pass(
+            provenance, inputs_for,
+            new_stage=bool(released) or self.current_batch() is None)
         one, many = self.config.item_name
         total, coded, left = result["total"], result["coded"], result["left"]
         if result["reason"] == "no_keg":

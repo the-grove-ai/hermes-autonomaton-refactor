@@ -880,3 +880,54 @@ def test_volume_is_stated_in_model_calls_and_scaled_from_the_measured_per_call_b
     empty = audit.project_calls({**g, "model_avg": {"cost": None, "seconds": None,
                                                     "model_calls": None, "tokens": None}}, 1000)
     assert empty["avoided"]["cost"] is None and empty["per_call"]["cost"] is None
+
+
+def test_the_scorecard_computes_over_as_many_periods_as_the_run_has():
+    from grove.api import fragments
+
+    def unit(order, keg, cost, batch=None):
+        return {"order": order, "keg": keg, "batch": batch, "confirmed": not keg,
+                "accepted": keg, "corrected": False, "item_id": f"i{order}",
+                "deciding": {"model_calls": 0 if keg else 2, "cost": cost, "seconds": 1.0,
+                             "priced": True}}
+
+    # Month 1: 4 by a model. Month 2: 2 model, 2 keg. Month 3: 1 model, 3 keg.
+    units = ([unit(n, False, 0.010) for n in range(1, 5)]
+             + [unit(5, True, 0.0, "B2"), unit(6, True, 0.0, "B2"),
+                unit(7, False, 0.010, "B2"), unit(8, False, 0.010, "B2")]
+             + [unit(9, True, 0.0, "B3"), unit(10, True, 0.0, "B3"),
+                unit(11, True, 0.0, "B3"), unit(12, False, 0.008, "B3")])
+    shown = {"before_label": "Month 1 · learning",
+             "stage_labels": ["Month 2 · production", "Month 3 · production"]}
+    periods = audit._periods(units, shown)
+    assert [(p["label"], p["units"], p["model_units"], p["keg_units"]) for p in periods] == [
+        ("Month 1 · learning", 4, 4, 0), ("Month 2 · production", 4, 2, 2),
+        ("Month 3 · production", 4, 1, 3)]
+    assert [p.get("batch") for p in periods] == [None, "B2", "B3"]
+    # The all-model rate is still the first period's; every period is priced against it.
+    assert all(p["baseline_rate"] == pytest.approx(0.010) for p in periods)
+    assert periods[2]["cost_per_unit"] == pytest.approx(0.002)
+    # More stages than labels: the rest are numbered, never mislabeled.
+    assert [p["label"] for p in audit._periods(units, {"batch_label": "Batch"})] == [
+        "Before the batch", "Batch", "Batch 2"]
+
+    h = audit._headline(periods, {"key": "vendor", "new": 1, "judgment": 0, "other": 0},
+                        ("invoice", "invoices"))
+    assert h["lead"] == "Month 3: the signed rule handled 3 of 4 invoices. No model call."
+    assert h["first"] == ("Month 1 needed a model on 4 of 4 (100%). Month 2 needed one on "
+                          "2 of 4 (50%).")
+    assert h["second"] == "Month 3 needed one on 1 of 4 (25%), all new vendors."
+    assert (h["cost_before"], h["cost_batch"]) == (pytest.approx(0.010), pytest.approx(0.002))
+    # The rate row compares the latest period with the one before it.
+    row = fragments._rate_row_html({"item_name": ("invoice", "invoices"), "periods": periods})
+    for text in ("Month 3 · production", "$2.00<span", "Versus month 2", "↓ 60%",
+                 "$3.00 less per 1,000", "Month 2 · production", "$5.00"):
+        assert text in row, text
+    # The chart marks the start of each later period.
+    g = {"units": [{**u, "label": "", "tier": "T1", "by": "m", "served": {}, "final": {},
+                    "keg_version": 2 if u["keg"] else None, "decision": "confirm",
+                    "confirming": None} for u in units],
+         "item_name": ("invoice", "invoices"), "events": [], "periods": periods}
+    chart = fragments._scorecard_chart_html(g, "0")
+    assert chart.count("sc-boundary") == 2
+    assert "Month 2 · production</span>" in chart and "Month 3 · production</span>" in chart

@@ -875,7 +875,11 @@ def _periods(units: List[Dict[str, Any]], shown: Mapping[str, Any]) -> List[Dict
     The all-model baseline is the item count times the FIRST period's measured
     cost per model-decided item (not its plain average, which already includes
     the items its keg served and would understate the baseline)."""
-    if not any(u["batch"] for u in units):
+    batches: List[str] = []
+    for u in units:
+        if u["batch"] and u["batch"] not in batches:
+            batches.append(u["batch"])
+    if not batches:
         return []
     first = [u for u in units if not u["batch"]]
     first_model = [u for u in first if not u["keg"]]
@@ -926,10 +930,19 @@ def _periods(units: List[Dict[str, Any]], shown: Mapping[str, Any]) -> List[Dict
             "of": n,
         }
 
-    return [
-        _one(shown.get("before_label") or "Before the batch", first),
-        _one(shown.get("batch_label") or "Batch", [u for u in units if u["batch"]]),
-    ]
+    # One period before any batch, then one per batch in the order they began
+    # (a batch is a released backlog stage). Labels come from the goal's own
+    # declaration, stage by stage.
+    stage_labels = list(shown.get("stage_labels") or [])
+    base = shown.get("batch_label") or "Batch"
+    out = [_one(shown.get("before_label") or "Before the batch", first)]
+    for index, batch in enumerate(batches):
+        label = (stage_labels[index] if index < len(stage_labels)
+                 else base if index == 0 else f"{base} {index + 1}")
+        period = _one(label, [u for u in units if u["batch"] == batch])
+        period["batch"] = batch
+        out.append(period)
+    return out
 
 
 def _open_items(goal: str, records: List[Dict[str, Any]]) -> int:
@@ -990,11 +1003,12 @@ def _why_model(goal: str, units: List[Dict[str, Any]], records: List[Dict[str, A
     except Exception:  # noqa: BLE001 — the reasons are extra; the counts stand
         return out
     inputs = {r["item_id"]: r.get("inputs") or {} for r in records if r.get("kind") == "proposed"}
+    last = next((u["batch"] for u in reversed(units) if u["batch"]), None)
     seen = {_norm_key(inputs.get(u["item_id"], {}).get(key_input))
-            for u in units if not u["batch"]}
+            for u in units if u["batch"] != last}
     out["key"] = key_input
     for u in units:
-        if not u["batch"] or u["keg"]:
+        if u["batch"] != last or u["keg"]:
             continue
         given = inputs.get(u["item_id"], {})
         key = _norm_key(given.get(key_input))
@@ -1016,14 +1030,14 @@ def _pct(part: int, whole: int) -> str:
 
 def _headline(periods: List[Dict[str, Any]], why: Mapping[str, Any],
               item_name: Any) -> Optional[Dict[str, Any]]:
-    """The scorecard's opening, computed: what the signed rule handled in the
-    batch, how many items needed a model in each period (count, then whole
-    percent), and why the batch's did. Nothing here is asserted that the
-    counts do not show. ``same`` is whether the two periods needed a model
-    about equally often (within SAME_BAND)."""
-    if len(periods) != 2:
+    """The scorecard's opening, computed over however many periods the run
+    has: what the signed rule handled in the LATEST one, how many items needed
+    a model in each (count, then whole percent), and why the latest one's did.
+    Nothing here is asserted that the counts do not show. ``same`` is whether
+    the last two periods needed a model about equally often (SAME_BAND)."""
+    if len(periods) < 2:
         return None
-    before, batch = periods
+    before, batch = periods[0], periods[-1]
     one, many = item_name
 
     def short(period: Mapping[str, Any]) -> str:
@@ -1040,6 +1054,10 @@ def _headline(periods: List[Dict[str, Any]], why: Mapping[str, Any],
     a, b = before["model_units"], batch["model_units"]
     first = (f"{short(before)} needed a model on {a} of {before['units']} "
              f"({_pct(a, before['units'])}).")
+    # Every period between the first and the latest, one short sentence each.
+    for middle in periods[1:-1]:
+        first += (f" {short(middle)} needed one on {middle['model_units']} of "
+                  f"{middle['units']} ({_pct(middle['model_units'], middle['units'])}).")
     second = (f"{short(batch)} needed one on {b} of {batch['units']} "
               f"({_pct(b, batch['units'])})")
     explained = why.get("new", 0) + why.get("judgment", 0)
@@ -1056,10 +1074,11 @@ def _headline(periods: List[Dict[str, Any]], why: Mapping[str, Any],
                    f"{why['other']} neither.")
     else:
         second += "."
+    prior = periods[-2]["model_units"]
     return {
         "lead": lead, "first": first, "second": second,
         "cost_before": before["cost_per_unit"], "cost_batch": batch["cost_per_unit"],
-        "same": a > 0 and abs(b - a) / a <= SAME_BAND,
+        "same": prior > 0 and abs(b - prior) / prior <= SAME_BAND,
         "all_explained": all_explained, "complete": still <= 0,
     }
 
@@ -1222,6 +1241,8 @@ def _presentation(goal: str) -> Dict[str, Any]:
         "before_label": cfg.work_session.before_label,
         "batch_label": cfg.work_session.batch_label,
         "ticket_model": cfg.ticket_model,
+        # One label per backlog stage, in release order: the run's later periods.
+        "stage_labels": [label for _folder, label in cfg.backlog_stages],
     }
 
 

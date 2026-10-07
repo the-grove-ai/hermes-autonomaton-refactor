@@ -4892,9 +4892,12 @@ def _scorecard_chart_html(g, key: str) -> str:
         if event["before"] is not None:
             before.setdefault(event["before"], []).append(_sc_event_label(event))
     # The period boundary: a marker and label before the first item of the batch.
-    boundary = next((u["order"] for u in units if u.get("batch")), None)
-    if boundary is not None and (g.get("periods") or [None, None])[1]:
-        before.setdefault(boundary, []).insert(0, g["periods"][1]["label"])
+    boundaries = set()
+    for period in (g.get("periods") or [])[1:]:
+        start = next((u["order"] for u in units if u.get("batch") == period.get("batch")), None)
+        if start is not None:
+            boundaries.add(start)
+            before.setdefault(start, []).insert(0, period["label"])
     target = f"sc-detail-{key}"
     bars, row = [], 0
     for u in units:
@@ -4921,7 +4924,7 @@ def _scorecard_chart_html(g, key: str) -> str:
                 labels += (f'<span class="sc-event-label {side}" '
                            f'style="top:{6 + (row % 3) * 18}px">{_esc(text)}</span>')
                 row += 1
-            solid = " sc-boundary" if u["order"] == boundary else ""
+            solid = " sc-boundary" if u["order"] in boundaries else ""
             marker = f'<span class="sc-event-line{solid}"></span>{labels}'
         chip = (f'<span class="sc-chip">KEG v{_esc(u["keg_version"])}</span>'
                 if u["keg"] else "")
@@ -4966,9 +4969,9 @@ def _rate_row_html(g) -> str:
     from grove import audit as audit_mod
 
     periods = g.get("periods") or []
-    if len(periods) != 2:
+    if len(periods) < 2:
         return ""
-    before, batch = periods
+    before, batch = periods[-2], periods[-1]      # the latest period against the one before
     a, b = before["cost_per_unit"], batch["cost_per_unit"]
     if a is None or b is None or not a:
         return ""
@@ -5449,8 +5452,10 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                 + '.</div></div>')
         rate = g["periods"][0]["baseline_rate"]
         periods = (
-            f'<section class="sc-panel"><h3>{_esc(g["periods"][0]["label"])} against '
-            f'{_esc(g["periods"][1]["label"])}</h3><div class="sc-catches">{cols}</div>'
+            f'<section class="sc-panel"><h3>'
+            + (f'{_esc(g["periods"][0]["label"])} against {_esc(g["periods"][1]["label"])}'
+               if len(g["periods"]) == 2 else "Period by period")
+            + f'</h3><div class="sc-catches">{cols}</div>'
             f'<p class="sc-foot">Months are counted separately. Keg decisions without '
             f'review are not treated as confirmed. '
             + (f'All-model rate: {_rate(rate)} per {RATE_PER:,}, what model-decided '
@@ -5977,11 +5982,17 @@ def _demo_panel_html(note: str = "") -> str:
             state += (f" · backlog: {backlog['items']} {many}, "
                       + ("all in the queue" if not waiting else f"{waiting} not yet released"))
             if waiting:
+                # A staged backlog is released one stage at a time, in order.
+                from grove.decision_work import next_backlog_stage
+                stage = next_backlog_stage(cfg) or {}
+                staged = len(backlog.get("stages") or []) > 1
+                label = (f'Release {stage.get("label")} '
+                         f'({stage.get("items", 0) - stage.get("released", 0)} {many})'
+                         if staged else f'Release the backlog ({waiting} {many})')
                 release = (
                     f'<button type="button" class="sc-back-btn" '
                     f'hx-post="/portal/actions/demo/{_esc(cfg.goal_id)}/release" '
-                    f'hx-target="#audit-page" hx-swap="outerHTML">'
-                    f'Release the backlog ({waiting} {_esc(many)})</button>')
+                    f'hx-target="#audit-page" hx-swap="outerHTML">{_esc(label)}</button>')
         rows += (
             f'<div class="sc-version"><div class="sc-version-head"><strong>'
             f'{_esc(cfg.keg.name if cfg.keg else cfg.goal_id)}</strong>'
