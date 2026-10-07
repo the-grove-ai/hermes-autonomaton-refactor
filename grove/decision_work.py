@@ -154,6 +154,16 @@ class EvidenceRule:
     # confirmed by the operator with the same output, and none revised. The
     # operator's own confirmations are the evidence. None: not declared.
     confirmed_key_threshold: Optional[int] = None
+    # A third way: a NEW key that is an existing key under another name (a
+    # sender that was renamed, an account that changed hands).
+    # ``alias_confirmations``
+    # operator-confirmed decisions, plus an identity match the goal declares:
+    # an input that is the SAME on the new key's item as on the existing
+    # key's items (``alias_same``), or an input whose text NAMES the existing
+    # key (``alias_names``). None: not declared.
+    alias_confirmations: Optional[int] = None
+    alias_same: Tuple[str, ...] = ()
+    alias_names: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -398,8 +408,31 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
                     or ck_threshold < 1):
                 raise ValueError(
                     f"goal {goal.id!r}: evidence.confirmed_key needs a threshold of 1 or more")
+        alias = ev_raw.get("alias")
+        alias_n, alias_same, alias_names = None, (), ()
+        if alias is not None:
+            where = f"goal {goal.id!r}: evidence.alias"
+            if not isinstance(alias, Mapping):
+                raise ValueError(f"{where} must be a mapping")
+            alias_n = alias.get("confirmations")
+            if not isinstance(alias_n, int) or isinstance(alias_n, bool) or alias_n < 1:
+                raise ValueError(f"{where} needs confirmations of 1 or more")
+
+            def _named(key: str) -> Tuple[str, ...]:
+                names = alias.get(key) or ()
+                if not isinstance(names, (list, tuple)) or not all(
+                        isinstance(n, str) and n in inputs for n in names):
+                    raise ValueError(f"{where}.{key} must list declared inputs")
+                return tuple(names)
+
+            alias_same, alias_names = _named("same"), _named("names")
+            if not (alias_same or alias_names):
+                raise ValueError(
+                    f"{where} needs an identity match: an input under 'same' or 'names'")
         evidence = EvidenceRule(threshold=threshold, scope=scope,
-                                confirmed_key_threshold=ck_threshold)
+                                confirmed_key_threshold=ck_threshold,
+                                alias_confirmations=alias_n, alias_same=alias_same,
+                                alias_names=alias_names)
 
     isolation = raw.get("isolation")
     if isolation not in (None, ISOLATION_SOURCES_ONLY):
@@ -1018,6 +1051,11 @@ def _operator_said(provenance: Optional[Mapping[str, Any]],
 
 
 # ── starting over, and work that arrives later ────────────────────────
+
+
+def _quoted(value: Any) -> str:
+    """A value as a keg condition writes it (single-quoted)."""
+    return "'" + str(value).replace("\\", "\\\\").replace("'", "\\'") + "'"
 
 
 def _stages(cfg: "DecisionWorkConfig") -> Tuple[Tuple[Path, str], ...]:
@@ -2523,6 +2561,94 @@ class DecisionWork:
             return out
         out.update(evidence=rows, output=next(iter(answers.values())),
                    met=len(rows) >= rule.confirmed_key_threshold)
+        return out
+
+    def alias_evidence(self, key: Any) -> Dict[str, Any]:
+        """Count this run's evidence that ``key`` is an existing key under
+        another name, per the goal's declared ``alias`` rule. Jidoka reads
+        this; it flags, it never fixes.
+
+        Met when ALL of these hold: the reference table does not list ``key``
+        and the serving keg does not answer it; a model decided its items and
+        the operator confirmed at least the declared number, none revised;
+        exactly ONE key the serving keg answers by a plain rule is identified
+        with it (a declared input is the same on both, or a declared input's
+        text names that key); and what the operator confirmed is exactly what
+        the keg answers for that key. Two candidates, or a different answer,
+        and there is no alias."""
+        from grove import keg as keg_mod
+
+        rule, ref_spec = self.config.evidence, self.config.reference
+        out: Dict[str, Any] = {"met": False, "confirmations": 0, "evidence": [],
+                               "same_as": None, "identity": [], "output": None}
+        if (rule is None or ref_spec is None or not rule.alias_confirmations
+                or key in (None, "")):
+            return out
+        serving = self.serving_keg()
+        if serving is None or ReferenceTable(ref_spec).values(key):
+            return out
+        spec, key_input = serving[0], ref_spec.key_input
+        proposed, decided = self._state()
+        mine: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+        others: Dict[str, List[Dict[str, Any]]] = {}
+        for record in proposed.values():
+            verdict = decided.get(record["id"])
+            if verdict is None:
+                continue
+            item_key = record["inputs"].get(key_input)
+            if _norm_key(item_key) == _norm_key(key):
+                if verdict["decision"] == DECISION_CORRECT:
+                    return out                # the operator revised one: no pattern
+                if not record.get("keg") and verdict["decision"] == DECISION_CONFIRM:
+                    mine.append((record, verdict))
+            else:
+                others.setdefault(str(item_key), []).append(record)
+        out["confirmations"] = len(mine)
+        if len(mine) < rule.alias_confirmations:
+            return out
+        answers = {json.dumps(dict(v.get("output") or r["output"]), sort_keys=True)
+                   for r, v in mine}
+        if len(answers) != 1:
+            return out
+        confirmed = json.loads(next(iter(answers)))
+        # Keys the serving keg answers with a plain "key == value" rule.
+        plain = {}
+        for condition in spec.get("conditions") or []:
+            text = str(condition.get("if") or "")
+            if condition.get("defer") or "then" not in condition:
+                continue
+            for other in others:
+                if text == f"{key_input} == {_quoted(other)}":
+                    plain[other] = dict(condition["then"])
+        candidates: Dict[str, List[Dict[str, Any]]] = {}
+        for record, _verdict in mine:
+            for other, then in plain.items():
+                for name in rule.alias_same:
+                    value = str(record["inputs"].get(name) or "").strip()
+                    if value and any(
+                            str(r["inputs"].get(name) or "").strip() == value
+                            for r in others[other]):
+                        candidates.setdefault(other, []).append(
+                            {"kind": "same", "input": name, "value": value})
+                for name in rule.alias_names:
+                    text = str(record["inputs"].get(name) or "")
+                    if text and _norm_key(other) in _norm_key(text):
+                        candidates.setdefault(other, []).append(
+                            {"kind": "names", "input": name, "text": text[:300]})
+        if len(candidates) != 1:
+            return out                        # none, or ambiguous: never guessed
+        same_as = next(iter(candidates))
+        if plain[same_as] != confirmed:
+            return out                        # the operator answered it differently
+        identity = []
+        for found in candidates[same_as]:
+            if found not in identity:
+                identity.append(found)
+        out.update(
+            met=True, same_as=same_as, identity=identity, output=confirmed,
+            evidence=[{"item_id": r["item_id"], "turn_id": r.get("turn_id"),
+                       "turn_uid": r.get("turn_uid"), "decided_id": v["id"]}
+                      for r, v in mine])
         return out
 
     def evidence(self) -> Dict[str, Any]:

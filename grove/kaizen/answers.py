@@ -511,6 +511,49 @@ def _confirmed_key(andon: Mapping[str, Any], context: Any) -> Answer:
     )
 
 
+def _key_alias(andon: Mapping[str, Any], context: Any) -> Answer:
+    """A new key is an existing key under another name, on the goal's declared
+    evidence. Propose a rule that answers it the same way — with the identity
+    match and the confirmation stated — for the operator's signature in the
+    portal. Never applied by the system, whatever the confidence."""
+    from grove.kaizen import standard_work
+
+    details = andon.get("details") or {}
+    work = _work(context, andon)
+    key, same_as, output = details.get("key"), details.get("same_as"), details.get("output")
+    if work is None or work.config.keg is None or not (key and same_as and output):
+        return watch_unresolved(andon, context)
+    grounds = []
+    for found in details.get("identity") or []:
+        if found.get("kind") == "same":
+            grounds.append(f"same {str(found.get('input')).replace('_', ' ')} "
+                           f"({found.get('value')})")
+        else:
+            grounds.append(f"the item's {str(found.get('input')).replace('_', ' ')} "
+                           f"names {same_as!r}")
+    n = int(details.get("confirmations") or 0)
+    because = (f"the same as {same_as!r}. Identity: " + "; ".join(grounds)
+               + f". You confirmed it {n} time{'' if n == 1 else 's'}")
+    out = standard_work.propose_direct_rule(
+        work, andon, key=key, corrected=output, how="confirmed", because=because)
+    if out.get("status") == "proposed":
+        return Answer(
+            kind=KIND_STANDARD_WORK,
+            summary=(
+                f"{key!r} looks like {same_as!r} under another name ("
+                + "; ".join(grounds) + f"), and you confirmed the same answer. Proposed "
+                f"v{out.get('version')} answering it the same way, for your signature. "
+                + replay_summary(out)
+            ),
+            artifact=out.get("proposal_id"), detail={**out, "alias_of": same_as},
+        )
+    return watch(
+        andon, signature={"key": key, "same_as": same_as, "status": out.get("status")},
+        description=str(out.get("detail") or out.get("status")),
+        promote_after=_UNREADABLE_PROMOTE_AFTER,
+    )
+
+
 def _phrase_reading(andon: Mapping[str, Any], context: Any) -> Answer:
     """A model read the operator's phrase as a verb the work session already
     has. Below the declared threshold: watch. At it: ask the operator, in
@@ -569,6 +612,7 @@ _ANSWERS: Dict[str, Callable[[Mapping[str, Any], Any], Answer]] = {
     "kaizen_failure": _kaizen_failure,
     "phrase_reading": _phrase_reading,
     "confirmed_key": _confirmed_key,
+    "key_alias": _key_alias,
 }
 
 

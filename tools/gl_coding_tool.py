@@ -41,7 +41,9 @@ _LINE_RE = re.compile(
     r"^(?P<description>.+?)\s{2,}(?P<qty>[\d,]+)\s+(?P<unit>[\d,]+\.\d{2})\s+(?P<amount>[\d,]+\.\d{2})\s*$"
 )
 _TOTAL_RE = re.compile(r"^TOTAL DUE.*?(?P<total>[\d,]+\.\d{2})\s*$")
-_FIELD_RE = re.compile(r"^(Invoice number|Invoice date|Terms):\s*(.+?)\s*$")
+_FIELD_RE = re.compile(
+    r"^(Invoice number|Invoice date|Terms|Customer account):\s*(.+?)\s*$")
+_NOTICE_RE = re.compile(r"^NOTICE:\s*(.*)$", re.IGNORECASE)
 
 
 def parse_invoice(text: str) -> Dict[str, Any]:
@@ -77,21 +79,47 @@ def parse_invoice(text: str) -> Dict[str, Any]:
         if m:
             total = m.group("total")
             break
+    # A notice printed on the invoice (a change of name, a new remit-to
+    # address): the paragraph that begins "NOTICE:", up to the next blank line.
+    notice: List[str] = []
+    for index, ln in enumerate(lines):
+        m = _NOTICE_RE.match(ln.strip())
+        if m:
+            notice = [m.group(1).strip()]
+            for more in lines[index + 1:]:
+                if not more.strip():
+                    break
+                notice.append(more.strip())
+            break
     return {
         "vendor": vendor,
         "invoice_number": fields.get("Invoice number"),
         "invoice_date": fields.get("Invoice date"),
+        "customer_account": fields.get("Customer account"),
+        "notice": " ".join(notice),
         "lines": items,
         "total": total,
     }
 
 
-def item_inputs(invoice: Dict[str, Any]) -> Dict[str, Any]:
-    """The declared decision inputs for one invoice (the fields a keg reads)."""
+# Every field this adapter can read off an invoice as a decision input. Which
+# of them a goal's work actually uses is the goal's declaration, not this list.
+def _readable_inputs(invoice: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "vendor": invoice["vendor"],
         "description": "; ".join(line["description"] for line in invoice["lines"]),
+        "customer_account": invoice.get("customer_account") or "",
+        "notice": invoice.get("notice") or "",
     }
+
+
+def item_inputs(invoice: Dict[str, Any], declared: Any = None) -> Dict[str, Any]:
+    """The decision inputs for one invoice (the fields a keg reads): the ones
+    the goal DECLARES, when given; otherwise vendor and description, as
+    before any further input was readable."""
+    readable = _readable_inputs(invoice)
+    names = list(declared) if declared else ["vendor", "description"]
+    return {name: readable.get(name, "") for name in names}
 
 
 def _read_rows(path: Path) -> List[Dict[str, str]]:
@@ -213,7 +241,7 @@ def _record(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
         item_id, inputs = "", {}
     else:
         invoice = parse_invoice(path.read_text(encoding="utf-8"))
-        item_id, inputs = path.stem, item_inputs(invoice)
+        item_id, inputs = path.stem, item_inputs(invoice, work.config.inputs)
     record = work.record(
         item_id=item_id,
         inputs=inputs,
@@ -350,7 +378,7 @@ def _session(work: DecisionWork, args: Dict[str, Any]) -> str:
     if action.get("action") == "batch":
         # How this adapter reads one queued invoice into the declared inputs.
         action["inputs_for"] = lambda path: item_inputs(
-            parse_invoice(path.read_text(encoding="utf-8")))
+            parse_invoice(path.read_text(encoding="utf-8")), work.config.inputs)
     waiting = work.pending()
     fields = _item_fields(work, waiting["item_id"]) if waiting is not None else {}
     out = work.session_step(action, prov, fields)
@@ -395,7 +423,7 @@ def _apply_keg(work: DecisionWork, args: Dict[str, Any]) -> str:
         "pattern_id": prov.get("t0_pattern"),
     }
     record = work.apply_keg(
-        spec, item_id=path.stem, inputs=item_inputs(invoice),
+        spec, item_id=path.stem, inputs=item_inputs(invoice, work.config.inputs),
         keg_ref=keg_ref, provenance=prov,
     )
     if record is None:

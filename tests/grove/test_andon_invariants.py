@@ -869,3 +869,117 @@ def test_two_keys_earned_before_signing_ride_one_card(env, monkeypatch):
     assert keg.evaluate(spec, {"channel": "social"}) == {"tag": "comms"}
     assert keg.evaluate(spec, {"channel": "forum"}) == {"tag": "other"}
     assert_every_andon_closed_exactly_once(env.events())
+
+
+# ── a new key that is an existing key under another name ──────────────
+# Declared evidence: confirmations plus an identity match (an input that is
+# the same, or an input whose text names the existing key). The answer is a
+# proposal to sign. Never applied by the system.
+
+
+def _declare_alias(env, monkeypatch, same=("subject",), names=()):
+    from dataclasses import replace
+
+    cfg = replace(env.work.config, evidence=replace(
+        env.work.config.evidence, alias_confirmations=1,
+        alias_same=tuple(same), alias_names=tuple(names)))
+    env.work.config = cfg
+    monkeypatch.setattr(dw, "config_for_goal", lambda goal_id, dock=None: cfg)
+
+
+def test_a_new_key_identified_with_an_existing_one_becomes_a_proposed_alias(env, monkeypatch):
+    _declare_alias(env, monkeypatch)
+    env.earn_v1()
+    env.add("press", "acct 42")
+    env.code("comms", keg_served=True)                 # the existing key's own history
+    # The keg does not match the new name: exact match for writes.
+    [serving] = [e for e in env.store.all() if e.status == STATUS_ACTIVE]
+    assert keg.evaluate(keg.keg_of(serving), {"channel": "newsroom", "subject": "acct 42"}) is None
+    env.add("newsroom", "acct 42")
+    [event] = env.code("comms")                        # a model decides; the operator confirms
+    assert event["detector"] == "key_alias" and event["flag"] == keg.FLAG_TIER_DOWN_PATTERN
+    assert event["details"]["same_as"] == "press"
+    assert event["details"]["identity"] == [
+        {"kind": "same", "input": "subject", "value": "acct 42"}]
+    answer = event["answer"]
+    assert answer["kind"] == andon.KIND_STANDARD_WORK and answer["channel"] == andon.CHANNEL_PORTAL
+    assert answer["detail"]["alias_of"] == "press" and answer["detail"]["would_change"] == 0
+    assert "'newsroom' looks like 'press' under another name (same subject (acct 42))" in (
+        answer["summary"])
+    [proposal] = _keg_proposals()
+    k = proposal.payload["keg"]
+    assert k["version"] == 2 and k["conditions"][0] == {
+        "if": "channel == 'newsroom'", "then": {"tag": "comms"}}
+    # Never self-applied: unsigned, the keg still does not answer the new name.
+    [serving] = [e for e in env.store.all() if e.status == STATUS_ACTIVE]
+    assert keg.keg_of(serving)["version"] == 1
+    assert keg.evaluate(keg.keg_of(serving), {"channel": "newsroom", "subject": ""}) is None
+    assert fc.cli_approve(proposal.proposal_id.split(":")[-1][:12]) == 0
+    [serving] = [e for e in env.store.all() if e.status == STATUS_ACTIVE]
+    assert keg.evaluate(keg.keg_of(serving), {"channel": "newsroom", "subject": ""}) == {
+        "tag": "comms"}
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_a_notice_that_names_the_existing_key_is_an_identity_match(env, monkeypatch):
+    _declare_alias(env, monkeypatch, same=(), names=("subject",))
+    env.earn_v1()
+    env.add("press", "weekly digest")
+    env.code("comms", keg_served=True)
+    env.add("newsroom", "NOTICE: Press is now part of Newsroom. Nothing else changes.")
+    [event] = env.code("comms")
+    assert event["details"]["same_as"] == "press"
+    assert event["details"]["identity"][0]["kind"] == "names"
+    assert "the item's subject names 'press'" in event["answer"]["summary"]
+    assert len(_keg_proposals()) == 1
+
+
+def test_an_alias_is_never_guessed(env, monkeypatch):
+    _declare_alias(env, monkeypatch)
+    env.earn_v1()
+    for channel, tag in (("press", "comms"), ("billing", "finance")):
+        env.add(channel, "acct 42")
+        env.code(tag, keg_served=True)
+    # Two existing keys share the identity: ambiguous, so no alias.
+    env.add("newsroom", "acct 42")
+    assert env.code("comms") == [] and _keg_proposals() == []
+    # No identity match at all.
+    env.add("wire", "acct 7")
+    assert env.code("comms") == []
+    # Identified with one key, but the operator confirmed a different answer.
+    env.add("press", "acct 9")
+    env.code("comms", keg_served=True)
+    env.add("desk", "acct 9")
+    assert env.code("other") == [] and _keg_proposals() == []
+    assert env.work.alias_evidence("desk")["met"] is False
+    # A key the reference table already lists is not an alias of anything.
+    assert env.work.alias_evidence("outage")["met"] is False
+
+
+def test_the_alias_rule_is_declared_or_it_does_not_exist(env, tmp_path):
+    env.earn_v1()
+    env.add("press", "acct 42")
+    env.code("comms", keg_served=True)
+    env.add("newsroom", "acct 42")
+    assert env.code("comms") == [] and _keg_proposals() == []
+
+    def goal(alias):
+        return SimpleNamespace(
+            id=GOAL, root=tmp_path, keywords=(), resolved_sources=lambda: [],
+            extra={"decision_work": {
+                "tool": "t", "queue": "queue", "isolation": "sources_only",
+                "inputs": {"channel": {"data_type": "string", "required": True},
+                           "subject": {"data_type": "string", "required": False}},
+                "outputs": {"tag": {"data_type": "string"}},
+                "reference_table": {"path": "channels.csv", "key_column": "Channel",
+                                    "value_column": "Default Tag", "key_input": "channel",
+                                    "value_output": "tag"},
+                "evidence": {"threshold": 3, "alias": alias}}})
+
+    good = dw.load_config(goal({"confirmations": 1, "same": ["subject"]})).evidence
+    assert (good.alias_confirmations, good.alias_same, good.alias_names) == (1, ("subject",), ())
+    for bad, why in (({"confirmations": 0, "same": ["subject"]}, "confirmations of 1 or more"),
+                     ({"confirmations": 1}, "needs an identity match"),
+                     ({"confirmations": 1, "same": ["account"]}, "must list declared inputs")):
+        with pytest.raises(ValueError, match=why):
+            dw.load_config(goal(bad))

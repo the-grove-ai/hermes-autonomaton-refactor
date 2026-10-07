@@ -309,7 +309,7 @@ def _waiting_drafts(work: Any) -> List[Any]:
 
 def propose_direct_rule(
     work: Any, andon: Mapping[str, Any], *, key: Any, corrected: Mapping[str, Any],
-    store: Any = None, how: str = "corrected",
+    store: Any = None, how: str = "corrected", because: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Propose a revision of the goal's signed keg that answers ``key`` with
     the value the operator has repeatedly given it: corrected it to
@@ -356,6 +356,11 @@ def propose_direct_rule(
                   and c["confirmed"] == dict(condition["then"])]
         matching += behind
         named = condition["if"].split("==", 1)[-1].strip()
+        if because and condition.get("if") == rule["if"]:
+            # A rule with its own stated ground (an alias of an existing key).
+            added.append(f"{ref.key_input} {named} is answered "
+                         f"{json.dumps(dict(condition['then']))}: {because}")
+            continue
         added.append(f"{ref.key_input} {named} is answered "
                      f"{json.dumps(dict(condition['then']))}, as you {how} it "
                      f"{len(behind)} times")
@@ -380,7 +385,7 @@ def propose_direct_rule(
         ),
         dock_goal=cfg.goal_id, scope=cfg.keg.scope,
         authority_level=cfg.keg.authority_level,
-        flag=(keg_mod.FLAG_ANOMALY if how == "corrected"
+        flag=(keg_mod.FLAG_ANOMALY if how == "corrected" and not because
               else keg_mod.FLAG_TIER_DOWN_PATTERN),
         flag_detail=str(andon.get("summary") or ""),
         evidence_turn_ids=[str(c.get("turn_id") or c["ref"]) for c in matching]

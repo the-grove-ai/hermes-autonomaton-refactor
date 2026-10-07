@@ -345,3 +345,34 @@ def test_one_invoice_per_request_the_model_cannot_run_on_after_a_confirmation(wo
     # The operator's next request is a new turn, and proceeds.
     assert _call(verb="next")["item_id"] == "02_BO"
     assert "One invoice per request" in gl.GL_CODING_SCHEMA["description"]
+
+
+def test_the_adapter_reads_the_account_and_a_printed_notice_when_declared():
+    from tools import gl_coding_tool as tool
+
+    text = (
+        "INVOICE\n\nSwiftline Logistics\n2200 Freightway Blvd\n\n"
+        "Invoice number: SWL-1\nInvoice date:   2026-11-26\nTerms:          Net 15\n"
+        "Customer account: HF-44817\n\n"
+        "Description                                Qty        Unit      Amount\n"
+        "----------------------------------------------------------------------\n"
+        "Same-day courier deliveries                  4       38.00      152.00\n"
+        "----------------------------------------------------------------------\n"
+        "TOTAL DUE (USD)                                                 152.00\n\n"
+        "NOTICE: Copperline Couriers is now part of Swiftline Logistics. Your account\n"
+        "number and service are unchanged.\n\nThank you for your business.\n")
+    invoice = tool.parse_invoice(text)
+    assert invoice["customer_account"] == "HF-44817"
+    assert invoice["notice"] == ("Copperline Couriers is now part of Swiftline Logistics. "
+                                 "Your account number and service are unchanged.")
+    # Undeclared, the inputs are exactly what they were before.
+    assert tool.item_inputs(invoice) == {
+        "vendor": "Swiftline Logistics", "description": "Same-day courier deliveries"}
+    declared = {"vendor": {}, "description": {}, "customer_account": {}, "notice": {}}
+    assert tool.item_inputs(invoice, declared) == {
+        "vendor": "Swiftline Logistics", "description": "Same-day courier deliveries",
+        "customer_account": "HF-44817", "notice": invoice["notice"]}
+    # An invoice with neither reads as empty, never as an error.
+    plain = tool.parse_invoice(text.replace("Customer account: HF-44817\n", "").split("NOTICE:")[0])
+    assert tool.item_inputs(plain, declared)["customer_account"] == ""
+    assert tool.item_inputs(plain, declared)["notice"] == ""

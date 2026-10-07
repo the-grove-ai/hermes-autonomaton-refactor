@@ -29,6 +29,7 @@ DETECTOR_REFERENCE_AGREEMENT = "reference_agreement"
 DETECTOR_CORRECTION = "correction"
 DETECTOR_PHRASE_READING = "phrase_reading"
 DETECTOR_CONFIRMED_KEY = "confirmed_key"
+DETECTOR_KEY_ALIAS = "key_alias"
 
 
 def _plain(output: Any) -> str:
@@ -107,6 +108,7 @@ def observe(
         return []
     events = _phrase_readings(work, decided, context)
     events += _confirmed_key(work, proposed, context)
+    events += _key_alias(work, proposed, context)
     rule = work.evidence()
     if not rule.get("met") or _answered_already(work):
         return events
@@ -191,5 +193,33 @@ def _confirmed_key(
         details={"key": key, "output": found["output"],
                  "confirmations": found["confirmations"], "threshold": found["threshold"]},
         observed_input={"key": key, "confirmations": found["confirmations"]},
+        context=context,
+    )]
+
+
+def _key_alias(
+    work: Any, proposed: Mapping[str, Any], context: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    """The operator just confirmed a model's answer for a key no rule covers.
+    When the goal's declared alias evidence holds — the confirmations, an
+    identity match with exactly one key the keg already answers, and the same
+    answer — flag it. Nothing is applied: the answer is a proposal to sign."""
+    cfg = work.config
+    if cfg.reference is None or proposed.get("keg"):
+        return []
+    key = (proposed.get("inputs") or {}).get(cfg.reference.key_input)
+    found = work.alias_evidence(key)
+    if not found["met"]:
+        return []
+    return [raise_andon(
+        FLAG_TIER_DOWN_PATTERN, detector=DETECTOR_KEY_ALIAS, goal=cfg.goal_id,
+        summary=(
+            f"{key!r} was confirmed as {_plain(found['output'])}, the answer the keg "
+            f"gives {found['same_as']!r}, and is identified with it"
+        ),
+        evidence=found["evidence"],
+        details={"key": key, "same_as": found["same_as"], "identity": found["identity"],
+                 "output": found["output"], "confirmations": found["confirmations"]},
+        observed_input={"key": key, "same_as": found["same_as"]},
         context=context,
     )]
