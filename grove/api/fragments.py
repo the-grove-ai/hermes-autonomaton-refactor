@@ -5005,6 +5005,151 @@ def _rate_row_html(g) -> str:
         f'rate.</p>{against}</section>')
 
 
+def _tickets_html(g) -> str:
+    """The run's signed changes as the fixes that usually become engineering
+    tickets. Three measured tiles (from ledger timestamps) and one ESTIMATE
+    (from the goal's declared ticket model). Not tied to the volume toggle:
+    these are this run's own changes, not a projection."""
+    tickets = g.get("tickets") or {}
+    changes = tickets.get("changes") or []
+    if not changes:
+        return ""
+
+    def _tile(eyebrow, figure, text, hover="", estimate=False, unit=""):
+        label = (f'<span class="sc-event">ESTIMATE</span> · {_esc(eyebrow)}' if estimate
+                 else f'{_esc(eyebrow)} · MEASURED')
+        return (f'<div class="sc-tile"{f" title={chr(34)}{_esc(hover)}{chr(34)}" if hover else ""}>'
+                f'<div class="sc-eyebrow">{label}</div><div class="sc-figure">{_esc(figure)}'
+                + (f'<span class="sc-unit"> {_esc(unit)}</span>' if unit else "")
+                + f'</div><div class="sc-note">{text}</div></div>')
+
+    n = len(changes)
+    names = ", ".join(f'keg v{c["version"]}' for c in changes)
+    kinds = "; ".join(
+        f'v{c["version"]}: {"an exception" if c["kind"] == "exception" else "an enhancement"}'
+        for c in changes)
+    signed = _tile("CHANGES SIGNED", str(n), _esc(f"{names}. {kinds}."),
+                   "Counted from the Kaizen ledger: keg versions the operator signed in the "
+                   "portal in this run. An alias, a revocation and a draft sent back are not "
+                   "counted.")
+    filed = _tile("ENGINEERING TICKETS FILED", "0",
+                  _esc(f"Each of the {n} change{'' if n == 1 else 's'} was proposed by Mylo "
+                       f"and signed by the operator. None needed a code change."),
+                  "Measured from the ledger: every change to this goal's standard work in this "
+                  "run is a signed proposal. No ticket system is connected, so this is the "
+                  "count of changes that went to engineering through this system: none.")
+    lines = []
+    for c in changes:
+        line = f'v{c["version"]}: signed {_span(c["review_seconds"])} after it was proposed'
+        if c["fix_seconds"] is not None:
+            line += f'; {_span(c["fix_seconds"])} from the correction to the signed fix'
+        lines.append(_esc(line + "."))
+    review = _tile("EXPERT REVIEW TIME", _span(tickets.get("review_seconds")),
+                   "<br>".join(lines),
+                   "Measured from record timestamps: when each proposal was shown, when it was "
+                   "signed, and when the correction that caused it was raised.")
+    model = tickets.get("model")
+    foot = ""
+    if model:
+        hours, dollars = tickets["hours"], tickets["dollars"]
+        avoided = _tile(
+            "ENGINEERING TIME AVOIDED", f"{hours:g}", _esc(
+                f"{n} × {model['hours_per_ticket']:g} hours a ticket. At "
+                f"${model['loaded_rate']:,.2f} an hour, ${dollars:,.0f}."),
+            model["source"], estimate=True, unit="hours")
+        label = model["source"].split(":")[0].strip()
+        words = ("no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine")
+
+        def _count(k: int, noun: str) -> str:
+            return f"{words[k] if k < len(words) else k} {noun}{'' if k == 1 else 's'}"
+
+        even = tickets.get("break_even")
+        if even is None:
+            breaks = ""
+        elif even < 0.5:
+            breaks = "A dock breaks even by avoiding less than one exception a month. "
+        else:
+            breaks = (f"A dock breaks even by avoiding about "
+                      f"{_count(int(even + 0.5), 'exception')} a month. ")
+        exceptions = tickets.get("exceptions", 0)
+        kinds_line = ", ".join(
+            _count(k, noun) for k, noun in ((n - exceptions, "enhancement"),
+                                            (exceptions, "exception")) if k)
+        line = breaks + f"This run avoided {n}: {kinds_line}."
+        price = model.get("price_per_month")
+        foot = (f'<p class="sc-lead">{_esc(line)}</p><p class="sc-foot">Hours and rate from '
+                f'the {_esc(label)}'
+                + (f'; a dock is ${price:,.0f} a month' if price else "")
+                + '. Inference savings are counted separately below.</p>')
+    else:
+        avoided = _tile("ENGINEERING TIME AVOIDED", "—", "No ticket model is declared for "
+                        "this goal, so no estimate is made.", estimate=True)
+    return (
+        f'<section class="sc-panel sc-tickets"><h2>The fixes that usually become engineering '
+        f'tickets</h2><div class="sc-tiles">{signed}{filed}{review}{avoided}</div>{foot}'
+        f'</section>')
+
+
+def _returns_html(g, proj, scale: int, toggle: str) -> str:
+    """What one dock returns in a month, at the selected volume: tickets
+    avoided at this run's pace (modeled, so the total is an ESTIMATE) plus the
+    model cost saved (measured), against the dock's declared price. Frontier
+    pricing is never in the total. Empty unless the goal declares a ticket
+    model with a dock price and a keg is serving."""
+    tickets = g.get("tickets") or {}
+    model = tickets.get("model") or {}
+    price, per_month = model.get("price_per_month"), tickets.get("dollars_per_month")
+    saved = (proj.get("avoided") or {}).get("cost")
+    if not price or per_month is None or not tickets.get("count") or saved is None:
+        return ""
+    one, many = g["item_name"]
+    total = per_month + saved
+    times = total / price
+    pace = tickets["per_month"]
+    pace_text = f"{pace:g} signed change{'' if pace == 1 else 's'} a month"
+    volume = f"{scale:,} {many} a month"
+    if per_month >= price:
+        verdict = "It pays for itself on avoided tickets alone; volume is upside."
+    elif total >= price:
+        verdict = (f"Avoided tickets cover ${per_month:,.0f} of the ${price:,.0f} price; "
+                   f"model cost saved covers the rest.")
+    else:
+        verdict = (f"Avoided tickets and model cost saved come to ${total:,.0f} against a "
+                   f"${price:,.0f} price.")
+    frontier = ""
+    if proj["all_frontier"]["cost"] is not None:
+        on_frontier = proj["all_frontier"]["cost"] - proj["frontier_with_keg"]
+        frontier = (
+            f'<p class="sc-foot">If you run frontier models today: model cost saved would be '
+            f'${on_frontier:,.0f}, not ${saved:,.0f}. That is ${on_frontier - saved:,.0f} more, '
+            f'<span class="sc-event">estimate</span>, and not in the total.</p>')
+    n, months = tickets["count"], tickets["months"]
+    return (
+        f'<section class="sc-panel sc-returns"><div class="sc-panel-head"><div>'
+        f'<div class="sc-eyebrow"><span class="sc-event">ESTIMATE</span> · ONE DOCK, ONE MONTH'
+        f'</div><h2>What one dock returns in a month</h2></div>'
+        f'<div class="sc-toggle" role="group" aria-label="{_esc(many.capitalize())} per month">'
+        f'{toggle}</div></div>'
+        f'<p class="sc-returns-head"><strong>{times:,.1f}×</strong> the dock\'s price at '
+        f'{_esc(volume)}. {_esc(verdict)}</p>'
+        f'<div class="sc-returns-sum">'
+        f'<div title="At this run\'s pace of {_esc(pace_text)}."><div class="sc-eyebrow">'
+        f'TICKETS AVOIDED · <span class="sc-event">ESTIMATE</span></div>'
+        f'<div class="sc-fact-figure">${per_month:,.0f}</div><div class="sc-quiet">'
+        f'{_esc(pace_text)} × {model["hours_per_ticket"]:g} hours × '
+        f'${model["loaded_rate"]:,.2f}. Measured: {n} change{"" if n == 1 else "s"} signed '
+        f'in {months} month{"" if months == 1 else "s"}.</div></div>'
+        f'<div class="sc-op">+</div>'
+        f'<div><div class="sc-eyebrow">MODEL COST SAVED · MEASURED</div>'
+        f'<div class="sc-fact-figure">${saved:,.0f}</div><div class="sc-quiet">at '
+        f'{_esc(volume)}, scaled from this run.</div></div>'
+        f'<div class="sc-op">=</div>'
+        f'<div><div class="sc-eyebrow">TOTAL · <span class="sc-event">ESTIMATE</span></div>'
+        f'<div class="sc-save-figure">${total:,.0f}<span class="sc-unit"> / month</span></div>'
+        f'<div class="sc-quiet">against a dock price of ${price:,.0f} a month.</div></div>'
+        f'</div>{frontier}</section>')
+
+
 def _chart_title(g) -> str:
     """What the chart shows, said in its title: a model decides until a rule
     is signed, then the keg does, and a model returns only where the rule
@@ -5409,11 +5554,19 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
             f'run. Frontier figures price the same mix at that model\'s rates.{same}</p>')
     else:
         body = (f'<p class="sc-lead">No keg is serving, so nothing is avoided yet.</p>')
+    # The economics section: what one dock returns (when the goal declares its
+    # ticket model and price), then its two components — the tickets panel and
+    # the volume panel. One toggle for the section, at its top; switching it
+    # redraws the whole section.
+    returns = _returns_html(g, proj, scale, toggles)
+    own_toggle = ("" if returns else
+                  f'<div class="sc-toggle" role="group" aria-label="{_esc(many.capitalize())} '
+                  f'per month">{toggles}</div>')
     volume = (
-        f'<section class="sc-panel" id="sc-volume-{key}" aria-labelledby="sc-vol-{key}">'
+        f'<div class="sc-econ" id="sc-volume-{key}">{returns}{_tickets_html(g)}'
+        f'<section class="sc-panel" aria-labelledby="sc-vol-{key}">'
         f'<div class="sc-panel-head"><h2 id="sc-vol-{key}">At {scale:,} {_esc(many)} a month'
-        f'</h2><div class="sc-toggle" role="group" aria-label="{_esc(many.capitalize())} per '
-        f'month">{toggles}</div></div>{body}{table}</section>')
+        f'</h2>{own_toggle}</div>{body}{table}</section></div>')
 
     # 6. Footer — the methodology caveats, unchanged in substance.
     footer = (

@@ -257,6 +257,17 @@ class Adaptation:
 
 
 @dataclass(frozen=True)
+class TicketModel:
+    """What a change to standard work would have cost as an engineering
+    ticket, as the operator's own pricing model states it. Declared, with its
+    source; read by reports to label an ESTIMATE. Decides nothing."""
+    hours_per_ticket: float
+    loaded_rate: float                      # dollars an hour, fully loaded
+    source: str
+    price_per_month: Optional[float] = None         # what a dock costs, dollars a month
+
+
+@dataclass(frozen=True)
 class DecisionWorkConfig:
     goal_id: str
     tool: str
@@ -283,6 +294,7 @@ class DecisionWorkConfig:
     # See SESSION_MEMORY_*.
     session_memory: str = SESSION_MEMORY_RECORDS_ONLY
     adaptation: Adaptation = field(default_factory=Adaptation)
+    ticket_model: Optional[TicketModel] = None
 
     @property
     def isolated(self) -> bool:
@@ -484,8 +496,33 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         backlog=(_resolve(root, raw["backlog"]) if raw.get("backlog") else None),
         session_memory=session_memory,
         adaptation=adaptation,
+        ticket_model=_load_ticket_model(raw.get("ticket_model"), str(goal.id)),
     )
     return _with_learned(cfg)
+
+
+def _load_ticket_model(raw: Any, goal_id: str) -> Optional[TicketModel]:
+    if raw is None:
+        return None
+    where = f"goal {goal_id!r}: ticket_model"
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"{where} must be a mapping")
+
+    def _number(key: str, required: bool = True) -> Optional[float]:
+        value = raw.get(key)
+        if value is None and not required:
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError(f"{where}.{key} must be a number above zero")
+        return float(value)
+
+    source = raw.get("source")
+    if not isinstance(source, str) or not source.strip():
+        raise ValueError(f"{where}.source must say where the figures come from")
+    return TicketModel(
+        hours_per_ticket=_number("hours_per_ticket"), loaded_rate=_number("loaded_rate"),
+        source=source.strip(),
+        price_per_month=_number("dock_price", required=False))
 
 
 def _load_adaptation(raw: Any, goal_id: str, session: WorkSession) -> Adaptation:

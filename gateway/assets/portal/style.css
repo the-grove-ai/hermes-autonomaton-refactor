@@ -1266,3 +1266,19 @@ ul.listing li { padding: 0.7rem 0; }
 .sc-fact { border-top: 1px solid var(--sc-line); padding-top: 12px; }
 .sc-fact-figure { font-size: 24px; font-weight: 700; line-height: 1.3; }
 @media (max-width: 700px) { .sc-facts { grid-template-columns: 1fr; } }
+
+/* Scorecard: the fixes that usually become engineering tickets */
+.sc-tickets .sc-tiles { margin-top: 16px; }
+.sc-tickets .sc-tile { border: 1px solid var(--sc-line); }
+.sc-tickets .sc-figure .sc-unit { font-size: 18px; font-weight: 400; color: var(--sc-text-2); }
+.sc-tickets .sc-lead { margin-top: 18px; }
+
+/* Scorecard: the economics section — what one dock returns, then its two parts */
+.sc-econ { display: flex; flex-direction: column; gap: 16px; }
+.sc-returns-head { font-size: 22px; line-height: 1.4; margin: 14px 0 0; }
+.sc-returns-head strong { font-size: 34px; font-weight: 800; }
+.sc-returns-sum { display: grid; grid-template-columns: 1fr auto 1fr auto 1.2fr; gap: 20px;
+  align-items: center; margin-top: 20px; padding-top: 18px;
+  border-top: 1px solid var(--sc-line); }
+.sc-op { font-size: 28px; color: var(--sc-text-2); }
+@media (max-width: 800px) { .sc-returns-sum { grid-template-columns: 1fr; } .sc-op { display: none; } }

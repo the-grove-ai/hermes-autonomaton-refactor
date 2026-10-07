@@ -626,6 +626,7 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
                           if periods else {}),
             "headline": _headline(periods, why, shown["item_name"]),
             "learning": _learning(base, log_path.stem, run, prices),
+            "tickets": _tickets(loop, shown.get("ticket_model"), months=len(periods) or 1),
             "events": loop["events"],
             "versions": loop["versions"],
             "drafts_returned": loop["drafts_returned"],
@@ -1061,6 +1062,60 @@ def _headline(periods: List[Dict[str, Any]], why: Mapping[str, Any],
     }
 
 
+def _tickets(loop: Mapping[str, Any], model: Any, months: int = 1) -> Dict[str, Any]:
+    """The run's signed changes to standard work, as the fixes that would
+    otherwise have been engineering tickets. One per keg version the operator
+    signed (an alias, a revocation and a draft sent back are not changes to
+    standard work and are not counted). A version proposed because the work
+    kept agreeing is an enhancement; one proposed after a correction is an
+    exception.
+
+    Measured, from ledger timestamps: how long the operator took to sign each
+    one after it was proposed, and — for an exception — how long from the
+    correction to the signed fix. Estimated, from the goal's declared ticket
+    model: the engineering hours and dollars those tickets would have cost.
+    No model declared, no estimate."""
+    halts = sorted((h for h in (loop.get("brake") or {}).get("halts") or [] if h.get("at")),
+                   key=lambda h: str(h["at"]))
+    changes = []
+    for signed in loop.get("signatures") or []:
+        exception = signed.get("flag") == "anomaly"
+        fix = None
+        if exception and signed.get("signed_at"):
+            before = [h for h in halts if str(h["at"]) <= str(signed["signed_at"])]
+            a, b = _when(before[-1]["at"]) if before else None, _when(signed["signed_at"])
+            fix = (b - a).total_seconds() if a and b else None
+        changes.append({
+            "version": signed.get("version"),
+            "kind": "exception" if exception else "enhancement",
+            "review_seconds": signed.get("seconds"), "fix_seconds": fix,
+            "signed_by": signed.get("signed_by"),
+        })
+    out: Dict[str, Any] = {
+        "changes": changes, "count": len(changes),
+        "exceptions": sum(1 for c in changes if c["kind"] == "exception"),
+        "review_seconds": sum(c["review_seconds"] or 0.0 for c in changes),
+        "model": None, "hours": None, "dollars": None, "break_even": None,
+        # The run's pace: its signed changes over the months it covers (one
+        # per period). What a month of this work avoids, at that pace.
+        "months": months, "per_month": len(changes) / months if months else None,
+        "dollars_per_month": None,
+    }
+    if model is not None:
+        out["model"] = {
+            "hours_per_ticket": model.hours_per_ticket, "loaded_rate": model.loaded_rate,
+            "source": model.source, "price_per_month": model.price_per_month}
+        out["hours"] = len(changes) * model.hours_per_ticket
+        out["dollars"] = out["hours"] * model.loaded_rate
+        out["dollars_per_month"] = out["dollars"] / months if months else None
+        # Tickets a month whose avoided cost pays for the dock: its price over
+        # what one ticket costs. Computed; None when no price is declared.
+        ticket = model.hours_per_ticket * model.loaded_rate
+        out["break_even"] = (model.price_per_month / ticket
+                             if model.price_per_month and ticket else None)
+    return out
+
+
 def _learning(home: Path, goal: str, run: Mapping[str, Any],
               prices: Mapping[str, Any]) -> Dict[str, Any]:
     """What the run spent LEARNING, once, read off the Kaizen ledger: the
@@ -1164,6 +1219,7 @@ def _presentation(goal: str) -> Dict[str, Any]:
         "label_key": cfg.reference.key_input if cfg.reference else None,
         "before_label": cfg.work_session.before_label,
         "batch_label": cfg.work_session.batch_label,
+        "ticket_model": cfg.ticket_model,
     }
 
 

@@ -732,3 +732,128 @@ def test_the_cost_rate_row_is_computed_and_the_arrow_sits_on_the_change():
     assert fragments._rate_row_html(g(None, 0.001)) == ""
     assert fragments._rate_row_html({"item_name": ("a", "b"), "periods": []}) == ""
     assert fragments._rate(0.00061) == "$0.61" and fragments._rate(0) == "$0"
+
+
+def test_signed_changes_are_counted_as_tickets_avoided_and_the_estimate_is_declared():
+    from types import SimpleNamespace
+    from grove.api import fragments
+
+    loop = {
+        "signatures": [
+            {"version": 1, "seconds": 14.0, "signed_at": "2026-10-06T10:01:00+00:00",
+             "flag": "tier_down_pattern", "signed_by": "operator"},
+            {"version": 2, "seconds": 10.0, "signed_at": "2026-10-06T10:05:20+00:00",
+             "flag": "anomaly", "signed_by": "operator"}],
+        "brake": {"halts": [{"item": 12, "at": "2026-10-06T10:05:00+00:00", "corrected": True}]},
+    }
+    model = SimpleNamespace(hours_per_ticket=12.0, loaded_rate=88.26, price_per_month=1000.0,
+                            source="Sokori model: 12 hours per exception; BLS median + 35% load")
+    t = audit._tickets(loop, model)
+    assert [(c["version"], c["kind"], c["review_seconds"], c["fix_seconds"])
+            for c in t["changes"]] == [(1, "enhancement", 14.0, None), (2, "exception", 10.0, 20.0)]
+    assert (t["count"], t["exceptions"], t["review_seconds"], t["hours"]) == (2, 1, 24.0, 24.0)
+    assert t["dollars"] == pytest.approx(2118.24)
+    assert t["break_even"] == pytest.approx(1000 / (12 * 88.26))      # 0.94 tickets a month
+    html = fragments._tickets_html({"tickets": t})
+    for text in ("The fixes that usually become engineering tickets",
+                 "CHANGES SIGNED · MEASURED", "keg v1, keg v2. v1: an enhancement; v2: an "
+                 "exception.", "ENGINEERING TICKETS FILED · MEASURED", "No ticket system is "
+                 "connected", "EXPERT REVIEW TIME · MEASURED", "24 s",
+                 "v1: signed 14 s after it was proposed.",
+                 "v2: signed 10 s after it was proposed; 20 s from the correction to the "
+                 "signed fix.", '<span class="sc-event">ESTIMATE</span> · ENGINEERING TIME AVOIDED',
+                 "2 × 12 hours a ticket. At $88.26 an hour, $2,118.",
+                 "A dock breaks even by avoiding about one exception a month. This run avoided 2: "
+                 "one enhancement, one exception.",
+                 "Hours and rate from the Sokori model; a dock is $1,000 a month. Inference "
+                 "savings are counted separately below."):
+        assert text in html, text
+    # No declared model: the measured tiles stand, and no estimate is made.
+    bare = audit._tickets(loop, None)
+    assert (bare["count"], bare["hours"], bare["dollars"], bare["model"]) == (2, None, None, None)
+    # The break-even is computed from the declared price, never stated on its own.
+    dear = SimpleNamespace(hours_per_ticket=12.0, loaded_rate=88.26, price_per_month=5000.0,
+                           source="Sokori model: x")
+    assert ("about five exceptions a month. This run avoided 2: one enhancement, one "
+            "exception.") in fragments._tickets_html({"tickets": audit._tickets(loop, dear)})
+    free = SimpleNamespace(hours_per_ticket=12.0, loaded_rate=88.26, price_per_month=None,
+                           source="Sokori model: x")
+    quiet = fragments._tickets_html({"tickets": audit._tickets(loop, free)})
+    assert "breaks even" not in quiet and "This run avoided 2: one enhancement, one exception." in quiet
+    plain = fragments._tickets_html({"tickets": bare})
+    assert "No ticket model is declared" in plain and "breaks even" not in plain
+    # Nothing signed: no panel.
+    assert fragments._tickets_html({"tickets": audit._tickets({"signatures": []}, model)}) == ""
+
+
+def test_the_ticket_model_is_declared_in_the_dock_and_a_bad_one_is_refused(tmp_path):
+    from types import SimpleNamespace
+    from grove import decision_work as dw
+
+    (tmp_path / "q").mkdir()
+
+    def goal(model):
+        return SimpleNamespace(id="g", root=tmp_path, keywords=(), resolved_sources=lambda: [],
+                               extra={"decision_work": {
+                                   "tool": "t", "queue": "q", "isolation": "sources_only",
+                                   "inputs": {"a": {"data_type": "string", "required": True}},
+                                   "outputs": {"b": {"data_type": "string"}},
+                                   **({"ticket_model": model} if model is not None else {})}})
+
+    assert dw.load_config(goal(None)).ticket_model is None
+    good = dw.load_config(goal({"hours_per_ticket": 12, "loaded_rate": 88.26,
+                                "source": "a model"})).ticket_model
+    assert (good.hours_per_ticket, good.loaded_rate, good.price_per_month) == (12.0, 88.26, None)
+    assert dw.load_config(goal({"hours_per_ticket": 12, "loaded_rate": 88.26, "source": "s",
+                                "dock_price": 1000})).ticket_model.price_per_month == 1000.0
+    for bad, why in (({"hours_per_ticket": 12, "loaded_rate": 88.26}, "source must say"),
+                     ({"hours_per_ticket": 0, "loaded_rate": 1, "source": "s"}, "above zero"),
+                     ({"hours_per_ticket": 12, "loaded_rate": "88", "source": "s"}, "above zero"),
+                     ("12 hours", "must be a mapping")):
+        with pytest.raises(ValueError, match=why):
+            dw.load_config(goal(bad))
+
+
+def test_what_one_dock_returns_is_computed_and_claims_only_what_the_numbers_show():
+    from types import SimpleNamespace
+    from grove.api import fragments
+
+    loop = {"signatures": [
+        {"version": 1, "seconds": 14.0, "signed_at": "2026-10-06T10:01:00+00:00",
+         "flag": "tier_down_pattern"},
+        {"version": 2, "seconds": 10.0, "signed_at": "2026-10-06T10:05:20+00:00",
+         "flag": "anomaly"}], "brake": {"halts": []}}
+
+    def card(price, saved, months=2, frontier=(70277.0, 15227.0), scale=1_000_000):
+        model = SimpleNamespace(hours_per_ticket=12.0, loaded_rate=88.26, price_per_month=price,
+                                source="Sokori model: x")
+        g = {"item_name": ("invoice", "invoices"),
+             "tickets": audit._tickets(loop, model, months=months)}
+        proj = {"avoided": {"cost": saved},
+                "all_frontier": {"cost": frontier[0] if frontier else None},
+                "frontier_with_keg": frontier[1] if frontier else None}
+        return fragments._returns_html(g, proj, scale, "TOGGLE")
+
+    html = card(1000.0, 3618.0)
+    # Two changes in two months is one a month: 1 × 12 × $88.26 = $1,059.
+    for text in ("What one dock returns in a month", "<strong>4.7×</strong> the dock's price at ", "at 1,000,000 invoices a month.",
+                 "It pays for itself on avoided tickets alone; volume is upside.",
+                 "$1,059</div>", "1 signed change a month × 12 hours × $88.26.",
+                 "Measured: 2 changes signed in 2 months.", "MODEL COST SAVED · MEASURED",
+                 "$3,618</div>", "$4,677<span", "against a dock price of $1,000 a month.",
+                 "At this run's pace of 1 signed change a month.", "TOGGLE",
+                 "If you run frontier models today: model cost saved would be $55,050, not "
+                 "$3,618. That is $51,432 more,"):
+        assert text in html, text
+    # Frontier pricing is never in the total.
+    assert "$4,677" in card(1000.0, 3618.0, frontier=None)
+    assert "frontier" not in card(1000.0, 3618.0, frontier=None)
+    # Tickets alone do not cover the price: the claim is not made, the numbers are.
+    dear = card(3000.0, 3618.0)
+    assert "pays for itself" not in dear
+    assert ("Avoided tickets cover $1,059 of the $3,000 price; model cost saved covers "
+            "the rest.") in dear and "<strong>1.6×</strong>" in dear
+    short = card(3000.0, 36.0, scale=10_000)
+    assert "come to $1,095 against a $3,000 price." in short and "<strong>0.4×</strong>" in short
+    # No price declared, or nothing signed: no card.
+    assert card(None, 3618.0) == ""
