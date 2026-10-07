@@ -618,6 +618,49 @@ def _attachment_entry_html(app, goal_id: str, event: dict) -> str:
     )
 
 
+def _version_ground(trigger, cfg) -> str:
+    """What led to a keg version, in one or two sentences, from what the
+    ledger recorded (see ``audit._trigger``). The wording follows the detector
+    that fired, never the version: any detector's facts read the same way
+    wherever they appear. Empty when the ledger holds no trigger."""
+    if not trigger:
+        return ""
+    one, many = cfg.item_name
+    table = cfg.reference.path.name if cfg.reference is not None else "the reference table"
+    n, need = trigger.get("confirmations"), trigger.get("threshold")
+    asks = f" (the rule asks for {need})" if need else ""
+    times = lambda k: "once" if k == 1 else f"{k} times"
+    value = _keg_value(trigger.get("output")) if trigger.get("output") else ""
+    item, key, same = trigger.get("item"), trigger.get("key"), trigger.get("same_as")
+    if item:                                   # the operator corrected a keg decision
+        who = " ".join(str(x) for x in (one, item.get("order"), item.get("label")) if x)
+        text = f"Your correction on {who}: {item.get('change')}."
+        replay = trigger.get("replay") or {}
+        if replay.get("replayed") is not None:
+            rest = (replay["replayed"] - (replay.get("unchanged") or 0)
+                    - (replay.get("would_change") or 0))
+            text += (f" Replayed on the {replay['replayed']} decided so far: "
+                     f"{replay.get('unchanged') or 0} unchanged, "
+                     f"{replay.get('would_change') or 0} changed, {rest} left to the model.")
+        return text
+    if key and same:                           # an existing key under another name
+        marks = []
+        for mark in trigger.get("identity") or []:
+            field = str(mark.get("input") or "").replace("_", " ")
+            if mark.get("kind") == "same":
+                marks.append(f"same {field} ({mark.get('value')})")
+            else:
+                marks.append(f"the {field} on the {one} names {same}")
+        return (f"Identified with {same}: " + "; ".join(marks or ["a declared match"])
+                + f". You confirmed the same answer {times(n or 1)}{asks}.")
+    if key:                                    # a key the table does not list
+        return (f"{key} is not in {table}. You confirmed it {times(n or 0)} as {value}, "
+                f"none revised{asks}.")
+    if n:                                      # confirmations that agree with the table
+        return f"{n} confirmation{'' if n == 1 else 's'} matched {table}{asks}."
+    return str(trigger.get("summary") or "")
+
+
 def _goal_standard_work_html(goal) -> str:
     """A goal's standard work, when it declares decision work: how the work
     runs (the signed session rule and its phrases), each keg version signed
@@ -666,9 +709,11 @@ def _goal_standard_work_html(goal) -> str:
            if serving else
            _tile("STANDARD WORK", "none",
                  "No keg is serving. Every " + one + " goes to a model until one is signed."))
-        + (_tile("THE KEG COVERS", f"{coverage['share']:.0%}",
-                 f"{coverage['covered']} of this run's {coverage['of']} {many} would be "
-                 f"answered with no model.") if coverage.get("keg") else "")
+        + (_tile("IF RUN AGAIN TODAY", f"{coverage['share']:.0%}",
+                 f"{coverage['covered']} of {coverage['of']}, "
+                 + (f"up from {tally['by_keg']} during the run."
+                    if coverage["covered"] > tally["by_keg"] else
+                    "the same as during the run.")) if coverage.get("keg") else "")
         + _tile("SESSION RULE", "signed" if grant is not None else "not signed",
                 ("In force. It decides what runs with no model."
                  if grant is not None else
@@ -696,7 +741,10 @@ def _goal_standard_work_html(goal) -> str:
             if not changed:
                 changed = ["No rule changed."]
         facts = []
-        if v["evidence"]:
+        ground = _version_ground(v.get("trigger"), cfg)
+        if ground:
+            facts.append(ground)
+        elif v["evidence"]:
             facts.append(f"Evidence: {v['evidence']} confirmed "
                          f"decision{'' if v['evidence'] == 1 else 's'}.")
         if v["feedback"]:
@@ -753,7 +801,11 @@ def _goal_standard_work_html(goal) -> str:
             '<span class="sc-status sc-status-draft">NOT SIGNED · NOT IN FORCE</span>')
     how = (
         f'<div class="sc-panel"><div class="sc-panel-head"><h3>How this work runs</h3>{pill}'
-        f'</div><div class="sc-note">{_esc(rule_text)}</div>'
+        f'</div><div class="sc-note" title="{_esc(rule_text)}">'
+        + ("These phrases are acted on with no model; everything else goes to one."
+           if ws.enabled else
+           f"Each {_esc(one)} is asked for by the operator and goes to a model or the keg.")
+        + '</div>'
         + (f'<div class="sc-eyebrow">ACTED ON WITH NO MODEL</div><div class="sc-rows">'
            f'{phrases}</div><p class="sc-foot">A message that is exactly a valid value '
            f'revises the {_esc(one)} waiting. Anything else goes to a model. After each '
@@ -823,8 +875,20 @@ def _goal_standard_work_html(goal) -> str:
         '<a class="sc-back-btn sc-download" href="/portal#fragments/trace/">Decision trace</a>'
         '<a class="sc-back-btn sc-download" '
         'href="/portal#fragments/proposals/pending?type=signature">To sign</a></div>')
-    return (f'{tiles}{links}<section class="sc-pair">{history}{in_force or how}</section>'
-            f'<section class="sc-pair">{how if in_force else ""}{reads_html}</section>'
+    # The headline: how many versions, and how fast the operator signed them.
+    waits = sorted(v["seconds_to_signature"] for v in versions
+                   if v["seconds_to_signature"] is not None)
+    headline = ""
+    if waits:
+        mid = len(waits) // 2
+        median = waits[mid] if len(waits) % 2 else (waits[mid - 1] + waits[mid]) / 2
+        took = f"{median:.0f} seconds" if median < 90 else _span(median)
+        headline = (
+            f'<p class="sc-lead"><strong>{len(versions)} version'
+            + ("s, each" if len(versions) != 1 else ",")
+            + f'</strong> signed by the operator in about {_esc(took)}.</p>')
+    return (f'{headline}{tiles}<section class="sc-pair">{history}{in_force or how}</section>'
+            f'{links}<section class="sc-pair">{how if in_force else ""}{reads_html}</section>'
             f'{watching}')
 
 
@@ -838,9 +902,12 @@ def render_goal_detail(app, goal) -> str:
     (:func:`_goal_standard_work_html`); every goal shows its attachments."""
     from grove.dock.attachment_store import attachments_for_goal
 
-    keywords = "".join(
-        f'<span class="tag">{_esc(k)}</span>' for k in goal.keywords
-    )
+    from grove.dock import ACTIVE_STATUSES
+
+    # One plain word for where the goal stands; the Dock's own status word
+    # only when the goal is not being worked.
+    standing = ("ACTIVE" if str(goal.status) in ACTIVE_STATUSES
+                else str(goal.status).upper())
     try:
         standard_work = _goal_standard_work_html(goal)
     except Exception as exc:  # noqa: BLE001 — the goal page never fails for it
@@ -856,20 +923,14 @@ def render_goal_detail(app, goal) -> str:
         # inside an element with its own request.
         f'<div class="sc sc-goal">'
         f'<header class="sc-header" {_ctx_attrs("dock", goal.id)}>'
-        f'<div class="sc-eyebrow sc-event">GOAL · '
-        f'{_esc(str(goal.vector).upper())} · {_esc(str(goal.status).upper())}</div>'
+        f'<div class="sc-eyebrow sc-event">GOAL · {_esc(standing)}</div>'
         f'<h1>{_esc(goal.name)}</h1>'
-        f'<p>{_esc(goal.definition_of_done)}</p>'
-        f'<div>{keywords}</div></header>'
+        f'<p>{_esc(goal.definition_of_done)}</p></header>'
         f'{standard_work}</div>',
-        "<h4>Attached artifacts</h4>",
     ]
     events = attachments_for_goal(goal.id)
-    if not events:
-        parts.append(
-            '<p class="placeholder">Nothing attached yet — approved '
-            "goal-attachment proposals will land here.</p>"
-        )
+    if events:                 # an empty section reads as an unfinished feature
+        parts.append("<h4>Attached artifacts</h4>")
     for event in events:
         parts.append(_attachment_entry_html(app, goal.id, event))
     parts.append("</div>")

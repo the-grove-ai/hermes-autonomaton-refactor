@@ -934,3 +934,53 @@ def test_the_scorecard_computes_over_as_many_periods_as_the_run_has():
     chart = fragments._scorecard_chart_html(g, "0")
     assert chart.count("sc-boundary") == 2
     assert "Month 2 · production</span>" in chart and "Month 3 · production</span>" in chart
+
+
+# ── what led to each keg version ──────────────────────────────────────
+
+
+def test_a_version_says_what_led_to_it_from_the_detector_that_fired():
+    """2026-10-07: the goal page's evidence line comes from what the ledger
+    recorded for the version (the detector and what it saw), never from the
+    version's number. One detector's facts read the same way wherever they
+    appear."""
+    from grove.api import fragments
+
+    by_item = {"m12": {"order": 12, "label": "billing"}}
+    cfg = SimpleNamespace(item_name=("message", "messages"),
+                          reference=SimpleNamespace(path=Path("channels.csv")))
+    said = lambda andon, draft=None: fragments._version_ground(
+        audit._trigger(andon, draft, by_item), cfg)
+
+    # Confirmations that agree with the reference table.
+    assert said({"detector": "reference_agreement", "details": {
+        "confirmations": 5, "rule": {"threshold": 5}}}) == (
+        "5 confirmations matched channels.csv (the rule asks for 5).")
+    # The operator's correction of a keg decision, with the replay.
+    assert said(
+        {"detector": "correction", "details": {
+            "item_id": "m12", "served": {"tag": "finance"}, "corrected": {"tag": "ops"}}},
+        {"replayed": 12, "unchanged": 8, "would_change": 1}) == (
+        "Your correction on message 12 billing: finance → ops. Replayed on the 12 "
+        "decided so far: 8 unchanged, 1 changed, 3 left to the model.")
+    # A key the table does not list, confirmed the same way.
+    assert said({"detector": "confirmed_key", "details": {
+        "confirmations": 4, "threshold": 4, "key": "press", "output": {"tag": "comms"}}}) == (
+        "press is not in channels.csv. You confirmed it 4 times as comms, none revised "
+        "(the rule asks for 4).")
+    # An existing key under another name: what identified it, then the answer.
+    assert said({"detector": "key_alias", "details": {
+        "confirmations": 1, "key": "media", "same_as": "press", "output": {"tag": "comms"},
+        "identity": [{"input": "sender_account", "kind": "same", "value": "A-17"},
+                     {"input": "footer", "kind": "names", "text": "press is now media"}]}}) == (
+        "Identified with press: same sender account (A-17); the footer on the message "
+        "names press. You confirmed the same answer once.")
+    # A detector this page has never heard of still says what the ledger said.
+    assert said({"detector": "something_new", "summary": "A new kind of evidence.",
+                 "details": {}}) == "A new kind of evidence."
+    # No andon on the ledger for the version: no line (the count is shown instead).
+    assert audit._trigger(None, None, by_item) is None
+    assert fragments._version_ground(None, cfg) == ""
+    # The wording never branches on a version.
+    import inspect
+    assert "version" not in inspect.getsource(fragments._version_ground).split('"""')[2]

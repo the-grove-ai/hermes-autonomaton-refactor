@@ -1266,6 +1266,33 @@ def _changed(served: Mapping[str, Any], final: Mapping[str, Any]) -> str:
     return ", ".join(f"{k} {a} → {b}" for k, a, b in parts)
 
 
+def _trigger(andon: Optional[Mapping[str, Any]], draft: Optional[Mapping[str, Any]],
+             by_item: Mapping[str, Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
+    """What led to a keg version, as the ledger recorded it: the detector that
+    fired and what it saw (from the andon event), and how the proposed version
+    replayed on history (from Kaizen's proposal). None when the ledger holds
+    no andon for the version. Nothing here is specific to one detector: the
+    details are passed through as recorded."""
+    if not andon:
+        return None
+    details = dict(andon.get("details") or {})
+    out: Dict[str, Any] = {
+        "detector": andon.get("detector"), "summary": andon.get("summary"),
+        "confirmations": details.get("confirmations"),
+        "threshold": details.get("threshold") or (details.get("rule") or {}).get("threshold"),
+        "key": details.get("key"), "same_as": details.get("same_as"),
+        "output": details.get("output"), "identity": details.get("identity") or [],
+    }
+    if details.get("item_id"):
+        unit = by_item.get(details["item_id"]) or {}
+        out["item"] = {"order": unit.get("order"), "label": unit.get("label") or "",
+                       "change": _changed(details.get("served") or {},
+                                          details.get("corrected") or {})}
+    if draft and draft.get("replayed") is not None:
+        out["replay"] = {k: draft.get(k) for k in ("replayed", "unchanged", "would_change")}
+    return out
+
+
 def _loop(home: Path, goal: str, run: Mapping[str, Any],
           units: List[Dict[str, Any]]) -> Dict[str, Any]:
     """The improvement loop as this run saw it, read off the Kaizen ledger and
@@ -1311,8 +1338,14 @@ def _loop(home: Path, goal: str, run: Mapping[str, Any],
     signed: List[Dict[str, Any]] = []
     marks: List[Dict[str, Any]] = []
     halts: List[Dict[str, Any]] = []
+    andons: Dict[str, Dict[str, Any]] = {}       # what Jidoka flagged, by andon id
+    drafts: Dict[str, Dict[str, Any]] = {}       # Kaizen's proposal, by keg version
     for e in events:
         kind = e.get("event_type")
+        if kind == "andon_event" and e.get("goal") == goal and e.get("andon_id"):
+            andons[e["andon_id"]] = e
+        if kind == "kaizen_proposal" and e.get("pattern_id"):
+            drafts[e["pattern_id"]] = e
         if kind == "kaizen_proposal" and e.get("proposal_id"):
             proposed[e["proposal_id"]] = e
         elif (kind == "new_standard_work" and e.get("dock_goal") == goal
@@ -1368,6 +1401,8 @@ def _loop(home: Path, goal: str, run: Mapping[str, Any],
             "reserve": str(spec.get("reserve") or ""),
             "scope": spec.get("scope"),
             "evidence": record.get("repetition_count"),
+            "trigger": _trigger(andons.get(str(record.get("andon_id") or "")),
+                                drafts.get(entry.pattern_id), by_item),
             "feedback": [str(f) for f in (record.get("feedback") or [])],
             "signed_by": (record.get("signed") or {}).get("by"),
             "signed_at": (record.get("signed") or {}).get("at"),

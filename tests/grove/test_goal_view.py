@@ -144,7 +144,10 @@ async def test_empty_state_is_honest(client):
     resp = await client.get("/portal/fragments/goal/goal-beta")
     assert resp.status == 200
     body = await resp.text()
-    assert "Nothing attached yet" in body
+    # 2026-10-07: a goal with nothing attached shows no attachments section
+    # at all (an empty one read as an unfinished feature).
+    assert "Goal Beta" in body or "goal-beta" in body.lower()
+    assert "Attached artifacts" not in body and "Nothing attached yet" not in body
     assert "error" not in body.lower()
 
 

@@ -944,15 +944,28 @@ def test_the_goal_page_shows_the_goals_standard_work_from_its_own_records(env, m
     monkeypatch.setattr(dw, "load_config", lambda g: work.config)
     html = fragments.render_goal_detail(None, goal)
     order = [html.index(s) for s in (
-        '<div id="goal-detail">', "all goals", "GOAL · OPERATIONAL · ACCELERATING",
+        '<div id="goal-detail">', "all goals", "GOAL · ACTIVE",
         "Tag every message", "THIS RUN", "1 / 2", "STANDARD WORK", "SESSION RULE",
-        "Open the scorecard", "Standard work, version by version",
-        "How this work runs", "SIGNED · IN FORCE", "ACTED ON WITH NO MODEL",
+        "Standard work, version by version",
+        "How this work runs", "SIGNED · IN FORCE",
+        "These phrases are acted on with no model; everything else goes to one.",
+        "ACTED ON WITH NO MODEL",
         "Confirms", "Lets the keg decide a backlog at once",
+        # The version history sits directly under the tiles; the buttons follow
+        # the first pair of panels.
+        "Open the scorecard",
         "What it works from", "Reference table", "channels.csv",
-        "Attached artifacts",
     )]
     assert order == sorted(order)
+    # 2026-10-07: nothing on the page that reads as unfinished or internal:
+    # no empty attachments section, no keyword tags, no Dock status words;
+    # the session rule's detail (its match threshold) is in the hover.
+    assert "Attached artifacts" not in html and "ACCELERATING" not in html
+    assert '<span class="tag">message</span>' not in html
+    assert 'title="Sessions for message-triage' in html and "overlap" in html
+    parked = fragments.render_goal_detail(None, SimpleNamespace(**{**goal.__dict__,
+                                                                  "status": "parked"}))
+    assert "GOAL · PARKED" in parked
     for phrase in ("looks good", "work the backlog", "let&#x27;s tag some messages"):
         assert phrase in html, phrase
     # 2026-10-07: every link on the page is live. A link inside an element
@@ -987,7 +1000,7 @@ def test_the_goal_page_shows_the_goals_standard_work_from_its_own_records(env, m
     # A goal with no decision work keeps its plain page.
     monkeypatch.setattr(dw, "load_config", lambda g: None)
     plain = fragments.render_goal_detail(None, goal)
-    assert "Tag every message" in plain and "Attached artifacts" in plain
+    assert "Tag every message" in plain and "Attached artifacts" not in plain
     assert "STANDARD WORK" not in plain and "sc-tiles" not in plain
 
 
