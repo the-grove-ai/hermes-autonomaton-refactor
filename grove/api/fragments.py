@@ -4944,6 +4944,130 @@ def _scorecard_chart_html(g, key: str) -> str:
         f'{_esc(_sc_unit_detail(first, one))}</div>')
 
 
+# Cost is stated as a RATE per this many items, never per item (unreadable)
+# and never as a sample total scaled up (a different number that looks alike).
+RATE_PER = 1_000
+
+
+def _rate(per_unit) -> str:
+    """A per-item cost as dollars per RATE_PER items."""
+    if per_unit is None:
+        return "—"
+    value = per_unit * RATE_PER
+    return "$0" if value == 0 else f"${value:,.2f}"
+
+
+def _rate_row_html(g) -> str:
+    """Three beats: this period's model-cost rate, the change, the period
+    before. The arrow sits on the change, and the word "cost" is in the
+    label, so green can only mean cost went down. Computed, never fixed:
+    change = (before - now) / before, whole percent; a rise flips the arrow
+    and the color; under 5% there is no arrow at all."""
+    from grove import audit as audit_mod
+
+    periods = g.get("periods") or []
+    if len(periods) != 2:
+        return ""
+    before, batch = periods
+    a, b = before["cost_per_unit"], batch["cost_per_unit"]
+    if a is None or b is None or not a:
+        return ""
+    many = g["item_name"][1]
+    change = (a - b) / a
+    pct = int(abs(change) * 100 + 0.5)
+    gap = f"${abs(a - b) * RATE_PER:,.2f}"
+    short = str(before["label"]).split(" · ")[0].lower()
+    if pct < 5:
+        delta = (f'<div class="sc-delta-figure">about the same</div>'
+                 f'<div class="sc-quiet">within {pct}% of {short}</div>')
+    elif change > 0:
+        delta = (f'<div class="sc-delta-figure sc-down">↓ {pct}%</div>'
+                 f'<div class="sc-quiet">{gap} less per {RATE_PER:,}</div>')
+    else:
+        delta = (f'<div class="sc-delta-figure sc-up">↑ {pct}%</div>'
+                 f'<div class="sc-quiet">{gap} more per {RATE_PER:,}</div>')
+    against = ""
+    if batch.get("baseline_rate") is not None:
+        against = (
+            f'<div class="sc-rate-against"><span class="sc-eyebrow">AGAINST ALL-MODEL · PER '
+            f'{RATE_PER:,} {_esc(many.upper())}</span><span>{_esc(_rate(batch["baseline_rate"]))} '
+            f'if a model decided every one · {_esc(_rate(b))} measured with the keg</span></div>')
+    return (
+        f'<section class="sc-panel sc-rate"><div class="sc-eyebrow">MODEL COST · PER '
+        f'{RATE_PER:,} {_esc(many.upper())}</div><div class="sc-rate-row">'
+        f'<div><div class="sc-note">{_esc(batch["label"])}</div><div class="sc-rate-now">'
+        f'{_esc(_rate(b))}<span class="sc-unit"> / {RATE_PER:,}</span></div></div>'
+        f'<div><div class="sc-note">Versus {_esc(short)}</div>{delta}</div>'
+        f'<div><div class="sc-note">{_esc(before["label"])}</div><div class="sc-rate-then">'
+        f'{_esc(_rate(a))}</div></div></div>'
+        f'<p class="sc-foot">Measured model cost this run, not the all-model counterfactual. '
+        f'Keg decisions are $0 and are already in the {_esc(str(batch["label"]).split(" · ")[0].lower())} '
+        f'rate.</p>{against}</section>')
+
+
+def _chart_title(g) -> str:
+    """What the chart shows, said in its title: a model decides until a rule
+    is signed, then the keg does, and a model returns only where the rule
+    does not reach. Computed from the run's own marks."""
+    one, many = g["item_name"]
+    units = g["units"]
+    signed = sorted(e["before"] for e in g["events"]
+                    if e.get("kind") == "signed" and e.get("before"))
+    if not signed or not g["keg_units"]:
+        return f"A model decided every {one}: no rule has been signed yet"
+    after = [u for u in units if u["order"] >= signed[0]]
+    back = sum(1 for u in after if not u["keg"])
+    key = (g.get("why_model") or {}).get("key")
+    why = g.get("why_model") or {}
+    reach = (f"new {key}s and cases the rule hands back"
+             if key and why.get("other", 1) == 0 and (why.get("new") or why.get("judgment"))
+             else "what the rule does not cover")
+    return (f"A model decided each {one} until the rule was signed at {one} {signed[0]}. "
+            f"Then the keg decided {sum(1 for u in after if u['keg'])} of {len(after)}; "
+            f"a model returned {back} time{'' if back == 1 else 's'}, for {reach}")
+
+
+def _opening(g, chain, one: str, many: str) -> str:
+    """The scorecard's opening paragraph: what happened, before how it was
+    counted. Every figure comes from the report's one computation."""
+    head = g["headline"]
+    parts = [head["first"], head["second"]]
+    a, b = head["cost_before"], head["cost_batch"]
+    if a is not None and b is not None:
+        verb = "fell" if b < a else "rose" if b > a else "held"
+        parts.append(f"Model cost {verb} from {_rate(a)} to {_rate(b)} per {RATE_PER:,} {many}."
+                     if verb != "held" else
+                     f"Model cost held at {_rate(a)} per {RATE_PER:,} {many}.")
+    versions = g["versions"]
+    if versions:
+        key = (g.get("why_model") or {}).get("key")
+        parts.append(
+            f"The operator signed keg v{versions[0]['version']}, a rule for known "
+            f"{key + 's' if key else many}; covered {many} stopped calling a model.")
+    if chain is not None and chain["result"] == "broken":
+        n = len(chain["problems"])
+        parts.append(f"The audit check found {n} problem{'' if n == 1 else 's'}; see below.")
+    return " ".join(parts)
+
+
+def _audit_chip(chain, g, total: int) -> str:
+    """The audit check's verdict, where the page begins — never a twist ending."""
+    if chain is None:
+        return ""
+    if chain["result"] == "broken":
+        first = chain["problems"][0]
+        more = len(chain["problems"]) - 1
+        text = (f"Check caught {len(chain['problems'])} gap"
+                f"{'' if not more else 's'}: {first['problem']}"
+                + (f" (and {more} more)" if more else ""))
+        return f'<div class="sc-chip-line sc-chip-bad">{_ALERT_ICON}<span>{_esc(text)}</span></div>'
+    running = sum(r.get("in_flight", 0) for r in chain.get("runs") or [])
+    text = (f"Audit check passed: {g['traceable']} of {total} decisions traceable to "
+            f"their turn, chain intact"
+            + (f"; {running} from a turn still running" if running else "") + ".")
+    return f'<div class="sc-chip-line sc-chip-ok">{_CHECK_ICON}<span>{_esc(text)}</span></div>'
+
+
 def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "") -> str:
     """One goal's run as a scorecard. Every figure and every sentence is
     filled from the report; nothing here knows what kind of work it is."""
@@ -4970,9 +5094,8 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         f'<header class="sc-header"><div class="sc-eyebrow sc-event">SCORECARD · '
         f'{_esc(str(g["title"]).upper())} · RUN {_esc(g["run_number"])} · {total} '
         f'{_esc(many.upper())}</div>'
-        + (f'<h1>{_esc(g["headline"]["lead"])} <span class="sc-event">'
-           f'{_esc(g["headline"]["verdict"])}</span></h1>'
-           f'<p>{_esc(g["headline"]["compare"] + " " + traceable + " " + loop)}</p>'
+        + (f'<h1>{_esc(g["headline"]["lead"])}</h1>'
+           f'<p>{_esc(_opening(g, chain, one, many))}</p>{_audit_chip(chain, g, total)}'
            if g.get("headline") and g.get("periods") else
            f'<h1>{keg_n} of {total} {_esc(many)} decided with no model. '
            f'<span class="sc-event">{_esc(traceable)}</span></h1>'
@@ -4994,7 +5117,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     cost = _tile(
         "COST PER KEG DECISION", _money(keg["cost"]) if keg_n else "—",
         (f"and 0 tokens. " if keg_n else "No keg decision yet. ")
-        + f"A model decision averaged {_money(model['cost'])} and "
+        + f"A model decision averaged {_rate(model['cost'])} per {RATE_PER:,} and "
           f"{_compact(model['tokens'])} tokens.")
     signed_rows = [s for s in g["signatures"]]
     if signed_rows:
@@ -5025,9 +5148,9 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     # 3. Chart
     chart = (
         f'<section class="sc-panel" aria-labelledby="sc-chart-{key}">'
-        f'<div class="sc-panel-head"><div><h2 id="sc-chart-{key}">Seconds to decide each '
-        f'{_esc(one)}, in order</h2><div class="sc-sub">Hover or tab to a bar for its '
-        f'record. Bars above {SCORECARD_CAP_SECONDS:.0f} s are cut and labeled.</div></div>'
+        f'<div class="sc-panel-head"><div><h2 id="sc-chart-{key}">{_esc(_chart_title(g))}'
+        f'</h2><div class="sc-sub">Seconds to decide each {_esc(one)}, in order. Hover or '
+        f'tab to a bar for its record.</div></div>'
         f'<div class="sc-legend">'
         f'<span><i class="sc-swatch sc-model"></i>Decided by a model{_esc(tiers)}</span>'
         f'<span><i class="sc-swatch sc-keg"></i>Decided by the keg (T0, no model)</span>'
@@ -5036,14 +5159,30 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
 
     # 4. Two panels
     rows = ""
-    for tier, t in g["by_tier"].items():
-        is_keg = tier == "T0"
-        rows += (
-            f'<tr><td><i class="sc-swatch {"sc-keg" if is_keg else "sc-model"}"></i>'
-            f'{"Keg" if is_keg else "Model"} ({_esc(tier)})</td><td>{t["units"]}</td>'
-            f'<td>{t["confirmed"]}</td><td>{t.get("accepted", 0)}</td>'
-            f'<td class="{"sc-event" if t["corrected"] else ""}">{t["corrected"]}</td>'
-            f'<td>{_sc_seconds(t["seconds"])}</td><td>{_money(t["cost"])}</td></tr>')
+    by_period = bool(g.get("periods"))
+    if by_period:
+        # The same numbers as the period cards above, from the same computation.
+        for period in g["periods"]:
+            short = str(period["label"]).split(" · ")[0]
+            for w in period["who"]:
+                if not w["units"]:
+                    continue
+                rows += (
+                    f'<tr><td><i class="sc-swatch {"sc-keg" if w["keg"] else "sc-model"}"></i>'
+                    f'{_esc(short)} · {"keg, no model" if w["keg"] else "a model"}</td>'
+                    f'<td>{w["units"]}</td><td>{w["confirmed"]}</td><td>{w["accepted"]}</td>'
+                    f'<td class="{"sc-event" if w["revised"] else ""}">{w["revised"]}</td>'
+                    f'<td>{w["awaiting"]}</td>'
+                    f'<td>{_sc_seconds(w["seconds"])}</td><td>{_rate(w["cost"])}</td></tr>')
+    else:
+        for tier, t in g["by_tier"].items():
+            is_keg = tier == "T0"
+            rows += (
+                f'<tr><td><i class="sc-swatch {"sc-keg" if is_keg else "sc-model"}"></i>'
+                f'{"Keg" if is_keg else "Model"} ({_esc(tier)})</td><td>{t["units"]}</td>'
+                f'<td>{t["confirmed"]}</td><td>{t.get("accepted", 0)}</td>'
+                f'<td class="{"sc-event" if t["corrected"] else ""}">{t["corrected"]}</td>'
+                f'<td>{_sc_seconds(t["seconds"])}</td><td>{_rate(t["cost"])}</td></tr>')
     if chain is None:
         chain_line = ""
     elif chain["result"] == "broken":
@@ -5063,17 +5202,20 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     who = (
         f'<div class="sc-panel"><h3>Who decided, and how it went</h3><div class="sc-scroll">'
         f'<table class="sc-table"><thead><tr><th>DECIDED BY</th><th>{_esc(many.upper())}</th>'
-        f'<th>CONFIRMED BY YOU</th><th>NOT REVIEWED</th><th>REVISED</th><th>TIME EACH</th>'
-        f'<th>COST EACH</th></tr></thead>'
+        f'<th>CONFIRMED BY YOU</th><th>NOT REVIEWED</th><th>REVISED</th>'
+        + ('<th>AWAITING YOU</th>' if by_period else "") + '<th>TIME EACH</th>'
+        f'<th>COST / {RATE_PER:,}</th></tr></thead>'
         f'<tbody>{rows}</tbody></table></div>'
         f'<p class="sc-foot">{_esc(on_record)} {chain_line}{not_reviewed}</p></div>')
     cards = ""
     for v in versions:
-        text = [f"Decides {v['decides']} case{'' if v['decides'] == 1 else 's'} directly."]
+        text = [f"Coverage: its rules decide {v['decides']} case"
+                f"{'' if v['decides'] == 1 else 's'} directly."]
         if v["reserve"]:
             text.append(f"Reserved for a model: {v['reserve'].rstrip('.')}.")
         if v["evidence"]:
-            text.append(f"Evidence: {v['evidence']} confirmed decisions.")
+            text.append(f"Evidence: {v['evidence']} confirmed decisions stood behind it "
+                        f"when it was proposed.")
         if v["feedback"]:
             text.append("Operator feedback: " + "; ".join(f"“{f}”" for f in v["feedback"]) + ".")
         if v["seconds_to_signature"] is not None:
@@ -5122,26 +5264,28 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                         + '</span></div>')
 
             per = period["calls_per_model_unit"]
-            if period["baseline"] is not None:
-                saved = period["savings"]
-                share = saved / period["baseline"] if period["baseline"] else 0.0
+            if period["baseline_rate"] is not None:
                 against = _line(
-                    "Model cost, against all-model", f'{_money(period["cost"])} vs '
-                    f'{_money(period["baseline"])}',
-                    (f'saved {_money(saved)} ({share:.0%})' if saved >= 0
-                     else f'over by {_money(-saved)}'))
+                    f"Model cost per {RATE_PER:,}, against all-model",
+                    f'{_rate(period["cost_per_unit"])} vs {_rate(period["baseline_rate"])}')
             else:
-                against = _line("Model cost", _money(period["cost"]), "no priced baseline")
+                against = _line(f"Model cost per {RATE_PER:,}",
+                                _rate(period["cost_per_unit"]), "no priced baseline")
             cols += (
                 f'<div class="sc-version"><div class="sc-version-head"><strong>'
-                f'{_esc(period["label"])}</strong><span class="sc-eyebrow">{n} '
-                f'{_esc((one if n == 1 else many).upper())}</span></div>'
+                f'{_esc(period["label"])}</strong><span class="sc-eyebrow">'
+                + (f'{n} OF {period["of"]} ' if period["of"] > n else f'{n} ')
+                + f'{_esc((one if n == 1 else many).upper())}</span></div>'
                 f'<div class="sc-period"><div><span class="sc-figure">'
-                f'{period["model_units"]}</span><span class="sc-note">needed the model'
-                f'</span></div><div><span class="sc-figure">{period["keg_share"]:.0%}</span>'
+                f'{period["model_units"]} of {n}</span>'
+                f'<span class="sc-note">needed a model ('
+                f'{audit_mod._pct(period["model_units"], n)})</span></div>'
+                f'<div><span class="sc-figure">'
+                f'{audit_mod._pct(period["keg_units"], n)}</span>'
                 f'<span class="sc-note">decided by the keg ({period["keg_units"]} of {n}), '
-                f'no model</span></div><div><span class="sc-figure">{_money(period["cost_per_unit"])}'
-                f'</span><span class="sc-note">model cost per {_esc(one)}</span></div></div>'
+                f'no model</span></div><div><span class="sc-figure">'
+                f'{_rate(period["cost_per_unit"])}</span><span class="sc-note">model cost per '
+                f'{RATE_PER:,} {_esc(many)}</span></div></div>'
                 f'<div class="sc-rows">'
                 + _line(f"{many.capitalize()} handled", n)
                 + _line("Model calls, deciding only", period["model_calls"] and
@@ -5149,23 +5293,23 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                         f'{per:.1f} per model-decided {one}' if per else "")
                 + against
                 + (_line("One-time learning cost", "; ".join(learned) or "none on record",
-                         f"not in the cost per {one}") if index == 0 else "")
+                         f"not in the rate per {RATE_PER:,}") if index == 0 else "")
                 + f'</div><div class="sc-note">{period["confirmed"]} confirmed by you · '
                 f'{period["accepted"]} decided by the keg, not reviewed · '
-                f'{period["revised"]} revised.</div></div>')
+                f'{period["revised"]} revised'
+                + (f' · {period["awaiting"]} awaiting you' if period["awaiting"] else "")
+                + (f' · {period["of"] - n} still to come' if period["of"] > n else "")
+                + '.</div></div>')
         rate = g["periods"][0]["baseline_rate"]
         periods = (
             f'<section class="sc-panel"><h3>{_esc(g["periods"][0]["label"])} against '
             f'{_esc(g["periods"][1]["label"])}</h3><div class="sc-catches">{cols}</div>'
-            f'<p class="sc-foot">Never blended: each period is counted on its own. '
-            + (f'All-model baseline: the {_esc(one)} count times {_money(rate)}, the '
-               f'measured cost of a model-decided {_esc(one)} in '
-               f'{_esc(g["periods"][0]["label"])}. ' if rate is not None else "")
-            + (f'A judgment call: the reference table has no single answer for the '
-               f'{_esc(g["why_model"]["key"])}, or the keg\'s own rule hands the case back. '
-               if (g.get("why_model") or {}).get("key") else "")
-            + f'{_esc(many.capitalize())} the keg decided without review are never counted '
-            f'as confirmed, and never as evidence.</p></section>')
+            f'<p class="sc-foot">Months are counted separately. Keg decisions without '
+            f'review are not treated as confirmed. '
+            + (f'All-model rate: {_rate(rate)} per {RATE_PER:,}, what model-decided '
+               f'{_esc(many)} cost in {_esc(g["periods"][0]["label"])}.'
+               if rate is not None else "")
+            + '</p></section>')
     panels = (f'<section class="sc-pair">{who}<div class="sc-panel"><h3>Standard work, '
               f'as signed</h3><div class="sc-versions">{cards}</div></div></section>')
 
@@ -5187,12 +5331,10 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         avoided = proj["avoided"]
         hero = (
             f'<div class="sc-hero"><div class="sc-lead">At {scale:,} {_esc(many)} a month, '
-            f'the keg avoids</div><div class="sc-big">{_money(avoided["cost"])} '
-            f'<span>a month</span></div><div class="sc-lead">'
-            f'{_compact(avoided["model_calls"])} model calls and '
-            f'{_model_time(avoided["hours"])} of model time. Keg v{_esc(cov["version"])} '
-            f'would have answered {cov["covered"]} of these {cov["of"]} {_esc(many)} '
-            f'({cov["share"]:.0%}).</div></div>')
+            f'the keg avoids {_compact(avoided["model_calls"])} model calls and '
+            f'{_model_time(avoided["hours"])} of model time, measured from this run. '
+            f'Keg v{_esc(cov["version"])} answers {cov["covered"]} of {cov["of"]} '
+            f'({audit_mod._pct(cov["covered"], cov["of"])}) with no model.</div></div>')
         with_label = f"With keg v{cov['version']} serving"
     else:
         hero = (f'<div class="sc-hero"><div class="sc-lead">At {scale:,} {_esc(many)} a '
@@ -5200,13 +5342,17 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         with_label = "With a keg serving"
     frontier = ""
     if proj["all_frontier"]["cost"] is not None:
+        def _est(label, cost):
+            return (f'<tr><td>{_esc(label)}</td><td>{_money(cost)}</td><td>—</td><td>—</td>'
+                    f'<td>—</td><td class="sc-basis">estimate</td></tr>')
+
         frontier = (
-            f'<div class="sc-estimate"><div class="sc-eyebrow sc-event">ESTIMATE · FRONTIER '
-            f'MODEL</div><div>Every {_esc(one)} on a frontier model '
-            f'({_esc(g["frontier"]["model"])}): <strong>'
-            f'{_money(proj["all_frontier"]["cost"])}</strong> a month. With the keg serving '
-            f'{cov["share"]:.0%}: <strong>{_money(proj["frontier_with_keg"])}</strong>.'
-            f'</div></div>')
+            '<tr><td colspan="6" class="sc-eyebrow sc-event">ESTIMATE · FRONTIER MODEL</td></tr>'
+            + _est(f"Every {one} on a frontier model ({g['frontier']['model']})",
+                 proj["all_frontier"]["cost"])
+            + _est(f"Frontier model, with the keg serving "
+                   f"{audit_mod._pct(cov['covered'], cov['of']) if cov['of'] else '0%'}",
+                   proj["frontier_with_keg"]))
     volume = (
         f'<section class="sc-panel" id="sc-volume-{key}" aria-labelledby="sc-vol-{key}">'
         f'<div class="sc-panel-head"><h2 id="sc-vol-{key}">At volume</h2>'
@@ -5217,7 +5363,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         + _row(f"Every {one} decided by a model", proj["all_model"], "measured")
         + _row(with_label, proj["with_keg"], "measured")
         + _row("Avoided", proj["avoided"], "difference", strong=True)
-        + f'</tbody></table></div>{frontier}</section>')
+        + f'{frontier}</tbody></table></div></section>')
 
     # 6. Footer — the methodology caveats, unchanged in substance.
     footer = (
@@ -5229,7 +5375,8 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         f'shown. Each {_esc(one)}\'s confirmation turn is separate and not counted here. '
         f'Volume rows scale this run\'s measured per-{_esc(one)} figures. The frontier '
         f'estimate prices this run\'s fresh tokens at that model\'s declared rates.</footer>')
-    return f'<div class="sc">{header}{periods}{tiles}{chart}{panels}{volume}{footer}</div>'
+    return (f'<div class="sc">{header}{_rate_row_html(g)}{periods}{tiles}{chart}{panels}'
+            f'{volume}{footer}</div>')
 
 
 _CHECK_ICON = (

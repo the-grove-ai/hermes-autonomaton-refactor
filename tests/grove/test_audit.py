@@ -470,9 +470,19 @@ def test_a_batch_shares_its_turn_and_splits_the_scorecard_three_ways(tmp_path, m
     # Counted per period, never blended: how many needed a model, and the calls.
     assert (before["model_units"], before["model_calls"]) == (1, 2)
     assert (batch["model_units"], batch["model_calls"], batch["calls_per_model_unit"]) == (1, 2, 2.0)
-    assert g["headline"]["lead"] == "Month 2: 5 messages. 1 needed the model."
-    assert g["headline"]["verdict"] == "5 times the work, about the same number needing a model."
-    assert g["headline"]["compare"] == "Month 1: 1 messages, 1 needed the model."
+    assert g["headline"]["lead"] == (
+        "Month 2: the signed rule handled 4 of 5 messages. No model call.")
+    assert g["headline"]["first"] == "Month 1 needed a model on 1 of 1 (100%)."
+    assert g["headline"]["second"] == "Month 2 needed one on 1 of 5 (20%)."
+    # One computation: the table's rows are the period's own breakdown, and
+    # every count adds up to the period's total.
+    model, keg = batch["who"]
+    assert (model["units"], model["confirmed"], keg["units"], keg["confirmed"],
+            keg["accepted"]) == (1, 1, 4, 1, 3)
+    for period in (before, batch):
+        assert (period["confirmed"] + period["accepted"] + period["revised"]
+                + period["awaiting"]) == period["units"]
+        assert sum(w["units"] for w in period["who"]) == period["units"]
 
     html = fragments._scorecard_html(g, 10_000, "0")
     for text in ("CONFIRMED BY YOU", "NOT REVIEWED", "REVISED", "Month 1 against Month 2",
@@ -480,7 +490,11 @@ def test_a_batch_shares_its_turn_and_splits_the_scorecard_three_ways(tmp_path, m
                  "2 confirmed by you · 3 decided by the keg, not reviewed · 0 revised.",
                  "3 messages were decided by the keg under its signed authority and not "
                  "reviewed; they are not counted as confirmed.",
-                 "decided by the keg, not reviewed"):
+                 "decided by the keg, not reviewed",
+                 "Month 2 · keg, no model", "Month 2 · a model", "AWAITING YOU",
+                 "1 of 5</span>", "needed a model (20%)",
+                 "Months are counted separately. Keg decisions without review are not "
+                 "treated as confirmed."):
         assert text in html, text
     # A run with no batch has one period, and says nothing about periods.
     assert "against" not in fragments._scorecard_html(
@@ -562,31 +576,37 @@ def _period(label, units, model_units, **over):
 
 def test_the_headline_says_only_what_the_counts_show():
     names = ("invoice", "invoices")
-    month1, month2 = _period("Month 1", 20, 10), _period("Month 2", 40, 10)
-    all_explained = {"key": "vendor", "new": 7, "judgment": 3, "other": 0}
+    month1 = _period("Month 1 · learning", 20, 13, keg_units=7, cost_per_unit=0.004)
+    month2 = _period("Month 2 · production", 40, 9, keg_units=31, cost_per_unit=0.0006, of=40)
+    all_explained = {"key": "vendor", "new": 5, "judgment": 4, "other": 0}
     h = audit._headline([month1, month2], all_explained, names)
-    assert h["lead"] == ("Month 2: 40 invoices. 10 needed the model, all new vendors "
-                         "or judgment calls.")
-    assert h["verdict"] == "Twice the work, about the same number needing a model."
-    assert h["compare"] == "Month 1: 20 invoices, 10 needed the model."
-    # One that is neither a new vendor nor a judgment call: "all" is not claimed.
+    assert h["lead"] == "Month 2: the signed rule handled 31 of 40 invoices. No model call."
+    assert h["first"] == "Month 1 needed a model on 13 of 20 (65%)."
+    assert h["second"] == ("Month 2 needed one on 9 of 40 (23%), all new vendors or cases "
+                           "the rule handed back.")
+    assert (h["cost_before"], h["cost_batch"], h["complete"]) == (0.004, 0.0006, True)
+    # One that is neither a new vendor nor handed back: "all" is not claimed.
     h = audit._headline([month1, month2],
-                        {"key": "vendor", "new": 7, "judgment": 2, "other": 1}, names)
-    assert h["lead"] == ("Month 2: 40 invoices. 10 needed the model: 7 new vendors, "
-                         "2 judgment calls, 1 neither.")
+                        {"key": "vendor", "new": 5, "judgment": 3, "other": 1}, names)
+    assert h["second"].endswith(": 5 new vendors, 3 the rule handed back, 1 neither.")
     assert h["all_explained"] is False
-    # Outside the band, the actual numbers and no "about the same".
-    for needed in (13, 7, 30):
-        h = audit._headline([month1, _period("Month 2", 40, needed)], all_explained, names)
-        assert h["same"] is False and "about the same" not in h["verdict"]
-        assert h["verdict"] == f"Twice the work; {needed} needed a model against 10."
-    for needed in (8, 12):                                    # within 25% of month 1
-        assert audit._headline([month1, _period("Month 2", 40, needed)],
-                               all_explained, names)["same"] is True
-    assert audit._headline([month1, _period("Month 2", 40, 10)],
-                           {"key": "vendor", "new": 10, "judgment": 0, "other": 0},
-                           names)["lead"].endswith("all new vendors.")
+    # Read while the batch is under way: the counts are "so far", and say so.
+    partial = _period("Month 2 · production", 38, 7, keg_units=31, cost_per_unit=0.0006, of=40)
+    h = audit._headline([month1, partial], {"key": "vendor", "new": 4, "judgment": 3,
+                                            "other": 0}, names)
+    assert h["lead"] == ("Month 2: the signed rule handled 31 of 38 invoices so far; "
+                         "2 of 40 still to come. No model call.")
+    assert h["second"].startswith("Month 2 needed one on 7 of 38 (18%)") and not h["complete"]
+    # "About the same" is a claim made only inside the band.
+    for needed, same in ((13, True), (10, True), (9, False), (17, False)):
+        assert audit._headline([month1, _period("M2", 40, needed, keg_units=1,
+                                                cost_per_unit=0.0)],
+                               all_explained, names)["same"] is same
+    assert audit._headline([month1, _period("M2", 40, 40, keg_units=0, cost_per_unit=0.0)],
+                           {}, names)["lead"] == "M2: all 40 invoices needed a model."
     assert audit._headline([month1], all_explained, names) is None
+    # One rounding, used everywhere, halves up: 31 of 38 is 82%, 9 of 40 is 23%.
+    assert (audit._pct(31, 38), audit._pct(9, 40), audit._pct(13, 20)) == ("82%", "23%", "65%")
 
 
 def test_the_baseline_uses_the_cost_of_a_model_decided_item_not_the_average():
@@ -679,3 +699,33 @@ def test_a_decision_whose_turn_is_still_running_is_not_a_break(tmp_path):
     out = audit._run_check(tmp_path, {"u1"})
     assert "decision lost has no turn in the audit trail" in [
         p["problem"] for p in out["problems"]]
+
+
+def test_the_cost_rate_row_is_computed_and_the_arrow_sits_on_the_change():
+    from grove.api import fragments
+
+    def g(then, now, baseline=0.0051):
+        return {"item_name": ("invoice", "invoices"), "periods": [
+            {"label": "Month 1 · learning", "cost_per_unit": then, "baseline_rate": baseline},
+            {"label": "Month 2 · production", "cost_per_unit": now, "baseline_rate": baseline}]}
+
+    html = fragments._rate_row_html(g(0.00369, 0.00061))
+    for text in ("MODEL COST · PER 1,000 INVOICES", "$0.61<span class=\"sc-unit\"> / 1,000</span>",
+                 "Versus month 1", 'sc-delta-figure sc-down">↓ 83%</div>',
+                 "$3.08 less per 1,000", "Month 1 · learning", "$3.69",
+                 "Measured model cost this run, not the all-model counterfactual. Keg "
+                 "decisions are $0 and are already in the month 2 rate.",
+                 "AGAINST ALL-MODEL · PER 1,000 INVOICES",
+                 "$5.10 if a model decided every one · $0.61 measured with the keg"):
+        assert text in html, text
+    assert html.count("↓") == 1                       # one arrow, on the change only
+    # A rise flips the arrow and the color; a small move has no arrow at all.
+    up = fragments._rate_row_html(g(0.0010, 0.0015))
+    assert 'sc-delta-figure sc-up">↑ 50%</div>' in up and "$0.50 more per 1,000" in up
+    assert "sc-down" not in up
+    flat = fragments._rate_row_html(g(0.00100, 0.00097))
+    assert "about the same" in flat and "↓" not in flat and "↑" not in flat
+    # Nothing priced, or one period: no row.
+    assert fragments._rate_row_html(g(None, 0.001)) == ""
+    assert fragments._rate_row_html({"item_name": ("a", "b"), "periods": []}) == ""
+    assert fragments._rate(0.00061) == "$0.61" and fragments._rate(0) == "$0"

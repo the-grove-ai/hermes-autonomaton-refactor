@@ -1227,3 +1227,28 @@ ul.listing li { padding: 0.7rem 0; }
 .sc-version .sc-row .sc-mono { white-space: normal; text-align: right; }
 .sc-version .sc-row > span:first-child { flex: 0 0 auto; margin-right: 16px; }
 .sc-node.sc-pending { border-style: dashed; opacity: 0.7; }
+
+/* Scorecard: the audit verdict at the top, and color on what improved */
+.sc-chip-line { display: inline-flex; align-items: center; gap: 10px; margin-top: 16px;
+  padding: 8px 14px; border-radius: 999px; font-size: 14px; }
+.sc-chip-line svg { width: 16px; height: 16px; flex: 0 0 auto; }
+.sc-chip-ok { background: rgba(34, 174, 116, 0.14); border: 1px solid var(--sc-keg); }
+.sc-chip-ok svg { color: #4ED39A; }
+.sc-chip-bad { background: rgba(207, 75, 75, 0.14); border: 1px solid var(--error); }
+.sc-chip-bad svg { color: #F08A8A; }
+.sc-figure.sc-good { color: #4ED39A; }
+
+/* Scorecard: the model-cost rate row — this period, the change, the one before */
+.sc-rate .sc-rate-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px;
+  align-items: end; margin-top: 18px; padding-bottom: 18px;
+  border-bottom: 1px solid var(--sc-line); }
+.sc-rate-now { font-size: 44px; font-weight: 800; line-height: 1.1; }
+.sc-rate-now .sc-unit { font-size: 16px; font-weight: 400; color: var(--sc-text-2); }
+.sc-rate-then { font-size: 30px; font-weight: 500; color: var(--sc-text-2); line-height: 1.2; }
+.sc-delta-figure { font-size: 32px; font-weight: 800; line-height: 1.2; }
+.sc-delta-figure.sc-down { color: #3cba7a; }
+.sc-delta-figure.sc-up { color: var(--error); }
+.sc-rate-against { display: flex; flex-wrap: wrap; gap: 14px; align-items: baseline;
+  margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--sc-line);
+  color: var(--sc-text-2); font-size: 14px; }
+@media (max-width: 700px) { .sc-rate .sc-rate-row { grid-template-columns: 1fr; } }

@@ -619,7 +619,9 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
                 (v["name"] for v in loop["versions"] if v["name"]), log_path.stem),
             "item_name": shown["item_name"],
             "traceable": sum(1 for u in units if u["deciding"]["on_record"]),
-            "periods": (periods := _periods(units, shown)),
+            "periods": (periods := _with_open(
+                _periods(units, shown), open_items := _open_items(log_path.stem, records))),
+            "open": open_items,
             "why_model": (why := _why_model(log_path.stem, units, records, run)
                           if periods else {}),
             "headline": _headline(periods, why, shown["item_name"]),
@@ -877,6 +879,21 @@ def _periods(units: List[Dict[str, Any]], shown: Mapping[str, Any]) -> List[Dict
     priced = [u["deciding"]["cost"] for u in first_model if u["deciding"]["cost"] is not None]
     rate = (sum(priced) / len(priced)) if priced else None
 
+    def _awaiting(u: Mapping[str, Any]) -> bool:
+        return not (u["confirmed"] or u["accepted"] or u["corrected"])
+
+    def _who(group: List[Dict[str, Any]], keg: bool) -> Dict[str, Any]:
+        rows = [u for u in group if bool(u["keg"]) == keg]
+        return {
+            "keg": keg, "units": len(rows),
+            "confirmed": sum(1 for u in rows if u["confirmed"]),
+            "accepted": sum(1 for u in rows if u["accepted"]),
+            "revised": sum(1 for u in rows if u["corrected"]),
+            "awaiting": sum(1 for u in rows if _awaiting(u)),
+            "seconds": _mean([u["deciding"]["seconds"] for u in rows]),
+            "cost": _mean([u["deciding"]["cost"] for u in rows]),
+        }
+
     def _one(label: str, group: List[Dict[str, Any]]) -> Dict[str, Any]:
         n = len(group)
         model = [u for u in group if not u["keg"]]
@@ -898,12 +915,39 @@ def _periods(units: List[Dict[str, Any]], shown: Mapping[str, Any]) -> List[Dict
             "confirmed": sum(1 for u in group if u["confirmed"]),
             "accepted": sum(1 for u in group if u["accepted"]),
             "revised": sum(1 for u in group if u["corrected"]),
+            # Decided by a model or the keg and not yet ruled on by the
+            # operator. With it, every count on the page adds up to ``units``.
+            "awaiting": sum(1 for u in group if _awaiting(u)),
+            # The one source for "who decided": the page's table reads this.
+            "who": [_who(group, False), _who(group, True)],
+            "of": n,
         }
 
     return [
         _one(shown.get("before_label") or "Before the batch", first),
         _one(shown.get("batch_label") or "Batch", [u for u in units if u["batch"]]),
     ]
+
+
+def _open_items(goal: str, records: List[Dict[str, Any]]) -> int:
+    """Items in the goal's queue that this run has not decided yet. A page
+    read while work is under way must say so: its counts are "so far"."""
+    try:
+        from grove.decision_work import DecisionWork, config_for_goal
+
+        work = DecisionWork(config_for_goal(goal))
+        done = {r.get("item_id") for r in records if r.get("kind") == "proposed"}
+        done |= set(work.set_aside_items())
+        return sum(1 for path in work.queue_items() if path.stem not in done)
+    except Exception:  # noqa: BLE001 — no readable queue: nothing is known to be open
+        return 0
+
+
+def _with_open(periods: List[Dict[str, Any]], open_items: int) -> List[Dict[str, Any]]:
+    """Undecided items belong to the period under way: the last one."""
+    if periods and open_items:
+        periods[-1]["of"] = periods[-1]["units"] + open_items
+    return periods
 
 
 def _why_model(goal: str, units: List[Dict[str, Any]], records: List[Dict[str, Any]],
@@ -962,44 +1006,59 @@ def _why_model(goal: str, units: List[Dict[str, Any]], records: List[Dict[str, A
     return out
 
 
+def _pct(part: int, whole: int) -> str:
+    """A share as a whole percent — one rounding, used everywhere."""
+    return f"{int(100 * part / whole + 0.5)}%" if whole else "0%"     # halves round up
+
+
 def _headline(periods: List[Dict[str, Any]], why: Mapping[str, Any],
               item_name: Any) -> Optional[Dict[str, Any]]:
-    """The scorecard's headline, computed: how many of the batch needed a
-    model, why, and how that compares with the period before it. Nothing here
-    is asserted that the counts do not show."""
+    """The scorecard's opening, computed: what the signed rule handled in the
+    batch, how many items needed a model in each period (count, then whole
+    percent), and why the batch's did. Nothing here is asserted that the
+    counts do not show. ``same`` is whether the two periods needed a model
+    about equally often (within SAME_BAND)."""
     if len(periods) != 2:
         return None
     before, batch = periods
-    many = item_name[1]
+    one, many = item_name
+
+    def short(period: Mapping[str, Any]) -> str:
+        return str(period["label"]).split(" · ")[0]
+
     keys = f"{why['key']}s" if why.get("key") else None
-    lead = f"{batch['label']}: {batch['units']} {many}. {batch['model_units']} needed the model"
-    explained = why.get("new", 0) + why.get("judgment", 0)
-    if keys and batch["model_units"] and explained == batch["model_units"]:
-        if why["new"] and why["judgment"]:
-            lead += f", all new {keys} or judgment calls."
-        elif why["new"]:
-            lead += f", all new {keys}."
-        else:
-            lead += ", all judgment calls."
-    elif keys and batch["model_units"]:
-        lead += (f": {why['new']} new {keys}, {why['judgment']} judgment calls, "
-                 f"{why['other']} neither.")
+    still = batch.get("of", batch["units"]) - batch["units"]
+    so_far = (f" so far; {still} of {batch['of']} still to come" if still > 0 else "")
+    if batch["keg_units"]:
+        lead = (f"{short(batch)}: the signed rule handled {batch['keg_units']} of "
+                f"{batch['units']} {many}{so_far}. No model call.")
     else:
-        lead += "."
-    ratio = batch["units"] / before["units"] if before["units"] else None
-    work = ("Twice the work" if ratio and abs(ratio - 2) < 0.05
-            else f"{ratio:.2g} times the work" if ratio else "")
+        lead = (f"{short(batch)}: all {batch['units']} {many}{so_far} needed a model.")
     a, b = before["model_units"], batch["model_units"]
-    same = a > 0 and abs(b - a) / a <= SAME_BAND
-    compare = f"{before['label']}: {before['units']} {many}, {a} needed the model."
-    if work and same:
-        verdict = f"{work}, about the same number needing a model."
-    elif work:
-        verdict = f"{work}; {b} needed a model against {a}."
+    first = (f"{short(before)} needed a model on {a} of {before['units']} "
+             f"({_pct(a, before['units'])}).")
+    second = (f"{short(batch)} needed one on {b} of {batch['units']} "
+              f"({_pct(b, batch['units'])})")
+    explained = why.get("new", 0) + why.get("judgment", 0)
+    all_explained = bool(keys) and b > 0 and explained == b
+    if all_explained:
+        if why["new"] and why["judgment"]:
+            second += f", all new {keys} or cases the rule handed back."
+        elif why["new"]:
+            second += f", all new {keys}."
+        else:
+            second += ", all cases the rule handed back."
+    elif keys and b:
+        second += (f": {why['new']} new {keys}, {why['judgment']} the rule handed back, "
+                   f"{why['other']} neither.")
     else:
-        verdict = ""
-    return {"lead": lead, "compare": compare, "verdict": verdict,
-            "same": same, "ratio": ratio, "all_explained": explained == batch["model_units"]}
+        second += "."
+    return {
+        "lead": lead, "first": first, "second": second,
+        "cost_before": before["cost_per_unit"], "cost_batch": batch["cost_per_unit"],
+        "same": a > 0 and abs(b - a) / a <= SAME_BAND,
+        "all_explained": all_explained, "complete": still <= 0,
+    }
 
 
 def _learning(home: Path, goal: str, run: Mapping[str, Any],
