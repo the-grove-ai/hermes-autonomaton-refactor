@@ -1148,3 +1148,56 @@ def test_the_goal_page_shows_a_rule_forming_and_proposes_nothing(env, monkeypatc
         "A model call was stopped at the 30 s time budget (after 30.3 s with no answer). "
         "What the turn had already put on record stands."]
     assert fragments._trace_turn_notes({"handback": None, "call_ms": [], "attempts": []}) == []
+
+
+def test_kaizens_drafting_call_does_not_wait_past_the_time_budget(monkeypatch):
+    """2026-10-07, live: after a revision the T1 drafting call ran 2 min 17 s
+    and then failed; the operator sat with a silent chat. The goal's time
+    budget for one model call covers the drafting call too: a tier that gives
+    no answer inside it has failed, and the next tier is tried."""
+    import threading
+    import time
+
+    release, asked = threading.Event(), []
+
+    def call(prompt, *, system=None, tool=None, tier=None, max_tokens=0):
+        asked.append(tier)
+        if tier == "T1":
+            release.wait(timeout=20)                 # a stalled provider
+        return {"condition": "channel == 'billing'"}
+
+    monkeypatch.setattr(standard_work, "_draft_prompt", lambda *a, **k: "prompt")
+    monkeypatch.setattr(standard_work, "_check_condition", lambda *a, **k: None)
+
+    def work(budget):
+        return SimpleNamespace(config=SimpleNamespace(
+            keg=SimpleNamespace(revision_tiers=("T1", "T2", "T3")),
+            call_budget_seconds=budget))
+
+    started = time.time()
+    condition, attempts = standard_work.draft_condition(
+        work(0.4), [], [], target=None, reason="r", call=call)
+    waited = time.time() - started
+    release.set()
+    assert condition == "channel == 'billing'" and asked == ["T1", "T2"]
+    assert 0.4 <= waited < 5                         # at the budget, not at the provider's pace
+    assert [(a["tier"], a["refused"]) for a in attempts] == [
+        ("T1", "the T1 call gave no answer inside the 0.4 s time budget."), ("T2", None)]
+    # Declared tier by tier, each tier gets its own; with no budget nothing changes.
+    asked.clear()
+    release.clear()
+    condition, attempts = standard_work.draft_condition(
+        work({"T1": 0.2, "default": 30}), [], [], target=None, reason="r", call=call)
+    assert asked == ["T1", "T2"] and condition
+    release.set()
+    asked.clear()
+    condition, attempts = standard_work.draft_condition(
+        work(None), [], [], target=None, reason="r", call=call)
+    assert asked == ["T1"] and [a["refused"] for a in attempts] == [None]
+    # An error inside the budget is still that tier's failure, as before.
+    def broken(prompt, **kw):
+        raise ConnectionError("down")
+    _c, attempts = standard_work.draft_condition(
+        work(5), [], [], target=None, reason="r", call=broken)
+    assert [a["refused"] for a in attempts] == ["the %s call failed (ConnectionError)." % t
+                                                for t in ("T1", "T2", "T3")]

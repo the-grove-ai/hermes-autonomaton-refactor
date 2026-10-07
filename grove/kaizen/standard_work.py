@@ -233,6 +233,41 @@ def _ask(call: Any, prompt: str, tier: str) -> str:
     return lines[-1] if lines else ""
 
 
+class DraftOverBudget(Exception):
+    """A drafting call gave no answer inside the goal's time budget for one
+    model call. That tier's draft has failed; the next tier is tried."""
+
+
+def _within(seconds: Optional[float], fn: Any) -> Any:
+    """Run ``fn`` and return its result, waiting at most ``seconds`` (None: as
+    long as it takes). Past the budget the call is left to finish on its own
+    and :class:`DraftOverBudget` is raised: nothing waits on it any longer.
+    The caller's context goes with the call, so what it spends is still
+    metered on the attempt."""
+    if not seconds:
+        return fn()
+    import contextvars
+    import threading
+
+    box: Dict[str, Any] = {}
+    context = contextvars.copy_context()
+
+    def run() -> None:
+        try:
+            box["value"] = context.run(fn)
+        except BaseException as exc:  # noqa: BLE001 — handed back to the caller
+            box["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True, name="kaizen-draft")
+    worker.start()
+    worker.join(float(seconds))
+    if worker.is_alive():
+        raise DraftOverBudget(f"no answer in {float(seconds):g} s")
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
+
+
 def draft_condition(
     work: Any,
     rules: List[Mapping[str, Any]],
@@ -253,13 +288,22 @@ def draft_condition(
         prompt = _draft_prompt(work, rules, history, target=target,
                                reason=reason, failure=failure)
         from grove import t1_call
+        from grove.decision_work import call_budget_for
+        # The goal's time budget for one model call covers this call too: a
+        # tier that does not answer inside it has failed, and the next is tried.
+        budget = call_budget_for(getattr(work.config, "call_budget_seconds", None), tier)
         with t1_call.meter() as used:
             try:
-                condition = _ask(call, prompt, tier)
+                condition = _within(budget, lambda: _ask(call, prompt, tier))
                 problem = (
                     "it was empty." if not condition
                     else _check_condition(work, condition, history, target=target)
                 )
+            except DraftOverBudget:
+                condition, problem = "", (
+                    f"the {tier} call gave no answer inside the {budget:g} s time budget.")
+                logger.warning("[kaizen] draft call at %s over its time budget (%gs); "
+                               "trying the next tier", tier, budget)
             except Exception as exc:  # noqa: BLE001 — a failed call is a failed tier
                 condition, problem = "", f"the {tier} call failed ({type(exc).__name__})."
                 logger.warning("[kaizen] draft call at %s failed: %r", tier, exc)
