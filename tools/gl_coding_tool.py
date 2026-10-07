@@ -405,18 +405,23 @@ def _apply_keg(work: DecisionWork, args: Dict[str, Any]) -> str:
         raise DecisionRefused(
             "not_t0", "apply_keg runs only when a signed keg serves the request.")
 
-    def _decline(reason: str) -> str:
-        return json.dumps({"t0_declined": True, "reason": reason}, ensure_ascii=False)
+    def _decline(reason: str, kind: str = "", **why: str) -> str:
+        # ``handback`` says why in a form the turn's record keeps: the kind;
+        # for a deferring rule, the rule's own condition; for no rule, the
+        # reference key and its value on this invoice.
+        return json.dumps({"t0_declined": True, "reason": reason,
+                           "handback": {"kind": kind, **{k: v for k, v in why.items() if v}}},
+                          ensure_ascii=False)
 
     spec = args.get("keg")
     if not isinstance(spec, dict):
         raise work.abnormal("keg_fault", "The keg was served without its rules.", prov)
     work.check_turn(prov)
     if work.pending() is not None:
-        return _decline("a prior coding is waiting for the operator")
+        return _decline("a prior coding is waiting for the operator", "item_pending")
     path = work.next_item()
     if path is None:
-        return _decline("the queue is empty")
+        return _decline("the queue is empty", "queue_empty")
     invoice = parse_invoice(path.read_text(encoding="utf-8"))
     keg_ref = {
         "name": spec.get("name"), "version": spec.get("version"),
@@ -427,7 +432,14 @@ def _apply_keg(work: DecisionWork, args: Dict[str, Any]) -> str:
         keg_ref=keg_ref, provenance=prov,
     )
     if record is None:
-        return _decline("the keg does not cover this invoice")
+        from grove import keg as keg_mod
+        rule = keg_mod.match(spec, item_inputs(invoice, work.config.inputs))
+        if rule is not None and rule.get("defer"):
+            return _decline("a rule of the keg sends this invoice to the model",
+                            "rule_defers", rule=str(rule.get("if") or ""))
+        key = work.config.reference.key_input if work.config.reference else ""
+        return _decline("the keg does not cover this invoice", "no_rule", key=str(key),
+                        value=str(item_inputs(invoice, work.config.inputs).get(key) or ""))
     if work.config.work_session.enabled:
         # The work session's card, from the goal's own template: the same
         # card a model-decided invoice gets.

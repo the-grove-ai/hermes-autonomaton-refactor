@@ -312,6 +312,12 @@ class DecisionWorkConfig:
     backlog_stages: Tuple[Tuple[Path, str], ...] = ()
     # See SESSION_MEMORY_*.
     session_memory: str = SESSION_MEMORY_RECORDS_ONLY
+    # How long one model call may go without answering before the attempt is
+    # stopped and the request goes one tier up (the ladder rule). None: no
+    # budget. Declared as ``call_budget_seconds``: one number of seconds for
+    # every tier, or a mapping of tier to seconds (``default`` for the rest);
+    # 0 switches it off.
+    call_budget_seconds: Any = None
     adaptation: Adaptation = field(default_factory=Adaptation)
     ticket_model: Optional[TicketModel] = None
 
@@ -549,6 +555,8 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         backlog=(stages[0][0] if stages else None),
         backlog_stages=stages,
         session_memory=session_memory,
+        call_budget_seconds=_call_budget(raw.get("call_budget_seconds", CALL_BUDGET_DEFAULT),
+                                         str(goal.id)),
         adaptation=adaptation,
         ticket_model=_load_ticket_model(raw.get("ticket_model"), str(goal.id)),
     )
@@ -1306,6 +1314,37 @@ def _domain_values(domain: OutputDomain) -> List[str]:
 
 
 # ── the decision log ──────────────────────────────────────────────────
+
+
+CALL_BUDGET_DEFAULT = 30
+
+
+def _call_budget(raw: Any, goal_id: str) -> Any:
+    """The declared time budget for one model call: seconds for every tier,
+    or ``{tier: seconds, "default": seconds}``. 0, false or null switch it
+    off (for the goal, or for one tier). Anything else is refused: a budget is
+    never guessed."""
+    def _seconds(value: Any) -> Optional[float]:
+        if value is None or value is False or (not isinstance(value, bool) and value == 0):
+            return None
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+            raise ValueError(
+                f"goal {goal_id!r}: call_budget_seconds must be a number of seconds "
+                f"(0 switches it off), or a mapping of tier to seconds; got {raw!r}")
+        return float(value)
+
+    if isinstance(raw, Mapping):
+        budgets = {str(tier): _seconds(value) for tier, value in raw.items()}
+        return budgets if any(v for v in budgets.values()) else None
+    return _seconds(raw)
+
+
+def call_budget_for(budget: Any, tier: Any) -> Optional[float]:
+    """The seconds one model call may take on ``tier`` under a declared
+    budget (see :func:`_call_budget`), or None for no budget."""
+    if isinstance(budget, Mapping):
+        return budget.get(str(tier)) if str(tier) in budget else budget.get("default")
+    return budget
 
 
 def default_decisions_dir() -> Path:

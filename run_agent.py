@@ -1282,6 +1282,15 @@ class _AgentInterruptAdapter:
             pass
 
 
+class CallOverBudget(Exception):
+    """One model call went past the time budget its goal declares, with no
+    answer. Ends the attempt: it is never retried at the same tier."""
+
+    def __init__(self, *, waited: float, budget: float, model: str):
+        super().__init__(f"no answer from {model} in {waited:.0f}s (budget {budget:.0f}s)")
+        self.waited, self.budget, self.model = waited, budget, model
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -10042,6 +10051,24 @@ class AIAgent:
                 drop_context_1m_beta=_drop_1m,
             )
 
+    def _over_call_budget(self, waited: float, api_kwargs: dict) -> Optional["CallOverBudget"]:
+        """The exception to raise when a model call has gone ``waited`` seconds
+        with no answer and the turn has a declared budget (set by the
+        Dispatcher for a goal that declares one), else None."""
+        budget = getattr(self, "_call_budget_seconds", None)
+        if isinstance(budget, dict):
+            # Declared tier by tier: this turn's routed tier, else the default.
+            tier = str(getattr(self, "_tier_name", None))
+            budget = budget.get(tier) if tier in budget else budget.get("default")
+        if not budget or waited <= float(budget):
+            return None
+        logger.warning(
+            "Model call over its time budget: %.0fs with no answer (budget %.0fs). "
+            "model=%s. Stopping this attempt.", waited, float(budget),
+            api_kwargs.get("model", "unknown"))
+        return CallOverBudget(waited=waited, budget=float(budget),
+                              model=str(api_kwargs.get("model", "unknown")))
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -10136,6 +10163,18 @@ class AIAgent:
                 self._touch_activity(
                     f"waiting for non-streaming response ({int(_elapsed)}s elapsed)"
                 )
+
+            # The goal's declared time budget for one call: stop the attempt,
+            # with no retry at this tier (the Dispatcher hands it up a tier).
+            _over = self._over_call_budget(time.time() - _call_start, api_kwargs)
+            if _over is not None:
+                try:
+                    rc = request_client_holder.get("client")
+                    if rc is not None:
+                        self._close_request_openai_client(rc, reason="call_over_budget")
+                except Exception:
+                    pass
+                raise _over
 
             # Stale-call detector: kill the connection if no response
             # arrives within the configured timeout.
@@ -11160,6 +11199,19 @@ class AIAgent:
                 self._touch_activity(
                     f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
                 )
+
+            # The goal's declared time budget for one call, measured as time
+            # with no real chunk: stop the attempt, with no retry at this tier
+            # (the Dispatcher hands it up a tier).
+            _over = self._over_call_budget(time.time() - last_chunk_time["t"], api_kwargs)
+            if _over is not None:
+                try:
+                    rc = request_client_holder.get("client")
+                    if rc is not None:
+                        self._close_request_openai_client(rc, reason="call_over_budget")
+                except Exception:
+                    pass
+                raise _over
 
             # Detect stale streams: connections kept alive by SSE pings
             # but delivering no real chunks.  Kill the client so the
@@ -15407,6 +15459,11 @@ class AIAgent:
                         response = self._interruptible_api_call(api_kwargs)
                     
                     api_duration = time.time() - api_start_time
+                    # How long each completed model call of this turn took, in
+                    # order (the Dispatcher puts it on the turn's record).
+                    _calls = getattr(self, "_turn_call_ms", None)
+                    if isinstance(_calls, list):
+                        _calls.append(round(api_duration * 1000))
                     
                     # Stop thinking spinner silently -- the response box or tool
                     # execution messages that follow are more informative.
@@ -15982,6 +16039,25 @@ class AIAgent:
                     self._persist_session(messages, conversation_history)
                     interrupted = True
                     final_response = f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
+                    break
+
+                except CallOverBudget as _over:
+                    # The declared time budget for one model call ran out. No
+                    # retry at this tier: the turn ends here, and the
+                    # Dispatcher's review of the reply hands the request one
+                    # tier up (or presents what the turn already recorded).
+                    if thinking_spinner:
+                        thinking_spinner.stop("")
+                        thinking_spinner = None
+                    if self.thinking_callback:
+                        self.thinking_callback("")
+                    self._persist_session(messages, conversation_history)
+                    self._call_over_budget = {
+                        "seconds": round(_over.waited, 1), "budget": _over.budget,
+                        "model": _over.model, "call": api_call_count,
+                    }
+                    final_response = (
+                        f"No answer from the model in {_over.budget:.0f} seconds.")
                     break
 
                 except Exception as api_error:
@@ -17125,6 +17201,9 @@ class AIAgent:
             # If the API call was interrupted, skip response processing
             if interrupted:
                 _turn_exit_reason = "interrupted_during_api_call"
+                break
+            if getattr(self, "_call_over_budget", None):
+                _turn_exit_reason = "call_over_budget"
                 break
 
             if restart_with_compressed_messages:

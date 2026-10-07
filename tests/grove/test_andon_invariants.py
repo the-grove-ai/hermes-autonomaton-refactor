@@ -987,3 +987,126 @@ def test_the_alias_rule_is_declared_or_it_does_not_exist(env, tmp_path):
                      ({"confirmations": 1, "same": ["account"]}, "must list declared inputs")):
         with pytest.raises(ValueError, match=why):
             dw.load_config(goal(bad))
+
+
+# ── a model call over its time budget ─────────────────────────────────
+
+
+def test_a_model_call_over_its_time_budget_fails_upward_like_any_other_attempt(env):
+    """2026-10-07: live, two model calls stalled for 92 s each with no retry
+    and no escalation. A goal now declares a time budget for one call; a call
+    past it ends the attempt, and the ladder rule hands the request one tier
+    up. No new record type: the same flag, andon, remedy and re-issue."""
+    from grove import reissue
+    from grove.dispatcher import Dispatcher
+
+    env.add("billing")
+    over = {"seconds": 31.2, "budget": 30.0, "model": "small", "call": 1}
+
+    def stand_in(agent_over=over, **prov):
+        d = SimpleNamespace(
+            _current_turn_isolation=GOAL, _current_turn_t0_pattern=None,
+            _current_turn_id="sess#1", _current_turn_withheld=None,
+            turn_provenance=lambda agent: env.prov(**prov))
+        return d, SimpleNamespace(_call_over_budget=agent_over)
+
+    # Nothing on record yet: this tier did not complete the turn. One line to
+    # the operator, the request re-issued one tier up, the attempt on record.
+    d, agent = stand_in()
+    said = Dispatcher.review_final_reply(d, agent, "No answer from the model in 30 seconds.")
+    assert said == "No answer from the model in 30 seconds. Retrying one tier up (T2)."
+    assert d._current_turn_withheld["kind"] == "call_over_budget"
+    assert d._current_turn_withheld["summary"] == "escalated to T2 (ladder rule)"
+    armed = reissue.take("sess")
+    assert (armed["tier"], armed["request"]) == ("T2", "tag the next message")
+    assert [(a["tier"], a["reason"]) for a in armed["attempts"]] == [("T1", "call_over_budget")]
+    [flag] = [e for e in env.events() if e["event_type"] == "andon_event"]
+    assert flag["details"]["reason"] == "call_over_budget"
+    assert "gave no answer in 31.2 s (budget 30 s)" in flag["summary"]
+    [applied] = [e for e in env.events() if e["event_type"] == "remedy_applied"]
+    assert (applied["channel"], applied["summary"]) == (
+        "ladder_rule", "escalated T1 → T2 (ladder rule)")
+    # It is a ladder reason, and the ladder still authorizes one thing only.
+    assert "call_over_budget" in answers.LADDER_REASONS
+    assert andon.LADDER_WRITE_CLASSES == frozenset({"tier_escalation"})
+    # At the top tier there is nothing higher: said plainly, nothing armed.
+    d, agent = stand_in(tier="T3", turn_uid="u-top")
+    assert Dispatcher.review_final_reply(d, agent, "x") == answers.NOT_COMPLETED_MESSAGE
+    assert reissue.take("sess") is None
+    # Over budget only AFTER the decision was recorded (the call that writes
+    # the reply): what is on record stands, and nothing is escalated.
+    env.work.record(item_id="m01", inputs=env.inputs(), output={"tag": "finance"},
+                    reasoning="r", provenance=env.prov(turn_uid="u-rec",
+                                                       tools_yielded=["tag_message"]))
+    before = len([e for e in env.events() if e["event_type"] == "andon_event"])
+    d, agent = stand_in(turn_uid="u-rec", tools_yielded=["tag_message"])
+    Dispatcher.review_final_reply(d, agent, "No answer from the model in 30 seconds.")
+    assert d._current_turn_withheld is None and reissue.take("sess") is None
+    assert len([e for e in env.events() if e["event_type"] == "andon_event"]) == before
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_the_time_budget_is_declared_on_the_goal_and_never_guessed(tmp_path):
+    from tests.grove.test_work_session import SESSION, _goal
+
+    def cfg(**over):
+        goal = _goal(tmp_path, SESSION)
+        goal.extra["decision_work"].update(over)
+        return dw.load_config(goal)
+
+    assert cfg().call_budget_seconds == 30.0                   # the default
+    assert cfg(call_budget_seconds=12).call_budget_seconds == 12.0
+    for off in (0, None, False):
+        assert cfg(call_budget_seconds=off).call_budget_seconds is None
+    for bad in ("30", -5, True, [30]):
+        with pytest.raises(ValueError, match="call_budget_seconds"):
+            cfg(call_budget_seconds=bad)
+    # Declared tier by tier: each tier its own seconds, ``default`` for the rest.
+    tiers = cfg(call_budget_seconds={"T1": 20, "T3": 0, "default": 45}).call_budget_seconds
+    assert [dw.call_budget_for(tiers, t) for t in ("T1", "T2", "T3")] == [20.0, 45.0, None]
+    assert dw.call_budget_for(30.0, "T2") == 30.0 and dw.call_budget_for(None, "T1") is None
+    assert cfg(call_budget_seconds={"T1": 0}).call_budget_seconds is None
+    with pytest.raises(ValueError, match="call_budget_seconds"):
+        cfg(call_budget_seconds={"T1": "fast"})
+    # The budget is not part of the signed session rule: changing it needs no
+    # new signature.
+    assert dw.session_rule_digest(cfg()) == dw.session_rule_digest(cfg(call_budget_seconds=5))
+
+
+def test_the_goal_page_shows_a_rule_forming_and_proposes_nothing(env, monkeypatch):
+    """2026-10-07: "What Mylo is watching" shows each unlisted key's count
+    against the threshold, from the same count the detector uses. Reading it
+    writes nothing and proposes nothing."""
+    from grove.api import fragments
+    from grove.pattern_cache import PatternCacheStore
+
+    _declare_confirmed_key(env, monkeypatch)
+    env.earn_v1()
+    for n in range(1, 3):                                       # two of three
+        env.add("social", f"post {n}")
+        env.code("comms")
+    before = (len(env.events()), len(read_all()))
+    rows = fragments._forming_rules(env.work, None, PatternCacheStore())
+    assert rows == [{"key": "social", "word": "tag", "threshold": 3, "count": 2,
+                     "state": "counting"}]
+    assert (len(env.events()), len(read_all())) == before       # read-only
+    # A listed key, and a key the operator revised, are not rules forming.
+    assert "billing" not in [r["key"] for r in rows]
+    # Once the serving keg answers the key, the row says so.
+    spec = {"inputs": {"channel": {"data_type": "string"}},
+            "conditions": [{"if": "channel == 'social'", "then": {"tag": "comms"}}]}
+    monkeypatch.setattr(fragments, "_forming_rules", fragments._forming_rules)
+    from grove import keg as keg_mod
+    monkeypatch.setattr(keg_mod, "keg_of", lambda entry: spec)
+    store = SimpleNamespace(get=lambda pid: object())
+    [row] = fragments._forming_rules(env.work, {"pattern_id": "keg:x"}, store)
+    assert (row["state"], row["count"]) == ("in the keg", 2)
+    # The trace's turn line: the keg's reason, the earlier attempt, each call.
+    assert fragments._trace_turn_notes({
+        "attempts": [{"tier": "T1", "reason": "call_over_budget"}],
+        "handback": {"kind": "no_rule", "key": "channel", "value": "social"},
+        "call_ms": [9200, 3100]}) == [
+        "T1 gave no answer inside the time budget; retried one tier up.",
+        "The keg handed it back: no rule for channel ‘social’.",
+        "Model calls: 9.2 s + 3.1 s."]
+    assert fragments._trace_turn_notes({"handback": None, "call_ms": [], "attempts": []}) == []

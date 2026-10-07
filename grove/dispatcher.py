@@ -567,6 +567,19 @@ def _run_guarded_producer(
         _file_producer_failure(producer, exc)
 
 
+def _t0_handback_why(response_text: Any) -> Optional[Dict[str, str]]:
+    """Why a T0 pattern's tool handed the request back, when the tool said:
+    ``{"kind", "rule"?, "key"?, "value"?}`` from the decline's own ``handback`` object. None for
+    a tool that gives no reason. Kept short; it goes on the turn's record."""
+    try:
+        why = _json_mod.loads(response_text).get("handback")
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if not isinstance(why, dict) or not why.get("kind"):
+        return None
+    return {k: str(why[k])[:200] for k in ("kind", "rule", "key", "value") if why.get(k)}
+
+
 def _t0_declined(response_text: Any) -> bool:
     """Whether an executable T0 pattern's tool handed the request back.
 
@@ -2168,7 +2181,14 @@ class Dispatcher:
             agent, user_message,
         )
         self._current_turn_goal_session = self._current_turn_isolation
+        # The time budget for one model call of this turn, when its goal
+        # declares one (the agent enforces it; the ladder rule answers it).
+        try:
+            agent._call_budget_seconds = self._turn_call_budget()
+        except Exception:  # a frozen / exotic agent stand-in
+            pass
         self._current_turn_t0_handback = None
+        self._current_turn_t0_handback_why = None
         self._current_turn_escalation = None
         self._current_turn_withheld = None
         self._current_turn_session_step = None
@@ -2937,6 +2957,9 @@ class Dispatcher:
         self._current_turn_token_base = self._agent_token_snapshot(agent)
         try:
             agent._turn_retries = 0
+            agent._turn_call_ms = []
+            agent._call_over_budget = None
+            agent._call_budget_seconds = None
         except Exception:  # a frozen / exotic agent stand-in — nothing to reset
             pass
 
@@ -3037,6 +3060,10 @@ class Dispatcher:
                 # A T0 pattern that was consulted and handed this turn back as
                 # outside its scope (standard work, not a fault). None otherwise.
                 "t0_handback": getattr(self, "_current_turn_t0_handback", None),
+                # ...and why, when its tool said (no rule covers it, or a rule
+                # sends it to the model). Absent otherwise.
+                **({"t0_handback_why": self._current_turn_t0_handback_why}
+                   if getattr(self, "_current_turn_t0_handback_why", None) else {}),
                 # The ladder: every earlier attempt at this request and the
                 # tier it ran on, when this turn is a re-issue one tier up.
                 "escalation": getattr(self, "_current_turn_escalation", None),
@@ -3070,6 +3097,9 @@ class Dispatcher:
                    if getattr(self, "_current_turn_session_reply", None) else {}),
                 "mode": "tools" if tools_run else "response_only",
                 "model_calls": int(api_calls),
+                # How long each completed model call took, in order (ms).
+                "call_ms": [int(ms) for ms in
+                            (getattr(agent, "_turn_call_ms", None) or [])][:cap],
                 "retries": int(getattr(agent, "_turn_retries", 0) or 0),
                 "fallbacks": [
                     {k: e.get(k) for k in ("event_type", "from_tier", "to_tier", "reason")
@@ -4048,6 +4078,7 @@ class Dispatcher:
                 # turn's own record (stage summary, compilation) — no separate
                 # event.
                 self._current_turn_t0_handback = pattern.pattern_id
+                self._current_turn_t0_handback_why = _t0_handback_why(response_text)
                 logger.info(
                     "[grove.dispatcher] T0 pattern %s does not cover this "
                     "request — the interpreter takes the turn.", pattern.pattern_id,
@@ -5850,6 +5881,20 @@ class Dispatcher:
             "attempts": pin["attempts"], "andon_id": pin["andon_id"]}
         return pin["tier"]
 
+    def _turn_call_budget(self) -> Any:
+        """Compilation stage. The time budget for one model call of THIS turn:
+        what the turn's goal declares (``call_budget_seconds``), else None. A
+        goal whose declaration cannot be read gives no budget, logged loud."""
+        goal = getattr(self, "_current_turn_isolation", None)
+        if not goal:
+            return None
+        try:
+            from grove.decision_work import config_for_goal
+            return config_for_goal(str(goal)).call_budget_seconds
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[grove.dispatcher] no call budget for goal %s: %r", goal, exc)
+            return None
+
     def review_final_reply(self, agent: Any, reply: str) -> Optional[str]:
         """Review a turn's reply before it is saved or sent. Returns the text
         to deliver INSTEAD when the reply must be withheld, else None.
@@ -5901,9 +5946,25 @@ class Dispatcher:
                     "summary": "no tier completed the request"}
                 return NOT_COMPLETED_MESSAGE
             work = DecisionWork(config_for_goal(str(goal)))
+            over = getattr(agent, "_call_over_budget", None)
             token = turn_provenance.set_current(prov)
             try:
-                refusal = work.unanswered(reply, prov)
+                on_record = work.pending()
+                if over and not (on_record is not None
+                                 and on_record.get("turn_uid") == turn_uid):
+                    # A model call ran past the goal's time budget before
+                    # anything was put on record: this tier did not complete
+                    # the turn. Flagged, raised and answered like any other
+                    # such attempt, under the ladder rule.
+                    refusal = work.abnormal(
+                        "call_over_budget",
+                        f"Model call {over.get('call')} to {over.get('model')} gave no "
+                        f"answer in {over.get('seconds')} s (budget "
+                        f"{over.get('budget'):.0f} s).", prov)
+                else:
+                    # In order, or over budget only AFTER the decision was
+                    # recorded: what is on record is presented as usual.
+                    refusal = work.unanswered(reply, prov)
             finally:
                 turn_provenance.reset(token)
             if refusal is None:
@@ -5927,6 +5988,9 @@ class Dispatcher:
                 "[grove.dispatcher] turn %s reply withheld (%s; andon %s) — %s",
                 self._current_turn_id, refusal.reason, refusal.andon_id,
                 self._current_turn_withheld["summary"])
+            if escalating and refusal.reason == "call_over_budget":
+                return (f"No answer from the model in {over.get('budget'):.0f} seconds. "
+                        f"Retrying one tier up ({up}).")
             return ESCALATING_MESSAGE if escalating else NOT_COMPLETED_MESSAGE
         except Exception as exc:  # noqa: BLE001
             logger.error(

@@ -701,7 +701,15 @@ def trace(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dict[st
         stages = row.get("stages") or {}
         execution = stages.get("execution") or {}
         match = (stages.get("recognition") or {}).get("phrase_match") or {}
+        compilation = stages.get("compilation") or {}
         return {
+            # Why a keg handed this turn's item back, each model call's
+            # duration, and the earlier attempts when this turn is a re-issue
+            # one tier up: all read off the turn's own record.
+            "handback": compilation.get("t0_handback_why"),
+            "call_ms": list(execution.get("call_ms") or []),
+            "attempts": [{"tier": a.get("tier"), "reason": a.get("reason")}
+                         for a in ((compilation.get("escalation") or {}).get("attempts") or [])],
             "turn_id": row.get("turn_id"), "turn_uid": uid,
             "tier": row.get("tier_selected"), "model": row.get("model_used"),
             "model_calls": int(execution.get("model_calls", row.get("api_calls") or 0) or 0),

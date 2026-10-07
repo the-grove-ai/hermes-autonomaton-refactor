@@ -231,6 +231,37 @@ def test_keg_hands_back_an_invoice_it_does_not_cover(work):
     _call(verb="decide", decision="confirm")
     declined = json.loads(gl.gl_coding({"verb": "apply_keg", "keg": KEG}))   # Birch: two codes
     assert declined["t0_declined"] is True and work.pending() is None
+    # 2026-10-07: the handback says why, in a form the turn's record keeps.
+    # The reference key and its value on this invoice: "no rule for vendor X".
+    why = {"kind": "no_rule", "key": "vendor", "value": "Birch Office Goods"}
+    assert declined["handback"] == why
+    from grove.dispatcher import _t0_handback_why
+    assert _t0_handback_why(json.dumps(declined)) == why
+    # A rule that sends the case to the model names itself.
+    defer = {"if": "vendor == 'Birch Office Goods'", "defer": True}
+    narrowed = {**KEG, "conditions": [defer] + list(KEG["conditions"])}
+    deferred = json.loads(gl.gl_coding({"verb": "apply_keg", "keg": narrowed}))
+    assert deferred["handback"] == {"kind": "rule_defers", "rule": defer["if"]}
+    assert work.pending() is None
+    # A tool that gives no reason, or says something else, yields none.
+    for raw in ('{"t0_declined": true, "reason": "x"}', "Coded 6110.", "{oops", None,
+                '{"t0_declined": true, "handback": {"kind": ""}}'):
+        assert _t0_handback_why(raw) is None
+
+
+def test_the_turn_record_keeps_each_calls_duration_and_the_handback_reason():
+    """2026-10-07: two questions the records could not answer (which model
+    call of a slow turn was slow; why a keg handed an item back) are extra
+    fields on the turn's own record, not a new record type."""
+    import inspect
+
+    import run_agent
+    from grove import dispatcher
+    src = inspect.getsource(dispatcher)
+    assert '"call_ms": [int(ms) for ms in' in src and "agent._turn_call_ms = []" in src
+    assert '"t0_handback_why": self._current_turn_t0_handback_why' in src
+    assert "self._current_turn_t0_handback_why = None" in src
+    assert "_calls.append(round(api_duration * 1000))" in inspect.getsource(run_agent)
 
 
 def test_keg_verb_is_refused_outside_a_t0_serve(work):

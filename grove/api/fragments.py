@@ -618,6 +618,41 @@ def _attachment_entry_html(app, goal_id: str, event: dict) -> str:
     )
 
 
+def _forming_rules(work, serving, store) -> List[Dict[str, Any]]:
+    """Each reference key this run has seen that the table does not list and
+    the operator keeps confirming the same way: its count against the goal's
+    declared threshold. Read-only, from the same count the detector uses
+    (``DecisionWork.confirmed_key_evidence``); nothing is proposed here. A key
+    the serving keg already answers reads ``in the keg``."""
+    from grove import keg as keg_mod
+
+    cfg = work.config
+    if cfg.reference is None or cfg.evidence is None:
+        return []
+    key_input = cfg.reference.key_input
+    spec = None
+    if serving is not None:
+        entry = store.get(serving["pattern_id"])
+        spec = keg_mod.keg_of(entry) if entry is not None else None
+    word = (next(iter(cfg.outputs)).split("_")[-1] if len(cfg.outputs) == 1 else "answer")
+    seen, rows = [], []
+    for record in work.log.run_records():
+        key = (record.get("inputs") or {}).get(key_input)
+        if record.get("kind") == "proposed" and key and key not in seen:
+            seen.append(key)
+    for key in seen:
+        found = work.confirmed_key_evidence(key)
+        if not found.get("threshold") or not found.get("confirmations"):
+            continue
+        ruled = spec is not None and keg_mod.evaluate(spec, {key_input: key}) is not None
+        rows.append({
+            "key": key, "word": word, "threshold": found["threshold"],
+            "count": min(found["confirmations"], found["threshold"]) if ruled
+                     else found["confirmations"],
+            "state": "in the keg" if ruled else "counting"})
+    return rows
+
+
 def _version_ground(trigger, cfg) -> str:
     """What led to a keg version, in one or two sentences, from what the
     ledger recorded (see ``audit._trigger``). The wording follows the detector
@@ -833,6 +868,12 @@ def _goal_standard_work_html(goal) -> str:
     if cfg.evidence is not None:
         reads.append(("Evidence for a keg", f"{cfg.evidence.threshold} confirmed decisions",
                       "matching the table"))
+    if cfg.call_budget_seconds:
+        budget = cfg.call_budget_seconds
+        shown = (", ".join(f"{t} {s:.0f} s" for t, s in budget.items() if s)
+                 if isinstance(budget, dict) else f"{budget:.0f} seconds")
+        reads.append(("Time budget per model call", shown,
+                      "then the request goes one tier up"))
     reads.append(
         ("Session memory", "stays in the records", "work turns are never summarized")
         if cfg.session_memory == dw.SESSION_MEMORY_RECORDS_ONLY else
@@ -847,15 +888,29 @@ def _goal_standard_work_html(goal) -> str:
            if cfg.isolated else "These turns may also draw on recalled knowledge.")
         + '</p></div>')
 
-    # What Mylo is watching: each declared pattern, its count against its
-    # threshold, and its state. Only for a goal with adaptation switched on.
+    # What Mylo is watching: rules that are forming from the operator's own
+    # confirmations, and each declared pattern with its count against its
+    # threshold. Read from the records; nothing here proposes anything. The
+    # panel refreshes itself, so the counts move while a batch is worked.
     watching = ""
+    forming = ""
+    try:
+        forming = "".join(
+            f'<div class="sc-row"><span>{_esc(r["key"])} <span class="sc-quiet">· '
+            f'same {_esc(r["word"])}, none revised</span></span><span class="sc-mono">'
+            f'{_esc(r["count"])} of {_esc(r["threshold"])} confirmations <span class="sc-eyebrow'
+            f'{" sc-on" if r["state"] == "in the keg" else ""}">'
+            f'{_esc(r["state"].upper())}</span></span></div>'
+            for r in _forming_rules(work, serving, store))
+    except Exception as exc:  # noqa: BLE001 — the goal page never fails for a panel
+        logger.warning("[fragments] forming rules unavailable for %s: %r", goal.id, exc)
+    patterns = ""
     if cfg.adaptation.enabled:
         try:
             from grove import adaptation as lane
             becomes = {"alias": "a phrase you approve in conversation",
                        "routing_keg": "a routing rule you sign"}
-            rows = "".join(
+            patterns = "".join(
                 f'<div class="sc-row"><span>{_esc(r["what"])} <span class="sc-quiet">· becomes '
                 f'{_esc(becomes.get(r["becomes"], r["becomes"]))}'
                 + ("" if r["proposes"] else " · counting only for now")
@@ -864,15 +919,28 @@ def _goal_standard_work_html(goal) -> str:
                 f'{" sc-on" if r["state"] == "live" else ""}">'
                 f'{_esc(str(r["state"]).upper())}</span></span></div>'
                 for r in lane.status(dw.DecisionWork(cfg)))
-            watching = (
-                '<section class="sc-pair"><div class="sc-panel"><h3>What Mylo is watching'
-                f'</h3><div class="sc-rows">{rows}</div><p class="sc-foot">Counted from '
-                'the records. A phrase is counted only when a model read it and you did '
-                'not revise the result; a revision starts the count again. Take a phrase '
-                f'back by saying “{_esc(cfg.adaptation.forget[0])}” and the phrase.</p>'
-                '</div></section>')
         except Exception as exc:  # noqa: BLE001 — the goal page never fails for a panel
             logger.warning("[fragments] watching panel unavailable for %s: %r", goal.id, exc)
+    if forming or patterns:
+        watching = (
+            f'<section class="sc-pair" id="goal-watching" '
+            f'hx-get="/portal/fragments/goal/{_esc(goal.id)}" hx-trigger="every 5s" '
+            f'hx-select="#goal-watching" hx-target="this" hx-swap="outerHTML">'
+            '<div class="sc-panel"><h3>What Mylo is watching</h3>'
+            + (f'<div class="sc-eyebrow">RULES FORMING FROM YOUR CONFIRMATIONS</div>'
+               f'<div class="sc-rows">{forming}</div>' if forming else "")
+            + (f'<div class="sc-eyebrow">PATTERNS</div>' if forming and patterns else "")
+            + (f'<div class="sc-rows">{patterns}</div>' if patterns else "")
+            + '<p class="sc-foot">Counted from the records. '
+            + ("A rule forms when a model decides a case the reference table does not "
+               "list and you confirm the same answer each time; one revision ends the "
+               "count. At the threshold it becomes a proposal for you to sign. "
+               if forming else "")
+            + ("A phrase is counted only when a model read it and you did not revise the "
+               "result; a revision starts the count again. Take a phrase back by saying "
+               f"“{_esc(cfg.adaptation.forget[0])}” and the phrase."
+               if patterns and cfg.adaptation.forget else "")
+            + '</p></div></section>')
 
     links = (
         '<div class="sc-check-line"><a class="sc-run sc-download" '
@@ -5871,7 +5939,45 @@ def _trace_turn_line(step) -> str:
         bits.append(_sc_seconds(step["seconds"]))
     if step.get("record_hash"):
         bits.append("record " + str(step["record_hash"])[:12])
-    return _esc(" · ".join(b for b in bits if b))
+    line = _esc(" · ".join(b for b in bits if b))
+    for extra in _trace_turn_notes(step):
+        line += f'<br>{_esc(extra)}'
+    return line
+
+
+_ATTEMPT_WORDS = {
+    "call_over_budget": "gave no answer inside the time budget",
+    "reply_without_tool": "replied without doing the work",
+    "reply_without_record": "put nothing on record",
+    "output_not_in_domain": "gave an answer that is not a valid value",
+    "undeclared_output": "gave an output the work does not declare",
+}
+
+
+def _trace_turn_notes(step) -> List[str]:
+    """What the turn's own record adds to its line: the earlier attempts when
+    it is a re-issue one tier up, why a keg handed the item back, and how
+    long each model call took. Empty for a turn that records none of them."""
+    notes = []
+    for a in step.get("attempts") or []:
+        why = _ATTEMPT_WORDS.get(str(a.get("reason")), str(a.get("reason") or "").replace("_", " "))
+        notes.append(f"{a.get('tier') or 'An earlier tier'} {why}; retried one tier up.")
+    back = step.get("handback") or {}
+    if back.get("kind") == "no_rule" and back.get("key"):
+        notes.append(f"The keg handed it back: no rule for {back['key']} ‘{back.get('value', '')}’.")
+    elif back.get("kind") == "rule_defers" and back.get("rule"):
+        try:
+            plain = _keg_plain({"if": back["rule"]}, {})
+        except Exception:  # noqa: BLE001 — the rule's own words still say it
+            plain = back["rule"]
+        notes.append(f"The keg handed it back: {plain} → model.")
+    elif back.get("kind"):
+        notes.append("The keg handed it back: " + str(back["kind"]).replace("_", " ") + ".")
+    calls = step.get("call_ms") or []
+    if calls:
+        notes.append("Model call" + ("s" if len(calls) > 1 else "") + ": "
+                     + " + ".join(f"{ms / 1000:.1f} s" for ms in calls) + ".")
+    return notes
 
 
 def _trace_html(report) -> str:

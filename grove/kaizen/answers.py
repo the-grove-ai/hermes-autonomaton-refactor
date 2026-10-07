@@ -352,6 +352,8 @@ def _correction(andon: Mapping[str, Any], context: Any) -> Answer:
 LADDER_REASONS = frozenset({
     "output_not_in_domain", "undeclared_output", "reply_without_tool",
     "reply_without_record",
+    # The tier gave no answer inside the goal's declared time budget.
+    "call_over_budget",
 })
 ESCALATING_MESSAGE = "That attempt didn't complete; retrying with a stronger model."
 NOT_COMPLETED_MESSAGE = (
