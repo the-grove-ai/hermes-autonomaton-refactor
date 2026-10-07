@@ -1282,3 +1282,9 @@ ul.listing li { padding: 0.7rem 0; }
   border-top: 1px solid var(--sc-line); }
 .sc-op { font-size: 28px; color: var(--sc-text-2); }
 @media (max-width: 800px) { .sc-returns-sum { grid-template-columns: 1fr; } .sc-op { display: none; } }
+
+/* Scorecard with three or more periods: the cards are narrower, so their
+   figures step down and wrap instead of running into each other. */
+.sc-catches-many .sc-period { flex-wrap: wrap; gap: 12px 18px; }
+.sc-catches-many .sc-period .sc-figure { font-size: 26px; }
+.sc-tile .sc-figure { overflow-wrap: anywhere; }

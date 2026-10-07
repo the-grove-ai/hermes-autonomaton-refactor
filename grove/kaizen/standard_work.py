@@ -359,11 +359,14 @@ def propose_direct_rule(
         if because and condition.get("if") == rule["if"]:
             # A rule with its own stated ground (an alias of an existing key).
             added.append(f"{ref.key_input} {named} is answered "
-                         f"{json.dumps(dict(condition['then']))}: {because}")
+                         f"{work.value_text(dict(condition['then']))}: {because}")
             continue
+        asked = (cfg.evidence.confirmed_key_threshold
+                 if how == "confirmed" and cfg.evidence is not None else None)
         added.append(f"{ref.key_input} {named} is answered "
-                     f"{json.dumps(dict(condition['then']))}, as you {how} it "
-                     f"{len(behind)} times")
+                     f"{work.value_text(dict(condition['then']))}, as you {how} it "
+                     f"{len(behind)} times"
+                     + (f" (the goal's rule asks for {asked})" if asked else ""))
     run = work.log.current_run() or {}
     result = propose_keg(
         store,

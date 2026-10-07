@@ -775,6 +775,10 @@ def test_confirmed_decisions_for_an_unlisted_key_become_a_proposed_rule(env, mon
     assert (k["version"], k["flag"]) == (2, keg.FLAG_TIER_DOWN_PATTERN)
     assert k["conditions"][0] == {"if": "channel == 'social'", "then": {"tag": "comms"}}
     assert len(proposal.evidence) == 3
+    # The card states the count and the threshold the goal's rule asks for.
+    assert proposal.semantic_justification == (
+        "Adds one rule: channel 'social' is answered comms, as you "
+        "confirmed it 3 times (the goal's rule asks for 3).")
     detail = event["answer"]["detail"]
     assert (detail["would_change"], detail["rules_added"]) == (0, 1)
     assert "You confirmed 'social' the same way 3 times" in event["answer"]["summary"]

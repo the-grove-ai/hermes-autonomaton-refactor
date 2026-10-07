@@ -1429,6 +1429,12 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
         why = (f"You revised one {one} the keg decided. The keg stopped itself, and this "
                f"is the smallest change that would have gotten it right, tested against "
                f"every {one} it has seen.")
+    elif str(view.semantic_justification or "").startswith("Adds "):
+        # A rule earned from the operator's own decisions (confirmations, or an
+        # existing key under another name): the proposal states its own ground,
+        # and the reference table has nothing to do with it.
+        why = (str(view.semantic_justification).split(HANDS_BACK)[0].strip()
+               + f" Tested against every {one} so far.")
     else:
         why = (f"Your confirmed decisions matched {ctx['table'] or 'the reference table'} "
                f"every time. This puts those cases on standard work, tested against "
@@ -5455,7 +5461,8 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
             f'<section class="sc-panel"><h3>'
             + (f'{_esc(g["periods"][0]["label"])} against {_esc(g["periods"][1]["label"])}'
                if len(g["periods"]) == 2 else "Period by period")
-            + f'</h3><div class="sc-catches">{cols}</div>'
+            + f'</h3><div class="sc-catches'
+            f'{" sc-catches-many" if len(g["periods"]) > 2 else ""}">{cols}</div>'
             f'<p class="sc-foot">Months are counted separately. Keg decisions without '
             f'review are not treated as confirmed. '
             + (f'All-model rate: {_rate(rate)} per {RATE_PER:,}, what model-decided '
