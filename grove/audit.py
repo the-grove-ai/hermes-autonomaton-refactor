@@ -708,6 +708,8 @@ def trace(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dict[st
             # one tier up: all read off the turn's own record.
             "handback": compilation.get("t0_handback_why"),
             "call_ms": list(execution.get("call_ms") or []),
+            "over_budget": execution.get("call_over_budget"),
+            "failure_kind": row.get("failure_kind"),
             "attempts": [{"tier": a.get("tier"), "reason": a.get("reason")}
                          for a in ((compilation.get("escalation") or {}).get("attempts") or [])],
             "turn_id": row.get("turn_id"), "turn_uid": uid,

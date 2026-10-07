@@ -3113,6 +3113,11 @@ class Dispatcher:
                    if getattr(self, "_current_turn_session_reply", None) else {}),
                 "mode": "tools" if tools_run else "response_only",
                 "model_calls": int(api_calls),
+                # A model call of this turn that was stopped at the goal's time
+                # budget: which call, how long it had waited, the budget.
+                **({"call_over_budget": {k: over.get(k) for k in ("call", "seconds", "budget")}}
+                   if isinstance(over := getattr(agent, "_call_over_budget", None), dict)
+                   else {}),
                 # How long each completed model call took, in order (ms).
                 "call_ms": [int(ms) for ms in
                             (getattr(agent, "_turn_call_ms", None) or [])][:cap],
@@ -5976,22 +5981,23 @@ class Dispatcher:
             over = getattr(agent, "_call_over_budget", None)
             token = turn_provenance.set_current(prov)
             try:
-                if over and work.config.tool not in set(prov.get("tools_yielded") or ()):
+                if over and not work.on_record(prov):
                     # A model call ran past the goal's time budget before the
-                    # turn had called the goal's tool at all: nothing was
-                    # proposed, decided or asked, so this tier did not complete
-                    # the turn. Flagged, raised and answered like any other
-                    # such attempt, under the ladder rule. (A turn that DID
-                    # call the tool is never re-issued for a late reply: the
-                    # request would be acted on twice.)
+                    # turn had put anything on record: nothing was proposed,
+                    # decided or asked (it may have read the next item, which
+                    # changes nothing), so this tier did not complete the turn.
+                    # Flagged, raised and answered like any other such attempt,
+                    # under the ladder rule, and named for what it was. (A turn
+                    # that DID put something on record is never re-issued for a
+                    # late reply: the request would be acted on twice.)
                     refusal = work.abnormal(
                         "call_over_budget",
                         f"Model call {over.get('call')} to {over.get('model')} gave no "
                         f"answer in {over.get('seconds')} s (budget "
                         f"{over.get('budget'):g} s).", prov)
                 else:
-                    # In order, or over budget only after the tool was called:
-                    # judged on what is on record, as any turn is.
+                    # In order, or over budget only after something was put on
+                    # record: judged on what is on record, as any turn is.
                     refusal = work.unanswered(reply, prov)
             finally:
                 turn_provenance.reset(token)

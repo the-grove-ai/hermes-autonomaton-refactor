@@ -1026,6 +1026,9 @@ def test_a_model_call_over_its_time_budget_fails_upward_like_any_other_attempt(e
     [applied] = [e for e in env.events() if e["event_type"] == "remedy_applied"]
     assert (applied["channel"], applied["summary"]) == (
         "ladder_rule", "escalated T1 → T2 (ladder rule)")
+    # The ledger's own sentence says what happened, too.
+    [answered] = [e for e in env.events() if e["event_type"] == "kaizen_answer"]
+    assert answered["summary"] == answers.OVER_BUDGET_MESSAGE
     # It is a ladder reason, and the ladder still authorizes one thing only.
     assert "call_over_budget" in answers.LADDER_REASONS
     assert andon.LADDER_WRITE_CLASSES == frozenset({"tier_escalation"})
@@ -1033,7 +1036,17 @@ def test_a_model_call_over_its_time_budget_fails_upward_like_any_other_attempt(e
     d, agent = stand_in(tier="T3", turn_uid="u-top")
     assert Dispatcher.review_final_reply(d, agent, "x") == answers.NOT_COMPLETED_MESSAGE
     assert reissue.take("sess") is None
-    # Over budget only AFTER the turn called the goal's tool (the call that
+    # 2026-10-07, live: twice the model read the next item (a tool call that
+    # changes nothing) and its NEXT call ran out of time. Nothing was on
+    # record, so the attempt went up a tier, but the record named it "replied
+    # without recording". It is named for what it was.
+    d, agent = stand_in(turn_uid="u-read", tools_yielded=["tag_message"])
+    said = Dispatcher.review_final_reply(d, agent, "No answer from the model in 30 seconds.")
+    assert said == "No answer from the model in 30 seconds. Retrying one tier up (T2)."
+    assert d._current_turn_withheld["kind"] == "call_over_budget"
+    assert reissue.take("sess")["attempts"][-1]["reason"] == "call_over_budget"
+    assert env.work.on_record(env.prov(turn_uid="u-read")) is False
+    # Over budget only AFTER the turn put something on record (the call that
     # writes the reply): what is on record stands, and nothing is escalated.
     # A turn that already decided is never re-issued: the same message would
     # be acted on a second time.
@@ -1049,6 +1062,7 @@ def test_a_model_call_over_its_time_budget_fails_upward_like_any_other_attempt(e
     # now), whose reply call then stalled: not re-issued, or "ship it" would
     # be read a second time against the next item.
     env.work.decide(decision="confirm", provenance=env.prov(turn_uid="u-dec"))
+    assert env.work.on_record(env.prov(turn_uid="u-dec")) is True
     d, agent = stand_in(turn_uid="u-dec", tools_yielded=["tag_message"], request="ship it")
     Dispatcher.review_final_reply(d, agent, "No answer from the model in 30 seconds.")
     assert d._current_turn_withheld is None and reissue.take("sess") is None
@@ -1125,4 +1139,12 @@ def test_the_goal_page_shows_a_rule_forming_and_proposes_nothing(env, monkeypatc
         "T1 gave no answer inside the time budget; retried one tier up.",
         "The keg handed it back: no rule for channel ‘social’.",
         "Model calls: 9.2 s + 3.1 s."]
+    # A call stopped at the budget is on the turn's own line, either way it ended.
+    over = {"call": 2, "seconds": 30.3, "budget": 30.0}
+    assert fragments._trace_turn_notes({"over_budget": over, "failure_kind": "call_over_budget"}) == [
+        "A model call was stopped at the 30 s time budget (after 30.3 s with no answer). "
+        "The request went one tier up."]
+    assert fragments._trace_turn_notes({"over_budget": over, "failure_kind": None}) == [
+        "A model call was stopped at the 30 s time budget (after 30.3 s with no answer). "
+        "What the turn had already put on record stands."]
     assert fragments._trace_turn_notes({"handback": None, "call_ms": [], "attempts": []}) == []

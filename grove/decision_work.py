@@ -1636,6 +1636,20 @@ class DecisionWork:
                 "Stop here.",
             )
 
+    def on_record(self, provenance: Optional[Mapping[str, Any]]) -> bool:
+        """Whether THIS turn put anything on record: an item proposed, an item
+        decided, or a question it declared it is asking. A turn that only read
+        the next item has put nothing on record."""
+        prov = provenance or {}
+        uid = prov.get("turn_uid")
+        if not uid:
+            return False
+        if any(r.get("turn_uid") == uid and r.get("kind") in (KIND_PROPOSED, KIND_DECIDED)
+               for r in self.log.run_records()):
+            return True
+        from grove import reissue
+        return reissue.turn_note(prov.get("session_id"), uid) == "asked"
+
     def unanswered(
         self, reply: str, provenance: Optional[Mapping[str, Any]],
     ) -> Optional[DecisionRefused]:

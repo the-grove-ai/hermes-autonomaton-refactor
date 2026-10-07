@@ -356,6 +356,7 @@ LADDER_REASONS = frozenset({
     "call_over_budget",
 })
 ESCALATING_MESSAGE = "That attempt didn't complete; retrying with a stronger model."
+OVER_BUDGET_MESSAGE = "No answer inside the time budget; retrying one tier up."
 NOT_COMPLETED_MESSAGE = (
     "This request couldn't be completed: every tier was tried and none "
     "finished it. Nothing was recorded."
@@ -393,7 +394,8 @@ def _fail_upward(andon: Mapping[str, Any]) -> Answer:
                 "turn_uid": details.get("turn_uid"), "attempts": attempts}}
         return stop
     return Answer(
-        kind=KIND_REMEDY, summary=ESCALATING_MESSAGE,
+        kind=KIND_REMEDY,
+        summary=OVER_BUDGET_MESSAGE if reason == "call_over_budget" else ESCALATING_MESSAGE,
         artifact=f"ladder:{andon.get('andon_id')}",
         write_class="tier_escalation",
         detail={"authorized": AUTHORIZED_LADDER_RULE,

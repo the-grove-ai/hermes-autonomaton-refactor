@@ -5982,6 +5982,12 @@ def _trace_turn_notes(step) -> List[str]:
         notes.append(f"The keg handed it back: {plain} → model.")
     elif back.get("kind"):
         notes.append("The keg handed it back: " + str(back["kind"]).replace("_", " ") + ".")
+    over = step.get("over_budget") or {}
+    if over:
+        tail = ("The request went one tier up." if step.get("failure_kind") == "call_over_budget"
+                else "What the turn had already put on record stands.")
+        notes.append(f"A model call was stopped at the {over.get('budget'):g} s time budget "
+                     f"(after {over.get('seconds'):g} s with no answer). {tail}")
     calls = step.get("call_ms") or []
     if calls:
         notes.append("Model call" + ("s" if len(calls) > 1 else "") + ": "
