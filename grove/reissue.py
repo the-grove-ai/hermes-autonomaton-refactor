@@ -79,21 +79,28 @@ def next_tier(tier: Optional[str]) -> Optional[str]:
 
 
 def arm_tier(session_id: str, tier: str, attempts: Optional[list] = None,
-             andon_id: Optional[str] = None) -> None:
+             andon_id: Optional[str] = None, request: Optional[str] = None) -> None:
     """Pin the NEXT turn of a session to a tier, once. Written by the gateway
-    as it re-issues a request one tier up; consumed by the Dispatcher when it
-    routes that turn (:func:`take_pin`). ``attempts`` are the earlier tries at
-    this request, carried so the turn that finally answers can show them."""
+    as it re-issues a request one tier up; consumed by the Dispatcher at the
+    start of that turn (:func:`take_pin`). ``attempts`` are the earlier tries
+    at this request, carried so the turn that finally answers can show them.
+    ``request`` is the request being re-issued: the pin is for that request
+    and no other."""
     path = _dir() / ("tier-" + _path(str(session_id)).name)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({
         "tier": tier, "attempts": list(attempts or []), "andon_id": andon_id,
+        "request": (str(request) if request is not None else None),
     }), encoding="utf-8")
 
 
-def take_pin(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
+def take_pin(session_id: Optional[str], message: Any = None) -> Optional[Dict[str, Any]]:
     """Consume the tier pin for a session's next turn: ``{"tier", "attempts",
-    "andon_id"}``, or None. Exactly once."""
+    "andon_id"}``, or None. Exactly once — and only for the request it was
+    armed for. A pin whose request is not this turn's message is dropped, not
+    kept: live, 2026-10-06, the operator answered a question while a retry
+    was armed, and the pin was taken by the next ordinary turn, which ran one
+    tier too high."""
     if not session_id:
         return None
     path = _dir() / ("tier-" + _path(str(session_id)).name)
@@ -105,6 +112,10 @@ def take_pin(session_id: Optional[str]) -> Optional[Dict[str, Any]]:
         pin = None
     path.unlink()
     if not isinstance(pin, dict) or pin.get("tier") not in TIER_LADDER:
+        return None
+    armed_for = pin.get("request")
+    if (armed_for is not None and message is not None
+            and str(armed_for).strip() != str(message).strip()):
         return None
     return {"tier": pin["tier"], "attempts": list(pin.get("attempts") or []),
             "andon_id": pin.get("andon_id")}
@@ -270,6 +281,27 @@ def note_turn(session_id: str, turn_uid: Optional[str], note: str,
     path.write_text(json.dumps({"turn_uid": turn_uid, "note": note,
                                 "text": (str(text)[:500] if text else None)}),
                     encoding="utf-8")
+
+
+def open_question(session_id: Optional[str]) -> Optional[str]:
+    """The question a model last asked the operator in this session, while it
+    is still open: nothing has been recorded since. None otherwise."""
+    if not session_id:
+        return None
+    path = _dir() / ("note-" + _path(str(session_id)).name)
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if isinstance(record, dict) and record.get("note") == "asked" and record.get("text"):
+        return str(record["text"])
+    return None
+
+
+def clear_turn_note(session_id: Optional[str]) -> None:
+    """Drop a session's turn note: what it noted has been answered."""
+    if session_id:
+        (_dir() / ("note-" + _path(str(session_id)).name)).unlink(missing_ok=True)
 
 
 def turn_note_text(session_id: Optional[str], turn_uid: Optional[str]) -> Optional[str]:

@@ -2159,6 +2159,11 @@ class Dispatcher:
         self._current_turn_session_reply = None
         self._current_turn_pause_notice = self._take_session_pause(agent, user_message)
         self._current_turn_reissued_clean = self._take_reissued_clean(agent, user_message)
+        # A tier pin belongs to the very next turn, and only when that turn is
+        # the request the pin was armed for. Taken here, at the start of every
+        # turn, so a turn that never reaches the router cannot leave it behind
+        # for a later one.
+        self._current_turn_pin = self._take_pin(agent, user_message)
         self._current_turn_isolation = self._resolve_turn_isolation(
             agent, user_message,
         )
@@ -4318,7 +4323,9 @@ class Dispatcher:
             if not cfg.work_session.enabled:
                 return None
             work = DecisionWork(cfg)
-            action = work.session_action(user_message)
+            action = work.session_action(
+                user_message,
+                session_id=self.session_id or getattr(agent, "session_id", None))
             # Recorded whether it fired or fell through to the model.
             self._current_turn_phrase_match = work.last_match
         except Exception as exc:  # noqa: BLE001
@@ -5821,16 +5828,21 @@ class Dispatcher:
         self._persist_t0_turn(user_message, response_text)
         return self._session_result_dict(agent, response_text)
 
-    def _take_reissue_tier(self, agent: Any) -> Optional[str]:
-        """The tier an accepted remedy pinned this re-issued turn to, if any
-        (``grove.reissue``). Consumed once; a fault means no pin."""
+    def _take_pin(self, agent: Any, user_message: Any) -> Optional[Dict[str, Any]]:
+        """Consume this session's tier pin, if it was armed for this turn's
+        message (``grove.reissue.take_pin``). A fault means no pin."""
         try:
             from grove import reissue
-            pin = reissue.take_pin(
-                self.session_id or getattr(agent, "session_id", None))
+            return reissue.take_pin(
+                self.session_id or getattr(agent, "session_id", None), user_message)
         except Exception as exc:  # noqa: BLE001
             logger.error("[grove.dispatcher] could not read the re-issue tier: %r", exc)
             return None
+
+    def _take_reissue_tier(self, agent: Any) -> Optional[str]:
+        """The tier an accepted remedy pinned this re-issued turn to, if any
+        (``grove.reissue``). Consumed once; a fault means no pin."""
+        pin, self._current_turn_pin = getattr(self, "_current_turn_pin", None), None
         if not pin:
             return None
         self._current_turn_escalation = {

@@ -252,16 +252,23 @@ def draft_condition(
     for tier in work.config.keg.revision_tiers:
         prompt = _draft_prompt(work, rules, history, target=target,
                                reason=reason, failure=failure)
-        try:
-            condition = _ask(call, prompt, tier)
-            problem = (
-                "it was empty." if not condition
-                else _check_condition(work, condition, history, target=target)
-            )
-        except Exception as exc:  # noqa: BLE001 — a failed call is a failed tier
-            condition, problem = "", f"the {tier} call failed ({type(exc).__name__})."
-            logger.warning("[kaizen] draft call at %s failed: %r", tier, exc)
-        attempts.append({"tier": tier, "condition": condition, "refused": problem})
+        from grove import t1_call
+        with t1_call.meter() as used:
+            try:
+                condition = _ask(call, prompt, tier)
+                problem = (
+                    "it was empty." if not condition
+                    else _check_condition(work, condition, history, target=target)
+                )
+            except Exception as exc:  # noqa: BLE001 — a failed call is a failed tier
+                condition, problem = "", f"the {tier} call failed ({type(exc).__name__})."
+                logger.warning("[kaizen] draft call at %s failed: %r", tier, exc)
+        attempt = {"tier": tier, "condition": condition, "refused": problem}
+        if used["calls"]:
+            # What this draft cost, kept with the attempt: learning is paid
+            # for once, and the scorecard shows it as such.
+            attempt["tokens"] = dict(used)
+        attempts.append(attempt)
         if problem is None:
             return condition, attempts
         failure = f"\"{condition}\" was refused because {problem}"

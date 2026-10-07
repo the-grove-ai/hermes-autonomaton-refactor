@@ -1219,3 +1219,10 @@ ul.listing li { padding: 0.7rem 0; }
 .sc-older { margin-top: 14px; }
 .sc-older summary { cursor: pointer; color: var(--sc-text-2); font-size: 14px; }
 .sc-table td, .sc-table th { text-align: left; }
+
+/* Scorecard: the period boundary on the chart, and period detail rows */
+.sc-event-line.sc-boundary { border-left-style: solid; opacity: 1; }
+.sc-version .sc-rows { margin-top: 10px; }
+.sc-version .sc-row { font-size: 14px; padding: 8px 0; }
+.sc-version .sc-row .sc-mono { white-space: normal; text-align: right; }
+.sc-version .sc-row > span:first-child { flex: 0 0 auto; margin-right: 16px; }

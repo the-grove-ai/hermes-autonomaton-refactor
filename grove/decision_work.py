@@ -1637,6 +1637,11 @@ class DecisionWork:
         self.check_output(output, provenance)
         prov = dict(provenance or {})
         run = self._run()
+        if prov.get("session_id"):
+            # An answer is on its way to the record: whatever question a model
+            # had open in this session has been answered.
+            from grove import reissue
+            reissue.clear_turn_note(str(prov["session_id"]))
         return self.log.append({
             "kind": KIND_PROPOSED,
             "run_id": run["run_id"],
@@ -1911,7 +1916,8 @@ class DecisionWork:
             return False
         return self.present_next_after({"id": "backlog"}, dict(prov))
 
-    def session_action(self, message: Any) -> Optional[Dict[str, Any]]:
+    def session_action(self, message: Any, *,
+                       session_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """What a message in this goal's work session unambiguously IS, decided
         with no model — or None, which sends it to the model.
 
@@ -1928,6 +1934,16 @@ class DecisionWork:
         if not ws.enabled:
             return None
         action = self._session_action(message)
+        if action is None and session_id and self.pending() is None and (
+                asks_for_work(str(message or ""), self.config)
+                or routes(message, ws.batch, self.config)):
+            # The work was asked for while a model's question about the next
+            # item is still open. There is nothing to present until it is
+            # answered: say the question again, with no model.
+            from grove import reissue
+            question = reissue.open_question(str(session_id))
+            if question:
+                action = {"action": "ask_again", "question": question}
         self.last_match = self.match_trace(message, action)
         return action
 
@@ -2158,6 +2174,9 @@ class DecisionWork:
                     "item_id": None, "decided": False, "presented": False}
         if kind == "batch":
             return self._batch_step(provenance, action.get("inputs_for"))
+        if kind == "ask_again":
+            return {"reply": "Still waiting on your answer:\n" + str(action.get("question")),
+                    "item_id": None, "decided": False, "presented": False}
         if kind in ("hold", "alias_yes", "alias_later", "forget"):
             from grove import adaptation as lane
             return lane.step(self, action, provenance)

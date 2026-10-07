@@ -587,7 +587,11 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
                 (v["name"] for v in loop["versions"] if v["name"]), log_path.stem),
             "item_name": shown["item_name"],
             "traceable": sum(1 for u in units if u["deciding"]["on_record"]),
-            "periods": _periods(units, shown),
+            "periods": (periods := _periods(units, shown)),
+            "why_model": (why := _why_model(log_path.stem, units, records, run)
+                          if periods else {}),
+            "headline": _headline(periods, why, shown["item_name"]),
+            "learning": _learning(base, log_path.stem, run, prices),
             "events": loop["events"],
             "versions": loop["versions"],
             "drafts_returned": loop["drafts_returned"],
@@ -821,33 +825,204 @@ def trace_export(home: Optional[Path] = None, *, goal: Optional[str] = None) -> 
     return "\n".join(lines) + ("\n" if lines else "")
 
 
+# "About the same" is a claim. It is made only inside this band.
+SAME_BAND = 0.25
+
+
 def _periods(units: List[Dict[str, Any]], shown: Mapping[str, Any]) -> List[Dict[str, Any]]:
-    """The run before its batch and the batch itself, side by side: how much
-    the keg decided, what each item cost in model calls and time, and how the
-    operator ruled. Empty when the run has no batch — there is one period."""
+    """The run before its batch and the batch itself, side by side and never
+    blended: how many items each handled, how many needed a model, what the
+    model calls cost, and what the same items would have cost had every one
+    gone to a model. Empty when the run has no batch — there is one period.
+
+    The all-model baseline is the item count times the FIRST period's measured
+    cost per model-decided item (not its plain average, which already includes
+    the items its keg served and would understate the baseline)."""
     if not any(u["batch"] for u in units):
         return []
+    first = [u for u in units if not u["batch"]]
+    first_model = [u for u in first if not u["keg"]]
+    priced = [u["deciding"]["cost"] for u in first_model if u["deciding"]["cost"] is not None]
+    rate = (sum(priced) / len(priced)) if priced else None
 
     def _one(label: str, group: List[Dict[str, Any]]) -> Dict[str, Any]:
         n = len(group)
-        keg = sum(1 for u in group if u["keg"])
+        model = [u for u in group if not u["keg"]]
+        keg = n - len(model)
+        calls = sum(u["deciding"]["model_calls"] for u in model)
+        cost = sum(u["deciding"]["cost"] or 0.0 for u in group)
+        baseline = rate * n if rate is not None else None
         return {
-            "label": label, "units": n, "keg_units": keg,
+            "label": label, "units": n, "keg_units": keg, "model_units": len(model),
             "keg_share": keg / n if n else 0.0,
-            "model_calls_per_unit": (
-                sum(u["deciding"]["model_calls"] for u in group) / n if n else None),
+            "model_calls": calls,
+            "calls_per_model_unit": calls / len(model) if model else None,
+            "model_calls_per_unit": calls / n if n else None,
             "seconds_per_unit": _mean([u["deciding"]["seconds"] for u in group]),
-            "cost_per_unit": _mean([u["deciding"]["cost"] for u in group]),
+            "cost": cost, "cost_per_unit": cost / n if n else None,
+            "all_priced": all(u["deciding"]["priced"] for u in model),
+            "baseline": baseline, "baseline_rate": rate,
+            "savings": (baseline - cost) if baseline is not None else None,
             "confirmed": sum(1 for u in group if u["confirmed"]),
             "accepted": sum(1 for u in group if u["accepted"]),
             "revised": sum(1 for u in group if u["corrected"]),
         }
 
     return [
-        _one(shown.get("before_label") or "Before the batch",
-             [u for u in units if not u["batch"]]),
+        _one(shown.get("before_label") or "Before the batch", first),
         _one(shown.get("batch_label") or "Batch", [u for u in units if u["batch"]]),
     ]
+
+
+def _why_model(goal: str, units: List[Dict[str, Any]], records: List[Dict[str, Any]],
+               run: Optional[Mapping[str, Any]] = None) -> Dict[str, Any]:
+    """Why each batch item that went to a model went there, from the records:
+
+      new       its reference key was never seen before the batch;
+      judgment  the key was seen, and the goal's own standard work sends it
+                to a model: the reference table has no single answer for it
+                (several, or none), or the keg's own rule hands the case back;
+      other     neither — the keg should arguably have covered it.
+
+    ``key`` is the goal's declared reference input ("vendor"). Empty when the
+    goal declares no reference table."""
+    out = {"key": None, "new": 0, "judgment": 0, "other": 0, "other_items": []}
+    try:
+        from grove import keg as keg_mod
+        from grove.decision_work import DecisionWork, _norm_key, config_for_goal
+        from grove.pattern_cache import PatternCacheStore, STATUS_REJECTED
+
+        cfg = config_for_goal(goal)
+        if cfg.reference is None:
+            return out
+        key_input = cfg.reference.key_input
+        table = DecisionWork(cfg).reference()
+        # The run's own standard work: its latest signed keg version, whatever
+        # has happened to it since (a later reset revokes it; the run's record
+        # of why it sent an item to a model does not change).
+        spec, latest = None, -1
+        for entry in PatternCacheStore().all():
+            record = keg_mod.keg_record(entry).get("keg") or {}
+            version = int(record.get("version") or 0)
+            if (record.get("dock_goal") == goal and entry.status != STATUS_REJECTED
+                    and record.get("lineage") == (run or {}).get("run_id")
+                    and version > latest and keg_mod.keg_of(entry)):
+                spec, latest = keg_mod.keg_of(entry), version
+    except Exception:  # noqa: BLE001 — the reasons are extra; the counts stand
+        return out
+    inputs = {r["item_id"]: r.get("inputs") or {} for r in records if r.get("kind") == "proposed"}
+    seen = {_norm_key(inputs.get(u["item_id"], {}).get(key_input))
+            for u in units if not u["batch"]}
+    out["key"] = key_input
+    for u in units:
+        if not u["batch"] or u["keg"]:
+            continue
+        given = inputs.get(u["item_id"], {})
+        key = _norm_key(given.get(key_input))
+        if key not in seen:
+            out["new"] += 1
+        elif (len(table.values(given.get(key_input)) if table else []) != 1
+              or (spec is not None and keg_mod.defers(spec, given))):
+            out["judgment"] += 1
+        else:
+            out["other"] += 1
+            out["other_items"].append(u["order"])
+    return out
+
+
+def _headline(periods: List[Dict[str, Any]], why: Mapping[str, Any],
+              item_name: Any) -> Optional[Dict[str, Any]]:
+    """The scorecard's headline, computed: how many of the batch needed a
+    model, why, and how that compares with the period before it. Nothing here
+    is asserted that the counts do not show."""
+    if len(periods) != 2:
+        return None
+    before, batch = periods
+    many = item_name[1]
+    keys = f"{why['key']}s" if why.get("key") else None
+    lead = f"{batch['label']}: {batch['units']} {many}. {batch['model_units']} needed the model"
+    explained = why.get("new", 0) + why.get("judgment", 0)
+    if keys and batch["model_units"] and explained == batch["model_units"]:
+        if why["new"] and why["judgment"]:
+            lead += f", all new {keys} or judgment calls."
+        elif why["new"]:
+            lead += f", all new {keys}."
+        else:
+            lead += ", all judgment calls."
+    elif keys and batch["model_units"]:
+        lead += (f": {why['new']} new {keys}, {why['judgment']} judgment calls, "
+                 f"{why['other']} neither.")
+    else:
+        lead += "."
+    ratio = batch["units"] / before["units"] if before["units"] else None
+    work = ("Twice the work" if ratio and abs(ratio - 2) < 0.05
+            else f"{ratio:.2g} times the work" if ratio else "")
+    a, b = before["model_units"], batch["model_units"]
+    same = a > 0 and abs(b - a) / a <= SAME_BAND
+    compare = f"{before['label']}: {before['units']} {many}, {a} needed the model."
+    if work and same:
+        verdict = f"{work}, about the same number needing a model."
+    elif work:
+        verdict = f"{work}; {b} needed a model against {a}."
+    else:
+        verdict = ""
+    return {"lead": lead, "compare": compare, "verdict": verdict,
+            "same": same, "ratio": ratio, "all_explained": explained == batch["model_units"]}
+
+
+def _learning(home: Path, goal: str, run: Mapping[str, Any],
+              prices: Mapping[str, Any]) -> Dict[str, Any]:
+    """What the run spent LEARNING, once, read off the Kaizen ledger: the
+    model calls Kaizen made to draft standard work, and the backtests. Kept
+    apart from the cost of deciding items so that neither hides in the other.
+
+    A backtest is a replay of recorded cases against the draft, with no
+    model: it costs nothing and is counted, not priced. A draft's tokens are
+    on its answer record from 2026-10-06; earlier drafts are counted and
+    marked as not recorded, never estimated."""
+    events: List[Dict[str, Any]] = []
+    directory = _ledger_dir(home)
+    if directory.is_dir():
+        for path in directory.glob("*.jsonl"):
+            events += _jsonl(path)
+    started = str(run.get("ts") or "")
+    mine = {e.get("andon_id"): e for e in events
+            if e.get("event_type") == "andon_event" and e.get("goal") == goal
+            and str(e.get("timestamp") or "") >= started}
+    out = {"drafts": 0, "unrecorded": 0, "calls": 0, "input": 0, "output": 0,
+           "cost": 0.0, "priced": True, "from_table": 0, "backtests": 0}
+    attempts: List[Dict[str, Any]] = []
+    for e in events:
+        if e.get("event_type") != "kaizen_answer" or e.get("andon_id") not in mine:
+            continue
+        origin = mine[e["andon_id"]]
+        if e.get("kind") == "standard_work":
+            out["backtests"] += 1
+            if origin.get("detector") == "reference_agreement":
+                out["from_table"] += 1          # built from the table: no model
+                continue
+            out["drafts"] += 1
+            if e.get("drafting"):
+                attempts += list(e["drafting"])
+            else:
+                out["unrecorded"] += 1
+    # Drafts that failed at every tier are on the failure's own andon event.
+    for e in mine.values():
+        if e.get("detector") == "kaizen_failure":
+            attempts += [a for a in ((e.get("details") or {}).get("attempts") or [])
+                         if isinstance(a, dict) and a.get("tokens")]
+    for attempt in attempts:
+        tokens = attempt.get("tokens") or {}
+        out["calls"] += int(tokens.get("calls") or 0)
+        out["input"] += int(tokens.get("input") or 0)
+        out["output"] += int(tokens.get("output") or 0)
+        cost = _turn_cost({"input": tokens.get("input"), "output": tokens.get("output")},
+                          prices["facts"].get(tokens.get("model")))
+        if cost["priced"]:
+            out["cost"] += cost["cost"]
+        elif tokens.get("calls"):
+            out["priced"] = False
+    return out
 
 
 def _coverage(goal: str, units: List[Dict[str, Any]], records: List[Dict[str, Any]]) -> Dict[str, Any]:

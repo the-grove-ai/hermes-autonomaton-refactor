@@ -332,6 +332,13 @@ def raise_andon(
         write_class=answer.write_class,
         artifact=answer.artifact,
         summary=answer.summary,
+        # What drafting this answer took: each tier tried and the tokens it
+        # used. Present only when a model drafted it.
+        **({"drafting": [
+            {"tier": a.get("tier"), "refused": bool(a.get("refused")),
+             **({"tokens": a["tokens"]} if a.get("tokens") else {})}
+            for a in answer.detail["attempts"]]}
+           if answer.kind == KIND_STANDARD_WORK and answer.detail.get("attempts") else {}),
         # Custody: this close commits to the flag and the event by their
         # ledger hashes, and names every turn the event rests on.
         source_chain=[flag["record_hash"], event["record_hash"]] + [

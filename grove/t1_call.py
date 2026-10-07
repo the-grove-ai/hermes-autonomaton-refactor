@@ -336,6 +336,25 @@ def _extract_openai_text(response) -> str:
 # ── cost telemetry (replicated field read; Jidoka on missing cost) ──────
 
 
+import contextlib as _contextlib
+import contextvars as _contextvars
+
+_meter: "_contextvars.ContextVar" = _contextvars.ContextVar("t1_call_meter", default=None)
+
+
+@_contextlib.contextmanager
+def meter():
+    """Count the tokens of every call made inside the block: ``{"calls",
+    "input", "output", "model"}``. For a caller that must put what its own
+    calls used on its own record (Kaizen, on a draft attempt)."""
+    used = {"calls": 0, "input": 0, "output": 0, "model": None}
+    token = _meter.set(used)
+    try:
+        yield used
+    finally:
+        _meter.reset(token)
+
+
 def _track_cost(usage, tier_config) -> None:
     """Accumulate T1 spend from the resolved tier's declared per-Mtok cost.
 
@@ -358,6 +377,12 @@ def _track_cost(usage, tier_config) -> None:
         output_tokens = getattr(usage, "completion_tokens", 0)
     input_tokens = input_tokens or 0
     output_tokens = output_tokens or 0
+    used = _meter.get()
+    if used is not None:
+        used["calls"] += 1
+        used["input"] += int(input_tokens)
+        used["output"] += int(output_tokens)
+        used["model"] = getattr(tier_config, "model", None) or used["model"]
 
     cost_in = getattr(tier_config, "cost_per_mtok_input", None)
     cost_out = getattr(tier_config, "cost_per_mtok_output", None)

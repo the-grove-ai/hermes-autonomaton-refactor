@@ -467,6 +467,12 @@ def test_a_batch_shares_its_turn_and_splits_the_scorecard_three_ways(tmp_path, m
     assert (batch["label"], batch["units"], batch["keg_units"]) == ("Month 2", 5, 4)
     assert batch["model_calls_per_unit"] == pytest.approx(2 / 5)
     assert (batch["confirmed"], batch["accepted"], batch["revised"]) == (2, 3, 0)
+    # Counted per period, never blended: how many needed a model, and the calls.
+    assert (before["model_units"], before["model_calls"]) == (1, 2)
+    assert (batch["model_units"], batch["model_calls"], batch["calls_per_model_unit"]) == (1, 2, 2.0)
+    assert g["headline"]["lead"] == "Month 2: 5 messages. 1 needed the model."
+    assert g["headline"]["verdict"] == "5 times the work, about the same number needing a model."
+    assert g["headline"]["compare"] == "Month 1: 1 messages, 1 needed the model."
 
     html = fragments._scorecard_html(g, 10_000, "0")
     for text in ("CONFIRMED BY YOU", "NOT REVIEWED", "REVISED", "Month 1 against Month 2",
@@ -548,3 +554,87 @@ def test_an_unreviewed_keg_decision_is_never_exported_as_the_operators_judgment(
     # An item still waiting has no answer, so it is not a training example.
     assert g["items"][2]["verdict"] == "awaiting the operator"
     assert len(audit.trace_export(tmp_path).splitlines()) == 2
+
+
+def _period(label, units, model_units, **over):
+    return {"label": label, "units": units, "model_units": model_units, **over}
+
+
+def test_the_headline_says_only_what_the_counts_show():
+    names = ("invoice", "invoices")
+    month1, month2 = _period("Month 1", 20, 10), _period("Month 2", 40, 10)
+    all_explained = {"key": "vendor", "new": 7, "judgment": 3, "other": 0}
+    h = audit._headline([month1, month2], all_explained, names)
+    assert h["lead"] == ("Month 2: 40 invoices. 10 needed the model, all new vendors "
+                         "or judgment calls.")
+    assert h["verdict"] == "Twice the work, about the same number needing a model."
+    assert h["compare"] == "Month 1: 20 invoices, 10 needed the model."
+    # One that is neither a new vendor nor a judgment call: "all" is not claimed.
+    h = audit._headline([month1, month2],
+                        {"key": "vendor", "new": 7, "judgment": 2, "other": 1}, names)
+    assert h["lead"] == ("Month 2: 40 invoices. 10 needed the model: 7 new vendors, "
+                         "2 judgment calls, 1 neither.")
+    assert h["all_explained"] is False
+    # Outside the band, the actual numbers and no "about the same".
+    for needed in (13, 7, 30):
+        h = audit._headline([month1, _period("Month 2", 40, needed)], all_explained, names)
+        assert h["same"] is False and "about the same" not in h["verdict"]
+        assert h["verdict"] == f"Twice the work; {needed} needed a model against 10."
+    for needed in (8, 12):                                    # within 25% of month 1
+        assert audit._headline([month1, _period("Month 2", 40, needed)],
+                               all_explained, names)["same"] is True
+    assert audit._headline([month1, _period("Month 2", 40, 10)],
+                           {"key": "vendor", "new": 10, "judgment": 0, "other": 0},
+                           names)["lead"].endswith("all new vendors.")
+    assert audit._headline([month1], all_explained, names) is None
+
+
+def test_the_baseline_uses_the_cost_of_a_model_decided_item_not_the_average():
+    def unit(keg, cost, batch=None):
+        return {"keg": keg, "batch": batch, "confirmed": True, "accepted": False,
+                "corrected": False,
+                "deciding": {"model_calls": 0 if keg else 2, "cost": cost, "seconds": 1.0,
+                             "priced": True}}
+
+    # Month 1: two by a model at $0.10, two by the keg at $0. Month 2: one model, three keg.
+    units = ([unit(False, 0.10), unit(False, 0.10), unit(True, 0.0), unit(True, 0.0)]
+             + [unit(False, 0.12, "B")] + [unit(True, 0.0, "B")] * 3)
+    before, batch = audit._periods(units, {"before_label": "M1", "batch_label": "M2"})
+    assert before["baseline_rate"] == pytest.approx(0.10)       # not the $0.05 average
+    assert before["baseline"] == pytest.approx(0.40) and before["savings"] == pytest.approx(0.20)
+    assert (batch["cost"], batch["baseline"]) == (pytest.approx(0.12), pytest.approx(0.40))
+    assert batch["savings"] == pytest.approx(0.28) and batch["cost_per_unit"] == pytest.approx(0.03)
+
+
+def test_learning_cost_is_read_from_the_ledger_and_never_estimated(tmp_path):
+    ledger = tmp_path / ".kaizen_ledger"
+    ledger.mkdir()
+
+    def write(name, *events):
+        (ledger / name).write_text("\n".join(json.dumps(e) for e in events), encoding="utf-8")
+
+    run = {"ts": "2026-10-06T10:00:00+00:00"}
+    at = "2026-10-06T10:05:00+00:00"
+    write("a.jsonl",
+          {"event_type": "andon_event", "andon_id": "A1", "goal": GOAL, "timestamp": at,
+           "detector": "reference_agreement"},
+          {"event_type": "kaizen_answer", "andon_id": "A1", "kind": "standard_work"},
+          {"event_type": "andon_event", "andon_id": "A2", "goal": GOAL, "timestamp": at,
+           "detector": "correction"},
+          {"event_type": "kaizen_answer", "andon_id": "A2", "kind": "standard_work",
+           "drafting": [{"tier": "T1", "refused": True,
+                         "tokens": {"calls": 1, "input": 2000, "output": 500, "model": "small"}},
+                        {"tier": "T2", "refused": False,
+                         "tokens": {"calls": 1, "input": 2000, "output": 1000, "model": "big"}}]},
+          {"event_type": "andon_event", "andon_id": "A3", "goal": GOAL, "timestamp": at,
+           "detector": "correction"},
+          {"event_type": "kaizen_answer", "andon_id": "A3", "kind": "standard_work"},
+          {"event_type": "andon_event", "andon_id": "A0", "goal": GOAL,
+           "timestamp": "2026-10-06T09:00:00+00:00", "detector": "correction"},
+          {"event_type": "kaizen_answer", "andon_id": "A0", "kind": "standard_work"})
+    prices = {"facts": {"small": {"cost_per_mtok_input": 1, "cost_per_mtok_output": 2},
+                        "big": {"cost_per_mtok_input": 10, "cost_per_mtok_output": 20}}}
+    out = audit._learning(tmp_path, GOAL, run, prices)
+    assert (out["backtests"], out["from_table"], out["drafts"], out["unrecorded"]) == (3, 1, 2, 1)
+    assert (out["calls"], out["input"], out["output"]) == (2, 4000, 1500)
+    assert out["cost"] == pytest.approx(0.003 + 0.040) and out["priced"] is True

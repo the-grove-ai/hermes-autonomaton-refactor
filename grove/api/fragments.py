@@ -4891,6 +4891,10 @@ def _scorecard_chart_html(g, key: str) -> str:
     for event in g["events"]:
         if event["before"] is not None:
             before.setdefault(event["before"], []).append(_sc_event_label(event))
+    # The period boundary: a marker and label before the first item of the batch.
+    boundary = next((u["order"] for u in units if u.get("batch")), None)
+    if boundary is not None and (g.get("periods") or [None, None])[1]:
+        before.setdefault(boundary, []).insert(0, g["periods"][1]["label"])
     target = f"sc-detail-{key}"
     bars, row = [], 0
     for u in units:
@@ -4917,7 +4921,8 @@ def _scorecard_chart_html(g, key: str) -> str:
                 labels += (f'<span class="sc-event-label {side}" '
                            f'style="top:{6 + (row % 3) * 18}px">{_esc(text)}</span>')
                 row += 1
-            marker = f'<span class="sc-event-line"></span>{labels}'
+            solid = " sc-boundary" if u["order"] == boundary else ""
+            marker = f'<span class="sc-event-line{solid}"></span>{labels}'
         chip = (f'<span class="sc-chip">KEG v{_esc(u["keg_version"])}</span>'
                 if u["keg"] else "")
         detail = _sc_unit_detail(u, one)
@@ -4965,9 +4970,14 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         f'<header class="sc-header"><div class="sc-eyebrow sc-event">SCORECARD · '
         f'{_esc(str(g["title"]).upper())} · RUN {_esc(g["run_number"])} · {total} '
         f'{_esc(many.upper())}</div>'
-        f'<h1>{keg_n} of {total} {_esc(many)} decided with no model. '
-        f'<span class="sc-event">{_esc(traceable)}</span></h1>'
-        f'<p>{_esc(loop + under)}</p></header>')
+        + (f'<h1>{_esc(g["headline"]["lead"])} <span class="sc-event">'
+           f'{_esc(g["headline"]["verdict"])}</span></h1>'
+           f'<p>{_esc(g["headline"]["compare"] + " " + traceable + " " + loop)}</p>'
+           if g.get("headline") and g.get("periods") else
+           f'<h1>{keg_n} of {total} {_esc(many)} decided with no model. '
+           f'<span class="sc-event">{_esc(traceable)}</span></h1>'
+           f'<p>{_esc(loop + under)}</p>')
+        + '</header>')
 
     # 2. Tiles
     def _tile(eyebrow, figure, text):
@@ -5085,28 +5095,78 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                   f'with the operator\'s feedback before signing.</p>')
     periods = ""
     if g.get("periods"):
+        learning = g.get("learning") or {}
+        learned = []
+        if learning.get("calls"):
+            learned.append(
+                f'{learning["calls"]} drafting call{"" if learning["calls"] == 1 else "s"}, '
+                + (_money(learning["cost"]) if learning.get("priced") else "not priced"))
+        if learning.get("unrecorded"):
+            n = learning["unrecorded"]
+            learned.append(f'{n} draft{"" if n == 1 else "s"} by a model, cost not recorded')
+        if learning.get("from_table"):
+            n = learning["from_table"]
+            learned.append(f'{n} keg proposal{"" if n == 1 else "s"} built from the '
+                           f'reference table, no model')
+        if learning.get("backtests"):
+            n = learning["backtests"]
+            learned.append(f'{n} backtest{"" if n == 1 else "s"}, $0: replays with no model')
         cols = ""
-        for period in g["periods"]:
+        for index, period in enumerate(g["periods"]):
             n = period["units"]
+
+            def _line(label, value, note=""):
+                return (f'<div class="sc-row"><span>{_esc(label)}</span><span class="sc-mono">'
+                        f'{_esc(value)}'
+                        + (f'<span class="sc-quiet"> · {_esc(note)}</span>' if note else "")
+                        + '</span></div>')
+
+            per = period["calls_per_model_unit"]
+            if period["baseline"] is not None:
+                saved = period["savings"]
+                share = saved / period["baseline"] if period["baseline"] else 0.0
+                against = _line(
+                    "Model cost, against all-model", f'{_money(period["cost"])} vs '
+                    f'{_money(period["baseline"])}',
+                    (f'saved {_money(saved)} ({share:.0%})' if saved >= 0
+                     else f'over by {_money(-saved)}'))
+            else:
+                against = _line("Model cost", _money(period["cost"]), "no priced baseline")
             cols += (
                 f'<div class="sc-version"><div class="sc-version-head"><strong>'
                 f'{_esc(period["label"])}</strong><span class="sc-eyebrow">{n} '
                 f'{_esc((one if n == 1 else many).upper())}</span></div>'
                 f'<div class="sc-period"><div><span class="sc-figure">'
-                f'{period["keg_share"]:.0%}</span><span class="sc-note">decided by the keg '
-                f'({period["keg_units"]} of {n})</span></div>'
-                f'<div><span class="sc-figure">{_compact(period["model_calls_per_unit"])}'
-                f'</span><span class="sc-note">model calls per {_esc(one)}</span></div>'
-                f'<div><span class="sc-figure">{_sc_seconds(period["seconds_per_unit"])}'
-                f'</span><span class="sc-note">to decide each {_esc(one)}</span></div></div>'
-                f'<div class="sc-note">{period["confirmed"]} confirmed by you · '
+                f'{period["model_units"]}</span><span class="sc-note">needed the model'
+                f'</span></div><div><span class="sc-figure">{period["keg_share"]:.0%}</span>'
+                f'<span class="sc-note">decided by the keg ({period["keg_units"]} of {n}), '
+                f'no model</span></div><div><span class="sc-figure">{_money(period["cost_per_unit"])}'
+                f'</span><span class="sc-note">model cost per {_esc(one)}</span></div></div>'
+                f'<div class="sc-rows">'
+                + _line(f"{many.capitalize()} handled", n)
+                + _line("Model calls, deciding only", period["model_calls"] and
+                        f'{period["model_calls"]:g}' or "0",
+                        f'{per:.1f} per model-decided {one}' if per else "")
+                + against
+                + (_line("One-time learning cost", "; ".join(learned) or "none on record",
+                         f"not in the cost per {one}") if index == 0 else "")
+                + f'</div><div class="sc-note">{period["confirmed"]} confirmed by you · '
                 f'{period["accepted"]} decided by the keg, not reviewed · '
                 f'{period["revised"]} revised.</div></div>')
+        rate = g["periods"][0]["baseline_rate"]
         periods = (
             f'<section class="sc-panel"><h3>{_esc(g["periods"][0]["label"])} against '
             f'{_esc(g["periods"][1]["label"])}</h3><div class="sc-catches">{cols}</div>'
-            f'</section>')
-    panels = periods + (f'<section class="sc-pair">{who}<div class="sc-panel"><h3>Standard work, '
+            f'<p class="sc-foot">Never blended: each period is counted on its own. '
+            + (f'All-model baseline: the {_esc(one)} count times {_money(rate)}, the '
+               f'measured cost of a model-decided {_esc(one)} in '
+               f'{_esc(g["periods"][0]["label"])}. ' if rate is not None else "")
+            + (f'A judgment call: the reference table has no single answer for the '
+               f'{_esc(g["why_model"]["key"])}, or the keg\'s own rule hands the case back. '
+               if (g.get("why_model") or {}).get("key") else "")
+            + f'{_esc(many.capitalize())} the keg decided without review are never counted '
+            f'as confirmed, and never as evidence.</p></section>')
+    panels = (f'<section class="sc-pair">{who}<div class="sc-panel"><h3>Standard work, '
               f'as signed</h3><div class="sc-versions">{cards}</div></div></section>')
 
     # 5. At volume
@@ -5169,7 +5229,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         f'shown. Each {_esc(one)}\'s confirmation turn is separate and not counted here. '
         f'Volume rows scale this run\'s measured per-{_esc(one)} figures. The frontier '
         f'estimate prices this run\'s fresh tokens at that model\'s declared rates.</footer>')
-    return f'<div class="sc">{header}{tiles}{chart}{panels}{volume}{footer}</div>'
+    return f'<div class="sc">{header}{periods}{tiles}{chart}{panels}{volume}{footer}</div>'
 
 
 _CHECK_ICON = (

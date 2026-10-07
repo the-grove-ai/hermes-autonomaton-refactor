@@ -1109,3 +1109,61 @@ def test_compaction_and_memory_mining_both_honor_the_split():
     split = compacted.index("conversation_only(")
     assert split < compacted.index("filter_transcript_for_extraction(transcript)")
     assert split < compacted.index("compact_session(")        # work is out before any summary
+
+
+# ── live, run 11 (2026-10-06): a question left open, and a pin that wandered ──
+
+
+def test_asking_for_the_work_while_a_question_is_open_repeats_the_question(env):
+    work = env.work()
+    env.add("billing", "outage")
+    asking = env.prov()
+    work.ask(asking, "Is this a refund or a new charge?")
+    # "next" has nothing to present: the model is waiting on the operator.
+    action = work.session_action("next", session_id="sess")
+    assert action == {"action": "ask_again", "question": "Is this a refund or a new charge?"}
+    out = work.session_step(action, env.prov(tier="T0"))
+    assert out["reply"] == "Still waiting on your answer:\nIs this a refund or a new charge?"
+    assert out["decided"] is False and work.log.run_records() == []
+    assert work.last_match["fired"] is True and work.last_match["action"] == "ask_again"
+    # The operator's answer is not a request for the work: it goes to the model.
+    assert work.session_action("a refund", session_id="sess") is None
+    # Once the answer is on record the question is closed, and "next" is the work again.
+    env.propose(work)
+    assert reissue.open_question("sess") is None
+    assert work.session_action("next", session_id="sess")["action"] == "present"
+    # With no question open, asking for the work is routed as it always was.
+    work.decide(decision="confirm", provenance=env.prov())
+    reissue.take("sess")
+    assert work.session_action("next", session_id="sess") is None
+
+
+def test_a_tier_pin_is_only_for_the_request_it_was_armed_for(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    reissue.arm_tier("sess", "T3", attempts=[{"tier": "T2"}], andon_id="a1", request="next")
+    # Another message arrives first: the pin is dropped, never kept for later.
+    assert reissue.take_pin("sess", "furniture, sorry") is None
+    assert reissue.take_pin("sess", "next") is None
+    reissue.arm_tier("sess", "T3", attempts=[{"tier": "T2"}], andon_id="a1", request="next")
+    assert reissue.take_pin("sess", " next ")["tier"] == "T3"
+    assert reissue.take_pin("sess", "next") is None                 # exactly once
+    # A pin armed with no request (an older caller) still pins the next turn.
+    reissue.arm_tier("sess", "T2")
+    assert reissue.take_pin("sess", "anything")["tier"] == "T2"
+
+
+def test_the_dispatcher_takes_the_pin_at_the_start_of_the_turn(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    d = SimpleNamespace(session_id="sess", _current_turn_escalation=None)
+    for name in ("_take_pin", "_take_reissue_tier"):
+        setattr(d, name, getattr(Dispatcher, name).__get__(d))
+    reissue.arm_tier("sess", "T3", attempts=[{"tier": "T2"}], andon_id="a1", request="next")
+    # A turn that is not the armed request consumes the pin and does not use it.
+    d._current_turn_pin = d._take_pin(None, "furniture, sorry")
+    assert d._take_reissue_tier(None) is None and d._current_turn_escalation is None
+    d._current_turn_pin = d._take_pin(None, "code the next invoice")
+    assert d._take_reissue_tier(None) is None                       # nothing left behind
+    reissue.arm_tier("sess", "T3", attempts=[{"tier": "T2"}], andon_id="a1", request="next")
+    d._current_turn_pin = d._take_pin(None, "next")
+    assert d._take_reissue_tier(None) == "T3"
+    assert d._current_turn_escalation == {"attempts": [{"tier": "T2"}], "andon_id": "a1"}
