@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 BADGES = ("to_sign", "suggestions")
 LANDING_FIRST_GOAL = "first_goal_with_work"
 _ITEM_KEYS = frozenset({
-    "label", "target", "badge", "items", "flag", "indent",
+    "label", "target", "badge", "items", "flag", "indent", "demo_only",
     "goals_with_work", "scheduled_skills",
 })
 
@@ -149,8 +149,10 @@ def landing_target(nav: Mapping[str, Any], goals: List[Dict[str, str]]) -> str:
 
 
 def render_nav(nav: Mapping[str, Any], *, goals: List[Dict[str, str]],
-               skills: List[str], live: Mapping[str, int]) -> str:
-    """The inner HTML of the nav list. Pure: every live input is passed in."""
+               skills: List[str], live: Mapping[str, int], demo: bool = False) -> str:
+    """The inner HTML of the nav list. Pure: every live input is passed in.
+    ``demo`` is whether the portal is in demo mode; an entry marked
+    ``demo_only`` is shown only then."""
     from grove.api.fragments import _esc, _nav_badge
 
     def link(label: str, target: str, badge: Optional[str], cls: str) -> str:
@@ -164,6 +166,8 @@ def render_nav(nav: Mapping[str, Any], *, goals: List[Dict[str, str]],
     def item(entry: Mapping[str, Any], depth: int) -> str:
         flag = entry.get("flag")
         if flag is not None and not nav["flags"].get(flag):
+            return ""
+        if entry.get("demo_only") and not demo:
             return ""
         level = depth + (1 if entry.get("indent") else 0)
         cls = f"nav-entry lvl{level}"
@@ -216,7 +220,13 @@ async def handle_main_nav(request: web.Request) -> web.Response:
             f'<li class="nav-entry lvl0"><a href="/portal#fragments/audit/">Audit</a></li>')
     skills = (scheduled_skills(nav["hidden_skills"])
               if nav["flags"].get("scheduled_skills") else [])
-    return _html_fragment(render_nav(nav, goals=goals_with_work(), skills=skills, live=counts()))
+    try:
+        from grove.api.actions import _demo_tokenless_approve
+        demo = bool(_demo_tokenless_approve())
+    except Exception:  # noqa: BLE001 — unknown means not in demo mode
+        demo = False
+    return _html_fragment(render_nav(
+        nav, goals=goals_with_work(), skills=skills, live=counts(), demo=demo))
 
 
 def register_nav_routes(app: web.Application) -> None:

@@ -3951,6 +3951,9 @@ class APIServerAdapter(BasePlatformAdapter):
             # The portal's left navigation, rendered from its declared file.
             from grove.api.portal_nav import register_nav_routes
             register_nav_routes(self._app)
+            # Checkpoints: save the node's records at one moment, put them back.
+            from grove.api.checkpoint_fragments import register_checkpoint_routes
+            register_checkpoint_routes(self._app)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:

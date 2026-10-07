@@ -17338,6 +17338,21 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         if _stderr_level < logging.getLogger().level:
             logging.getLogger().setLevel(_stderr_level)
 
+    # A checkpoint restore that was asked for is carried out HERE, before the
+    # runner opens the session database, the intent store or any ledger: files
+    # are never swapped under a running process. It is logged in the
+    # checkpoints admin log, never in the records themselves.
+    try:
+        from grove import checkpoints as _checkpoints
+        _restored = _checkpoints.apply_pending()
+        if _restored is not None:
+            logger.warning(
+                "checkpoint restore at start-up: %s — identical=%s, audit check=%s",
+                _restored.get("name"), _restored.get("identical"),
+                (_restored.get("audit_check") or {}).get("result"))
+    except Exception as _restore_exc:  # noqa: BLE001 — never keeps the gateway down
+        logger.critical("checkpoint restore at start-up failed: %r", _restore_exc)
+
     runner = GatewayRunner(config)
     
     # Track whether an unexpected signal initiated the shutdown. When an

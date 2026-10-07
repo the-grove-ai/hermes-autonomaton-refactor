@@ -17,6 +17,7 @@
 #   {scheduled_skills: true}           one link per skill that runs on a schedule
 #   {label, items: [...]}              a sub-group
 # Any item may name a `flag`; it is shown only while that flag is true.
+# An item marked `demo_only: true` is shown only while the portal is in demo mode.
 # ============================================================================
 
 # The page the portal opens on. `first_goal_with_work` is the first Dock goal
@@ -67,3 +68,5 @@ groups:
         items:
           - {label: Tool permissions, target: fragments/capabilities/admission}
           - {label: System overview, target: fragments/dashboard/overview}
+          # Save the node's records at one moment and put them back. Demo mode only.
+          - {label: Checkpoints, target: fragments/checkpoints/, demo_only: true}
