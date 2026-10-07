@@ -1252,3 +1252,17 @@ ul.listing li { padding: 0.7rem 0; }
   margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--sc-line);
   color: var(--sc-text-2); font-size: 14px; }
 @media (max-width: 700px) { .sc-rate .sc-rate-row { grid-template-columns: 1fr; } }
+
+/* Scorecard: at volume — two savings figures, then three plain facts */
+.sc-saves { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 16px; margin-top: 16px; }
+.sc-save { border: 1px solid var(--sc-line); border-radius: 12px; padding: 18px 20px;
+  display: flex; flex-direction: column; gap: 6px; }
+.sc-save-figure { font-size: 44px; font-weight: 500; line-height: 1.1; }
+.sc-save-figure .sc-unit { font-size: 18px; font-weight: 400; color: var(--sc-text-2); }
+.sc-down { color: #3cba7a; }
+.sc-up { color: var(--error); }
+.sc-facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-top: 18px; }
+.sc-fact { border-top: 1px solid var(--sc-line); padding-top: 12px; }
+.sc-fact-figure { font-size: 24px; font-weight: 700; line-height: 1.3; }
+@media (max-width: 700px) { .sc-facts { grid-template-columns: 1fr; } }

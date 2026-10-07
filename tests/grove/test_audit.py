@@ -370,7 +370,10 @@ def test_scorecard_reads_the_loop_off_the_records(tmp_path, monkeypatch):
                  "#4 · chan-m4 · keg v1 · no model call · 0.10 s · operator revised "
                  "finance → ops · andon raised · keg halted",
                  "hands back when channel == &#x27;chan-m4&#x27;", "SERVING", "REPLACED",
-                 "At 10,000 messages a month, the keg avoids"):
+                 "At 10,000 messages a month</h2>", "Scaled from this run. Keg v2 answers",
+                 "SAVINGS · MEASURED", " down to ", "Show the working",
+                 "No model</div>", "Fewer model calls</div>", "Less time deciding</div>",
+                 "Measured figures use routing-config prices, scaled from this run."):
         assert text in html, text
     assert html.count('<button type="button" class="sc-bar"') == 6      # each bar focusable
     assert html.count("sc-fill sc-keg") == 3 and html.count("sc-ring") == 1

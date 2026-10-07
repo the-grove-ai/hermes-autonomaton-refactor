@@ -5327,54 +5327,106 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                 f'<td>{_compact(row["tokens"])}</td><td>{_model_time(row["hours"])}</td>'
                 f'<td class="sc-basis">{_esc(basis)}</td></tr>')
 
-    if cov["keg"]:
-        avoided = proj["avoided"]
-        hero = (
-            f'<div class="sc-hero"><div class="sc-lead">At {scale:,} {_esc(many)} a month, '
-            f'the keg avoids {_compact(avoided["model_calls"])} model calls and '
-            f'{_model_time(avoided["hours"])} of model time, measured from this run. '
-            f'Keg v{_esc(cov["version"])} answers {cov["covered"]} of {cov["of"]} '
-            f'({audit_mod._pct(cov["covered"], cov["of"])}) with no model.</div></div>')
-        with_label = f"With keg v{cov['version']} serving"
-    else:
-        hero = (f'<div class="sc-hero"><div class="sc-lead">At {scale:,} {_esc(many)} a '
-                f'month. No keg is serving, so nothing is avoided yet.</div></div>')
-        with_label = "With a keg serving"
-    frontier = ""
+    table = (
+        f'<details class="sc-older"><summary>Show the working</summary><div class="sc-scroll">'
+        f'<table class="sc-table sc-wide"><thead><tr><th></th><th>COST</th><th>MODEL CALLS</th>'
+        f'<th>TOKENS</th><th>TIME DECIDING</th><th>BASIS</th></tr></thead><tbody>'
+        + _row(f"Every {one} decided by a model", proj["all_model"], "measured")
+        + _row(f"With keg v{cov['version']} serving" if cov["keg"] else "With a keg serving",
+               proj["with_keg"], "measured")
+        + _row("Avoided", proj["avoided"], "difference", strong=True))
     if proj["all_frontier"]["cost"] is not None:
         def _est(label, cost):
             return (f'<tr><td>{_esc(label)}</td><td>{_money(cost)}</td><td>—</td><td>—</td>'
                     f'<td>—</td><td class="sc-basis">estimate</td></tr>')
 
-        frontier = (
+        table += (
             '<tr><td colspan="6" class="sc-eyebrow sc-event">ESTIMATE · FRONTIER MODEL</td></tr>'
             + _est(f"Every {one} on a frontier model ({g['frontier']['model']})",
-                 proj["all_frontier"]["cost"])
-            + _est(f"Frontier model, with the keg serving "
-                   f"{audit_mod._pct(cov['covered'], cov['of']) if cov['of'] else '0%'}",
-                   proj["frontier_with_keg"]))
+                   proj["all_frontier"]["cost"])
+            + _est("Frontier model, with the keg serving", proj["frontier_with_keg"]))
+    table += '</tbody></table></div></details>'
+
+    def _whole(value) -> str:
+        return "—" if value is None else f"${value:,.0f}"
+
+    if cov["keg"]:
+        avoided, every, kept = proj["avoided"], proj["all_model"], proj["with_keg"]
+        rest = cov["of"] - cov["covered"]
+        lede = (f'Scaled from this run. Keg v{_esc(cov["version"])} answers {cov["covered"]} of '
+                f'{cov["of"]} {_esc(many)} with no model. '
+                + (f'The other {rest} still call{"s" if rest == 1 else ""} one.' if rest else
+                   "None still calls one."))
+        # Two figures, same size, different trust: measured is green, the
+        # estimate stays white and says ESTIMATE in its own label.
+        cut = (avoided["cost"] / every["cost"]) if every["cost"] else None
+        cut_pct = None if cut is None else int(abs(cut) * 100 + 0.5)
+        measured_sub = (
+            (f'<span class="sc-down">↓ {cut_pct}%</span> model cost · ' if cut and cut > 0
+             else f'<span class="sc-up">↑ {cut_pct}%</span> model cost · ' if cut else "")
+            + f'{_whole(every["cost"])} down to {_whole(kept["cost"])}'
+            if avoided["cost"] is not None else
+            "No price is declared for the model that ran, so cost is not measured.")
+        cards = (
+            f'<div class="sc-save"><div class="sc-eyebrow">SAVINGS · MEASURED</div>'
+            f'<div class="sc-save-figure sc-down">{_whole(avoided["cost"])}'
+            f'<span class="sc-unit"> / month</span></div>'
+            f'<div class="sc-note">{measured_sub}</div>'
+            f'<div class="sc-quiet">Understated: '
+            + ("cached context re-read is priced; " if g["cache_read_priced"]
+               else "cached context re-read is not priced, and ")
+            + 'the classifier\'s own call is not counted.</div></div>')
+        if proj["all_frontier"]["cost"] is not None:
+            saved = proj["all_frontier"]["cost"] - proj["frontier_with_keg"]
+            cards += (
+                f'<div class="sc-save"><div class="sc-eyebrow">SAVINGS · <span class="sc-event">'
+                f'ESTIMATE</span> · FRONTIER MODEL</div>'
+                f'<div class="sc-save-figure">{_whole(saved)}'
+                f'<span class="sc-unit"> / month</span></div>'
+                f'<div class="sc-note">If every {_esc(one)} were on '
+                f'{_esc(str(g["frontier"]["model"]).split("/")[-1])} · '
+                f'{_whole(proj["all_frontier"]["cost"])} down to '
+                f'{_whole(proj["frontier_with_keg"])}</div></div>')
+        cover_pct = audit_mod._pct(cov["covered"], cov["of"])
+
+        def _chip(label, figure, under):
+            return (f'<div class="sc-fact"><div class="sc-note">{_esc(label)}</div>'
+                    f'<div class="sc-fact-figure">{_esc(figure)}</div>'
+                    f'<div class="sc-quiet">{_esc(under)}</div></div>')
+
+        chips = (
+            _chip("No model", f'{cov["covered"]} of {cov["of"]}', f'{cover_pct} of {many}')
+            + _chip("Fewer model calls", _compact(avoided["model_calls"]),
+                    f'{_compact(every["model_calls"])} down to {_compact(kept["model_calls"])}')
+            + _chip("Less time deciding", _model_time(avoided["hours"]),
+                    f'{_model_time(every["hours"])} down to {_model_time(kept["hours"])}'))
+        same = (f' Coverage and cost cut are both {cover_pct} here; they are not the same '
+                f'figure.' if cut_pct is not None and cover_pct == f"{cut_pct}%" else "")
+        body = (
+            f'<p class="sc-lead">{lede}</p><div class="sc-saves">{cards}</div>'
+            f'<div class="sc-facts">{chips}</div>'
+            f'<p class="sc-foot">Measured figures use routing-config prices, scaled from this '
+            f'run. Frontier figures price the same mix at that model\'s rates.{same}</p>')
+    else:
+        body = (f'<p class="sc-lead">No keg is serving, so nothing is avoided yet.</p>')
     volume = (
         f'<section class="sc-panel" id="sc-volume-{key}" aria-labelledby="sc-vol-{key}">'
-        f'<div class="sc-panel-head"><h2 id="sc-vol-{key}">At volume</h2>'
-        f'<div class="sc-toggle" role="group" aria-label="{_esc(many.capitalize())} per month">'
-        f'{toggles}</div></div>{hero}<div class="sc-scroll"><table class="sc-table sc-wide">'
-        f'<thead><tr><th></th><th>COST</th><th>MODEL CALLS</th><th>TOKENS</th>'
-        f'<th>TIME DECIDING</th><th>BASIS</th></tr></thead><tbody>'
-        + _row(f"Every {one} decided by a model", proj["all_model"], "measured")
-        + _row(with_label, proj["with_keg"], "measured")
-        + _row("Avoided", proj["avoided"], "difference", strong=True)
-        + f'{frontier}</tbody></table></div></section>')
+        f'<div class="sc-panel-head"><h2 id="sc-vol-{key}">At {scale:,} {_esc(many)} a month'
+        f'</h2><div class="sc-toggle" role="group" aria-label="{_esc(many.capitalize())} per '
+        f'month">{toggles}</div></div>{body}{table}</section>')
 
     # 6. Footer — the methodology caveats, unchanged in substance.
     footer = (
-        '<footer class="sc-footer">Costs use the prices declared in the routing config. '
+        '<footer class="sc-footer"><details class="sc-older"><summary>How these figures were '
+        'measured</summary>Costs use the prices declared in the routing config. '
         + ("Cached context re-read is priced. " if g["cache_read_priced"] else
            "Cached context re-read is counted in tokens but NOT priced (no price is "
            "declared for it), so model cost is understated. ")
         + f'Not included: {_esc(not_included)}. Both make the keg\'s saving larger than '
         f'shown. Each {_esc(one)}\'s confirmation turn is separate and not counted here. '
         f'Volume rows scale this run\'s measured per-{_esc(one)} figures. The frontier '
-        f'estimate prices this run\'s fresh tokens at that model\'s declared rates.</footer>')
+        f'estimate prices this run\'s fresh tokens at that model\'s declared rates.'
+        f'</details></footer>')
     return (f'<div class="sc">{header}{_rate_row_html(g)}{periods}{tiles}{chart}{panels}'
             f'{volume}{footer}</div>')
 
