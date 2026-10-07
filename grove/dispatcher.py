@@ -3105,6 +3105,9 @@ class Dispatcher:
                 # about the next item, not deciding it: the question, as put.
                 **({"asked": True, "question": self._current_turn_question}
                    if getattr(self, "_current_turn_question", None) else {}),
+                # The work was paused at the end of this turn for the operator's
+                # signature on a proposal: which one. Absent otherwise.
+                **({"held_for": held} if (held := self._turn_hold()) else {}),
                 # A no-model work-session step: what the operator was told.
                 **({"reply": self._current_turn_session_reply[:600]}
                    if getattr(self, "_current_turn_session_reply", None) else {}),
@@ -5891,6 +5894,19 @@ class Dispatcher:
         self._current_turn_escalation = {
             "attempts": pin["attempts"], "andon_id": pin["andon_id"]}
         return pin["tier"]
+
+    def _turn_hold(self) -> Optional[Dict[str, str]]:
+        """Execution stage. The proposal this turn's session is held for, if
+        it is: ``{"proposal_id", "what"}``. Read from the hold itself."""
+        try:
+            from grove import reissue
+            hold = reissue.held(str(self.session_id or "")) if self.session_id else None
+        except Exception:  # noqa: BLE001 — a record is never lost for a note
+            return None
+        if not hold:
+            return None
+        return {"proposal_id": str(hold.get("proposal_id") or "")[:90],
+                "what": str(hold.get("what") or "")[:60]}
 
     def _turn_call_budget(self) -> Any:
         """Compilation stage. The time budget for one model call of THIS turn:

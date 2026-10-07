@@ -163,6 +163,9 @@ def test_save_then_a_month_of_work_then_restore_is_the_checkpoint_exactly(node):
     assert hashlib.sha256((node.home / "pattern_cache.db").read_bytes()).hexdigest() == (
         keg["files"][""])
     assert not (node.home / "proposals.jsonl").exists()       # absent then, absent again
+    # 2026-10-07: the backlog stage folders are in the checkpoint too, so a
+    # restore never lands on a different invoice set than the one it was saved with.
+    assert {"month2", "month3", "queue"} <= {e["path"] for e in manifest["entries"]}
     # The chain is the chain as it stood: no record added, altered or re-timed.
     assert (node.home / "intent_records.jsonl").read_bytes() == chain_at_save
     assert sorted(p.name for p in (node.home / ".kaizen_ledger").iterdir()) == ledger_at_save

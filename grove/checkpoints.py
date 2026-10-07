@@ -208,16 +208,22 @@ def _copy(source: Path, target: Path, *, sqlite: bool) -> None:
 
 
 def _state_paths(base: Path) -> List[str]:
-    """STATE plus each goal's work queue, as paths relative to the home."""
+    """STATE plus each goal's work queue and backlog stage folders, as paths relative to the home."""
     paths = list(STATE)
     real = base.resolve()
     try:
         for work in _work_goals():
-            queue = Path(work.config.queue).resolve()
-            try:
-                paths.append(str(queue.relative_to(real)))
-            except ValueError:
-                continue          # a queue outside the home is not this node's to copy
+            # The queue, and each backlog stage's own folder: which invoices a
+            # stage holds decides what a release puts in the queue, so a
+            # checkpoint that left the folders out could be restored onto a
+            # different set.
+            from grove.decision_work import _stages
+            folders = [Path(work.config.queue)] + [Path(f) for f, _label in _stages(work.config)]
+            for folder in folders:
+                try:
+                    paths.append(str(folder.resolve().relative_to(real)))
+                except ValueError:
+                    continue      # a folder outside the home is not this node's to copy
     except Exception:  # noqa: BLE001 — reported by in_flight; nothing extra to copy
         pass
     return list(dict.fromkeys(paths))

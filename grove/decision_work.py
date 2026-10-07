@@ -81,6 +81,13 @@ DECISION_ACCEPTED = "accepted"
 SCOPE_SINGLE_VALUE_KEYS = "single_value_keys"
 
 
+BATCH_KEG_FIRST = "keg_first"
+BATCH_ITEM_ORDER = "item_order"
+# A transient goal note: the items next in the queue that the serving keg
+# (named by version) does not answer, so each goes straight to a model.
+_NEXT_FOR_MODEL = "for_model:"
+
+
 class DecisionRefused(Exception):
     """A decision the turn was not entitled to make. ``reason`` is a short
     machine kind; the message is what the operator reads. ``andon_id`` is set
@@ -318,6 +325,15 @@ class DecisionWorkConfig:
     # every tier, or a mapping of tier to seconds (``default`` for the rest);
     # 0 switches it off.
     call_budget_seconds: Any = None
+    # How a released backlog is worked (declared as ``batch:``). ``order``:
+    # ``keg_first`` decides everything the keg covers at once and leaves the
+    # rest for the end; ``item_order`` works the queue in its own order, the
+    # keg deciding each run of items it covers and a model taking each item
+    # between. ``hold_on_proposal``: whether the batch waits when Kaizen
+    # proposes a change, until the operator signs it, sends it back or says
+    # later.
+    batch_order: str = BATCH_KEG_FIRST
+    hold_on_proposal: bool = True
     adaptation: Adaptation = field(default_factory=Adaptation)
     ticket_model: Optional[TicketModel] = None
 
@@ -557,6 +573,7 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         session_memory=session_memory,
         call_budget_seconds=_call_budget(raw.get("call_budget_seconds", CALL_BUDGET_DEFAULT),
                                          str(goal.id)),
+        **_load_batch(raw.get("batch"), str(goal.id)),
         adaptation=adaptation,
         ticket_model=_load_ticket_model(raw.get("ticket_model"), str(goal.id)),
     )
@@ -1319,6 +1336,24 @@ def _domain_values(domain: OutputDomain) -> List[str]:
 CALL_BUDGET_DEFAULT = 30
 
 
+def _load_batch(raw: Any, goal_id: str) -> Dict[str, Any]:
+    """The goal's ``batch:`` block. Absent: today's behavior (keg first, hold
+    on a proposal). A value the block does not know is refused, never guessed."""
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping) or set(raw) - {"order", "hold_on_proposal"}:
+        raise ValueError(
+            f"goal {goal_id!r}: batch must be a mapping with order and/or hold_on_proposal")
+    order, hold = raw.get("order", BATCH_KEG_FIRST), raw.get("hold_on_proposal", True)
+    if order not in (BATCH_KEG_FIRST, BATCH_ITEM_ORDER):
+        raise ValueError(
+            f"goal {goal_id!r}: batch.order must be {BATCH_KEG_FIRST!r} or "
+            f"{BATCH_ITEM_ORDER!r}, got {order!r}")
+    if not isinstance(hold, bool):
+        raise ValueError(f"goal {goal_id!r}: batch.hold_on_proposal must be true or false")
+    return {"batch_order": order, "hold_on_proposal": hold}
+
+
 def _call_budget(raw: Any, goal_id: str) -> Any:
     """The declared time budget for one model call: seconds for every tier,
     or ``{tier: seconds, "default": seconds}``. 0, false or null switch it
@@ -1880,11 +1915,48 @@ class DecisionWork:
             "session_id": prov.get("session_id"),
             "turn_id": prov.get("turn_id"),
             "turn_uid": prov.get("turn_uid"),
-            **({"batch": self.current_batch()} if self.current_batch() else {}),
+            **({"batch": batch} if (batch := self.batch_for(item_id)) else {}),
             # What the operator said that led to this answer (an answer to a
             # question the model asked), in their words.
             **({"operator_said": said} if (said := _operator_said(prov, self.config)) else {}),
         })
+
+    def _stage_of(self, item_id: Any) -> Optional[int]:
+        """The backlog stage an item arrived in (its index), or None."""
+        for index, (folder, _label) in enumerate(_stages(self.config)):
+            if folder.is_dir() and any(p.stem == str(item_id) for p in folder.iterdir()
+                                       if p.is_file()):
+                return index
+        return None
+
+    def batch_for(self, item_id: Any, mint: bool = True) -> Optional[str]:
+        """The batch an item's record carries. Keg first: the batch the run is
+        in. Item order: one batch per backlog stage, whoever decides the item
+        and in whatever order — the id already on a record of the same stage,
+        else (``mint``) a new one. An item of no stage belongs to no batch."""
+        if self.config.batch_order != BATCH_ITEM_ORDER:
+            return self.current_batch()
+        stage = self._stage_of(item_id)
+        if stage is None:
+            return None
+        for record in self.log.run_records():
+            if (record.get("kind") == KIND_PROPOSED and record.get("batch")
+                    and self._stage_of(record.get("item_id")) == stage):
+                return str(record["batch"])
+        return uuid.uuid4().hex if mint else None
+
+    def _for_model(self) -> List[str]:
+        """Items the last batch segment found the serving keg does not
+        answer, when that keg is still the one serving. Empty otherwise."""
+        from grove import reissue
+        note = str(reissue.goal_note(self.config.goal_id) or "")
+        if not note.startswith(_NEXT_FOR_MODEL):
+            return []
+        version, _, items = note[len(_NEXT_FOR_MODEL):].partition(":")
+        serving = self.serving_keg()
+        if serving is None or str(serving[1].get("version")) != version:
+            return []            # a new version is serving: it gets to look again
+        return [i for i in items.split(",") if i]
 
     def current_batch(self) -> Optional[str]:
         """The batch this run is in, if one has begun: the batch id on the
@@ -1944,19 +2016,44 @@ class DecisionWork:
             out["reason"] = "not_green"
             return out
         run = self._run()
+        in_order = self.config.batch_order == BATCH_ITEM_ORDER
         # One batch per backlog stage. A further keg pass inside the same stage
         # (after a new rule is signed, say) continues that stage's batch; only
         # a newly released stage begins another.
-        batch_id = (None if new_stage else self.current_batch()) or uuid.uuid4().hex
+        batch_id = (None if in_order else
+                    (None if new_stage else self.current_batch()) or uuid.uuid4().hex)
         out["batch"] = batch_id
-        for path in todo:
+        stage_batches: Dict[Any, Optional[str]] = {}
+        for position, path in enumerate(todo):
             try:
                 inputs = dict(inputs_for(path))
+                output = keg_mod.evaluate(spec, inputs)
             except (ValueError, OSError):
-                continue          # unreadable: the ordinary loop surfaces it
-            output = keg_mod.evaluate(spec, inputs)
+                output = None     # unreadable: the ordinary loop surfaces it
             if output is None:
-                continue
+                if not in_order:
+                    continue
+                # Item order: the run of items the keg covers ends here. This
+                # item, and any straight after it the keg does not answer
+                # either, each go to a model, in order.
+                waiting = []
+                for later in todo[position:]:
+                    try:
+                        if keg_mod.evaluate(spec, dict(inputs_for(later))) is not None:
+                            break
+                    except (ValueError, OSError):
+                        pass
+                    waiting.append(later.stem)
+                from grove import reissue
+                reissue.note_goal(self.config.goal_id, _NEXT_FOR_MODEL
+                                  + f"{keg_ref.get('version')}:" + ",".join(waiting))
+                out["for_model"] = waiting
+                break
+            if in_order:
+                stage = self._stage_of(path.stem)
+                if stage not in stage_batches:
+                    stage_batches[stage] = self.batch_for(path.stem)
+                batch_id = out["batch"] = stage_batches[stage]
             clean = {k: str(v).strip() for k, v in output.items()}
             self.check_output(clean, prov)
             record = self.log.append({
@@ -1975,7 +2072,7 @@ class DecisionWork:
             })
             out["coded"] += 1
         out["left"] = out["total"] - out["coded"]
-        if not out["coded"]:
+        if not out["coded"] and not in_order:
             # Nothing covered: no batch began, so nothing later is labeled one.
             out["batch"] = None
         return out
@@ -2130,14 +2227,18 @@ class DecisionWork:
             reissue.offer_card(str(session_id), {
                 "proposal_id": pid,
                 "text": (f"Kaizen proposed {what}. It needs your signature.\n{replay}"
-                         f"The work pauses here until you sign it, send it back, or tap Later."),
+                         + ("The work pauses here until you sign it, send it back, or tap "
+                            "Later." if cfg.hold_on_proposal else
+                            "The work carries on; it waits under To sign.")),
                 "buttons": [
                     {"label": "Review and sign",
                      "url": _portal(f"proposals/pending?type=signature&at=proposal-{short}")},
                     ["Later", proposal_message(pid)],
                 ],
             })
-            reissue.hold(str(session_id), {"goal": cfg.goal_id, "proposal_id": pid, "what": what})
+            if cfg.hold_on_proposal:
+                reissue.hold(str(session_id),
+                             {"goal": cfg.goal_id, "proposal_id": pid, "what": what})
             self.cards_offered += 1
         return self.cards_offered
 
@@ -2336,6 +2437,16 @@ class DecisionWork:
             if self.next_item() is None:
                 return {"action": "summary"}
             from grove import reissue
+            upcoming = self.next_item()
+            if (self.config.batch_order == BATCH_ITEM_ORDER
+                    and self._stage_of(upcoming.stem) is not None
+                    and reissue.goal_note(self.config.goal_id) != "backlog_released"):
+                # A backlog worked in item order: the keg takes each run of
+                # items it covers; an item the last pass found it does not
+                # answer goes to a model (None: the turn is routed as usual).
+                if upcoming.stem in self._for_model():
+                    return None
+                return {"action": "batch"}
             if reissue.goal_note(self.config.goal_id) == "backlog_released":
                 # The backlog just arrived. The first request for the work
                 # after that runs the keg pass: everything standard work
@@ -2564,6 +2675,13 @@ class DecisionWork:
         elif result["reason"] == "not_green":
             lead = (f"Keg v{result['keg']['version']} is not signed to act without review, "
                     f"so nothing is decided in bulk. Bringing all {total} to you one at a time.")
+        elif self.config.batch_order == BATCH_ITEM_ORDER and left:
+            done = self.config.work_session.done_word.capitalize()
+            ahead = len(result.get("for_model") or [])
+            lead = ((f"{done} {coded} by the keg v{result['keg']['version']} · 0 model "
+                     f"calls · {left} to go.\n" if coded else "")
+                    + (f"The next {one} needs a model." if ahead <= 1 else
+                       f"The next {ahead} {many} need a model."))
         else:
             done = self.config.work_session.done_word.capitalize()
             lead = (f"{done} {coded} of {total} · {coded} by the keg "

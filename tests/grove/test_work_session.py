@@ -1394,3 +1394,128 @@ def test_releasing_a_backlog_stage_goes_on_the_ledger(env, tmp_path):
     [released] = [e for e in events if e.get("action") == "backlog_released"]
     assert (released["event_type"], released["stage"], released["items"], released["goal"]) == (
         "operator_applied", "Month 2", 2, GOAL)
+
+
+# ── a backlog worked in item order ────────────────────────────────────
+# 2026-10-07: keg first put every model item at the end of the batch, back to
+# back. Declared ``batch: {order: item_order}``, the queue is worked in its
+# own order: the keg decides each run of items it covers, a model takes each
+# item between, and every item of a stage carries that stage's batch.
+
+
+def _in_order(env, tmp_path, hold=True):
+    work = env.work(session=BATCH)
+    stages = []
+    for label, items in (("Month 2", ((21, "billing"), (22, "legal"), (23, "press"),
+                                      (24, "outage"), (25, "billing"))),
+                         ("Month 3", ((31, "social"), (32, "billing")))):
+        folder = tmp_path / label.replace(" ", "").lower()
+        folder.mkdir()
+        for n, channel in items:
+            (folder / f"m{n}.txt").write_text(channel)
+        stages.append((folder, label))
+    cfg = work.config.__class__(**{
+        **work.config.__dict__, "backlog": stages[0][0], "backlog_stages": tuple(stages),
+        "batch_order": dw.BATCH_ITEM_ORDER, "hold_on_proposal": hold})
+    return DecisionWork(cfg), cfg
+
+
+def test_a_backlog_in_item_order_interleaves_the_keg_and_the_model(env, tmp_path):
+    work, cfg = _in_order(env, tmp_path)
+    _serve_keg()                                   # covers billing and outage
+    ask = "tag the next message"
+
+    def by_model(tag="other"):
+        item = work.next_item()
+        work.record(item_id=item.stem, inputs={"channel": item.read_text()},
+                    output={"tag": tag}, reasoning="r", provenance=env.prov())
+        work.decide(decision="confirm", provenance=env.prov())
+        reissue.take("sess")
+        return item.stem
+
+    dw.release_backlog(cfg)                        # Month 2 arrives
+    assert work.session_action(ask) == {"action": "batch"}
+    first = work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    # The keg decided the run it covers and stopped at the first item it does not.
+    assert first["reply"] == ("Tagged 1 by the keg v2 · 0 model calls · 4 to go.\n"
+                              "The next 2 messages need a model.")
+    assert first["batch"]["for_model"] == ["m22", "m23"] and first["next_armed"] is True
+    reissue.take("sess")
+    # Those two go straight to a model, in order: the request is routed as usual.
+    assert work.session_action(ask) is None and by_model() == "m22"
+    assert work.session_action(ask) is None and by_model() == "m23"
+    # Then the keg again, to the end of the stage.
+    assert work.session_action(ask) == {"action": "batch"}
+    rest = work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    assert rest["batch"]["coded"] == 2 and rest["batch"]["left"] == 0
+    assert rest["reply"].startswith("Tagged 2 of 2 · 2 by the keg v2 · 0 model calls.")
+    assert work.session_action(ask) == {"action": "summary"}       # month 2 is done
+    order = [(r["item_id"], bool(r.get("keg"))) for r in work.log.run_records()
+             if r["kind"] == "proposed"]
+    assert order == [("m21", True), ("m22", False), ("m23", False), ("m24", True),
+                     ("m25", True)]                                # the queue's own order
+    month2 = {r["batch"] for r in work.log.run_records() if r["kind"] == "proposed"}
+    assert len(month2) == 1 and None not in month2                 # one batch, model items too
+
+    # Month 3 opens on an item the keg does not cover: a model first, and the
+    # stage still gets a batch of its own.
+    dw.release_backlog(cfg)
+    assert work.session_action(ask) == {"action": "batch"}
+    opened = work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    assert opened["reply"] == "The next message needs a model."
+    assert opened["batch"]["coded"] == 0
+    reissue.take("sess")
+    assert work.session_action(ask) is None and by_model() == "m31"
+    assert work.session_action(ask) == {"action": "batch"}
+    work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    batches = [r["batch"] for r in work.log.run_records()
+               if r["kind"] == "proposed" and r["item_id"] in ("m31", "m32")]
+    assert len(set(batches)) == 1 and batches[0] not in month2
+
+
+def test_a_new_keg_version_looks_again_at_what_the_last_one_left(env, tmp_path):
+    work, cfg = _in_order(env, tmp_path)
+    _serve_keg()
+    dw.release_backlog(cfg)
+    work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    reissue.take("sess")
+    assert work._for_model() == ["m22", "m23"]
+    assert work.session_action("tag the next message") is None     # v2 does not answer m22
+    # The operator signs a version: what v2 left is the new version's to look at.
+    from grove.pattern_cache import PatternCacheStore, STATUS_SUPERSEDED
+    for entry in PatternCacheStore().all():
+        PatternCacheStore().set_status(entry.pattern_id, STATUS_SUPERSEDED)
+    _serve_keg(version=3)
+    assert work._for_model() == []
+    assert work.session_action("tag the next message") == {"action": "batch"}
+
+
+def test_the_batch_block_is_declared_and_the_hold_can_be_switched_off(env, tmp_path):
+    def cfg(**block):
+        goal = _goal(tmp_path, BATCH)
+        if block:
+            goal.extra["decision_work"]["batch"] = block
+        return dw.load_config(goal)
+
+    plain = cfg()
+    assert (plain.batch_order, plain.hold_on_proposal) == (dw.BATCH_KEG_FIRST, True)
+    declared = cfg(order="item_order", hold_on_proposal=False)
+    assert (declared.batch_order, declared.hold_on_proposal) == (dw.BATCH_ITEM_ORDER, False)
+    for bad in ({"order": "random"}, {"hold_on_proposal": "yes"}, {"speed": 1}):
+        with pytest.raises(ValueError, match="batch"):
+            cfg(**bad)
+    # Not part of the signed session rule.
+    assert dw.session_rule_digest(plain) == dw.session_rule_digest(declared)
+
+    # The hold itself: with it on the session is held; switched off, the card
+    # is still offered and the work carries on.
+    for hold in (True, False):
+        work = DecisionWork(plain.__class__(**{**plain.__dict__, "hold_on_proposal": hold}))
+        work.last_observations = [{"answer": {"kind": "standard_work", "artifact": "sha256:abc",
+                                              "detail": {"version": 3}}}]
+        reissue.release_hold("sess")
+        assert work._hold_for_signature(env.prov()) == 1
+        [card] = reissue.take_cards("sess")
+        assert ("pauses here" in card["text"]) is hold
+        assert bool(reissue.held("sess")) is hold
+    reissue.release_hold("sess")
