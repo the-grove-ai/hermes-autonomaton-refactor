@@ -876,8 +876,8 @@ def _goal_standard_work_html(goal) -> str:
                       "matching the table"))
     if cfg.call_budget_seconds:
         budget = cfg.call_budget_seconds
-        shown = (", ".join(f"{t} {s:.0f} s" for t, s in budget.items() if s)
-                 if isinstance(budget, dict) else f"{budget:.0f} seconds")
+        shown = (", ".join(f"{t} {s:g} s" for t, s in budget.items() if s)
+                 if isinstance(budget, dict) else f"{budget:g} seconds")
         reads.append(("Time budget per model call", shown,
                       "then the request goes one tier up"))
     reads.append(
