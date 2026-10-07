@@ -1033,13 +1033,23 @@ def test_a_model_call_over_its_time_budget_fails_upward_like_any_other_attempt(e
     d, agent = stand_in(tier="T3", turn_uid="u-top")
     assert Dispatcher.review_final_reply(d, agent, "x") == answers.NOT_COMPLETED_MESSAGE
     assert reissue.take("sess") is None
-    # Over budget only AFTER the decision was recorded (the call that writes
-    # the reply): what is on record stands, and nothing is escalated.
+    # Over budget only AFTER the turn called the goal's tool (the call that
+    # writes the reply): what is on record stands, and nothing is escalated.
+    # A turn that already decided is never re-issued: the same message would
+    # be acted on a second time.
     env.work.record(item_id="m01", inputs=env.inputs(), output={"tag": "finance"},
                     reasoning="r", provenance=env.prov(turn_uid="u-rec",
                                                        tools_yielded=["tag_message"]))
     before = len([e for e in env.events() if e["event_type"] == "andon_event"])
     d, agent = stand_in(turn_uid="u-rec", tools_yielded=["tag_message"])
+    Dispatcher.review_final_reply(d, agent, "No answer from the model in 30 seconds.")
+    assert d._current_turn_withheld is None and reissue.take("sess") is None
+    assert len([e for e in env.events() if e["event_type"] == "andon_event"]) == before
+    # A turn that read the operator's own words and DECIDED (nothing pending
+    # now), whose reply call then stalled: not re-issued, or "ship it" would
+    # be read a second time against the next item.
+    env.work.decide(decision="confirm", provenance=env.prov(turn_uid="u-dec"))
+    d, agent = stand_in(turn_uid="u-dec", tools_yielded=["tag_message"], request="ship it")
     Dispatcher.review_final_reply(d, agent, "No answer from the model in 30 seconds.")
     assert d._current_turn_withheld is None and reissue.take("sess") is None
     assert len([e for e in env.events() if e["event_type"] == "andon_event"]) == before
@@ -1101,6 +1111,12 @@ def test_the_goal_page_shows_a_rule_forming_and_proposes_nothing(env, monkeypatc
     store = SimpleNamespace(get=lambda pid: object())
     [row] = fragments._forming_rules(env.work, {"pattern_id": "keg:x"}, store)
     assert (row["state"], row["count"]) == ("in the keg", 2)
+    # A key that reached the keg as another key under a new name says which.
+    [alias] = fragments._forming_rules(
+        env.work, {"pattern_id": "keg:x"}, store,
+        [{"trigger": {"key": "social", "same_as": "press"}}])
+    assert (alias["same_as"], alias["key_name"], alias["state"]) == (
+        "press", "channel", "in the keg")
     # The trace's turn line: the keg's reason, the earlier attempt, each call.
     assert fragments._trace_turn_notes({
         "attempts": [{"tier": "T1", "reason": "call_over_budget"}],

@@ -5949,21 +5949,22 @@ class Dispatcher:
             over = getattr(agent, "_call_over_budget", None)
             token = turn_provenance.set_current(prov)
             try:
-                on_record = work.pending()
-                if over and not (on_record is not None
-                                 and on_record.get("turn_uid") == turn_uid):
-                    # A model call ran past the goal's time budget before
-                    # anything was put on record: this tier did not complete
+                if over and work.config.tool not in set(prov.get("tools_yielded") or ()):
+                    # A model call ran past the goal's time budget before the
+                    # turn had called the goal's tool at all: nothing was
+                    # proposed, decided or asked, so this tier did not complete
                     # the turn. Flagged, raised and answered like any other
-                    # such attempt, under the ladder rule.
+                    # such attempt, under the ladder rule. (A turn that DID
+                    # call the tool is never re-issued for a late reply: the
+                    # request would be acted on twice.)
                     refusal = work.abnormal(
                         "call_over_budget",
                         f"Model call {over.get('call')} to {over.get('model')} gave no "
                         f"answer in {over.get('seconds')} s (budget "
-                        f"{over.get('budget'):.0f} s).", prov)
+                        f"{over.get('budget'):g} s).", prov)
                 else:
-                    # In order, or over budget only AFTER the decision was
-                    # recorded: what is on record is presented as usual.
+                    # In order, or over budget only after the tool was called:
+                    # judged on what is on record, as any turn is.
                     refusal = work.unanswered(reply, prov)
             finally:
                 turn_provenance.reset(token)
@@ -5989,7 +5990,7 @@ class Dispatcher:
                 self._current_turn_id, refusal.reason, refusal.andon_id,
                 self._current_turn_withheld["summary"])
             if escalating and refusal.reason == "call_over_budget":
-                return (f"No answer from the model in {over.get('budget'):.0f} seconds. "
+                return (f"No answer from the model in {over.get('budget'):g} seconds. "
                         f"Retrying one tier up ({up}).")
             return ESCALATING_MESSAGE if escalating else NOT_COMPLETED_MESSAGE
         except Exception as exc:  # noqa: BLE001

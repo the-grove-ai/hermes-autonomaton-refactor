@@ -618,12 +618,14 @@ def _attachment_entry_html(app, goal_id: str, event: dict) -> str:
     )
 
 
-def _forming_rules(work, serving, store) -> List[Dict[str, Any]]:
+def _forming_rules(work, serving, store, versions=()) -> List[Dict[str, Any]]:
     """Each reference key this run has seen that the table does not list and
     the operator keeps confirming the same way: its count against the goal's
     declared threshold. Read-only, from the same count the detector uses
     (``DecisionWork.confirmed_key_evidence``); nothing is proposed here. A key
-    the serving keg already answers reads ``in the keg``."""
+    the serving keg already answers reads ``in the keg``; one that got there
+    as an existing key under another name says which key (from the version's
+    recorded trigger), not a count it never needed."""
     from grove import keg as keg_mod
 
     cfg = work.config
@@ -635,6 +637,8 @@ def _forming_rules(work, serving, store) -> List[Dict[str, Any]]:
         entry = store.get(serving["pattern_id"])
         spec = keg_mod.keg_of(entry) if entry is not None else None
     word = (next(iter(cfg.outputs)).split("_")[-1] if len(cfg.outputs) == 1 else "answer")
+    aliases = {t["key"]: t["same_as"] for t in
+               ((v.get("trigger") or {}) for v in versions) if t.get("key") and t.get("same_as")}
     seen, rows = [], []
     for record in work.log.run_records():
         key = (record.get("inputs") or {}).get(key_input)
@@ -646,6 +650,8 @@ def _forming_rules(work, serving, store) -> List[Dict[str, Any]]:
             continue
         ruled = spec is not None and keg_mod.evaluate(spec, {key_input: key}) is not None
         rows.append({
+            **({"same_as": aliases[key], "key_name": key_input}
+               if ruled and key in aliases else {}),
             "key": key, "word": word, "threshold": found["threshold"],
             "count": min(found["confirmations"], found["threshold"]) if ruled
                      else found["confirmations"],
@@ -897,11 +903,14 @@ def _goal_standard_work_html(goal) -> str:
     try:
         forming = "".join(
             f'<div class="sc-row"><span>{_esc(r["key"])} <span class="sc-quiet">· '
-            f'same {_esc(r["word"])}, none revised</span></span><span class="sc-mono">'
-            f'{_esc(r["count"])} of {_esc(r["threshold"])} confirmations <span class="sc-eyebrow'
-            f'{" sc-on" if r["state"] == "in the keg" else ""}">'
+            + (f'same {_esc(r["key_name"])} as {_esc(r["same_as"])}' if r.get("same_as") else
+               f'same {_esc(r["word"])}, none revised')
+            + '</span></span><span class="sc-mono">'
+            + ("" if r.get("same_as") else
+               f'{_esc(r["count"])} of {_esc(r["threshold"])} confirmations ')
+            + f'<span class="sc-eyebrow{" sc-on" if r["state"] == "in the keg" else ""}">'
             f'{_esc(r["state"].upper())}</span></span></div>'
-            for r in _forming_rules(work, serving, store))
+            for r in _forming_rules(work, serving, store, versions))
     except Exception as exc:  # noqa: BLE001 — the goal page never fails for a panel
         logger.warning("[fragments] forming rules unavailable for %s: %r", goal.id, exc)
     patterns = ""

@@ -16057,7 +16057,7 @@ class AIAgent:
                         "model": _over.model, "call": api_call_count,
                     }
                     final_response = (
-                        f"No answer from the model in {_over.budget:.0f} seconds.")
+                        f"No answer from the model in {_over.budget:g} seconds.")
                     break
 
                 except Exception as api_error:
