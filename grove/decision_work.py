@@ -2664,6 +2664,12 @@ class DecisionWork:
                 "no_reader", "This goal's tool did not say how to read its items.")
         from grove import reissue
         released = reissue.goal_note(self.config.goal_id, take=True)   # the pass runs once
+        # A version that has decided nothing in this run yet was just signed:
+        # the reply says it is in force before it says what comes next.
+        serving = self.serving_keg()
+        fresh = serving is not None and not any(
+            (r.get("keg") or {}).get("pattern_id") == serving[1].get("pattern_id")
+            for r in self.log.run_records() if r.get("kind") == KIND_PROPOSED)
         result = self.batch_pass(
             provenance, inputs_for,
             new_stage=bool(released) or self.current_batch() is None)
@@ -2678,13 +2684,15 @@ class DecisionWork:
         elif self.config.batch_order == BATCH_ITEM_ORDER and left:
             done = self.config.work_session.done_word.capitalize()
             ahead = len(result.get("for_model") or [])
-            lead = ((f"{done} {coded} by the keg v{result['keg']['version']} · 0 model "
-                     f"calls · {left} to go.\n" if coded else "")
-                    + (f"The next {one} needs a model." if ahead <= 1 else
-                       f"The next {ahead} {many} need a model."))
+            lead = ((f"Signed: v{result['keg']['version']} is in force.\n" if fresh else "")
+                    + (f"{done} {coded} by the keg v{result['keg']['version']} · 0 model "
+                       f"calls · {left} to go.\n" if coded else "")
+                    + self._next_for_model_line(serving[0], inputs_for, ahead))
         else:
             done = self.config.work_session.done_word.capitalize()
-            lead = (f"{done} {coded} of {total} · {coded} by the keg "
+            signed = (f"Signed: v{result['keg']['version']} is in force.\n"
+                      if fresh and coded and self.config.batch_order == BATCH_ITEM_ORDER else "")
+            lead = (f"{signed}{done} {coded} of {total} · {coded} by the keg "
                     f"v{result['keg']['version']} · 0 model calls.")
             if left:
                 lead += (f"\n{left} {'needs' if left == 1 else 'need'} a model. "
@@ -2698,6 +2706,29 @@ class DecisionWork:
             armed = self.present_next_after({"id": result["batch"]}, dict(provenance or {}))
         return {"reply": lead, "item_id": None, "decided": False, "presented": False,
                 "next_armed": armed, "batch": result}
+
+    def _next_for_model_line(self, spec: Mapping[str, Any], inputs_for: Any,
+                             ahead: int) -> str:
+        """One line on the item the keg just stopped at: what it is (its
+        reference key, when the goal has one) and why it goes to a model — no
+        rule covers it, or a rule sends it there."""
+        from grove import keg as keg_mod
+
+        one, many = self.config.item_name
+        path = self.next_item()
+        label, why = (path.stem if path is not None else f"the next {one}"), ""
+        try:
+            inputs = dict(inputs_for(path))
+            key = self.config.reference.key_input if self.config.reference else None
+            label = str(inputs.get(key) or label) if key else label
+            rule = keg_mod.match(spec, inputs)
+            why = ("a rule sends it to a model" if rule is not None and rule.get("defer")
+                   else "not covered by any rule, so it goes to a model")
+        except (ValueError, OSError, TypeError):
+            why = "it could not be read by the keg, so it goes to a model"
+        more = (f" Then {ahead - 1} more for a model before the keg's next run."
+                if ahead > 1 else "")
+        return f"Next: {label}, {why}.{more}"
 
     def tally(self, batch: Optional[str] = None) -> Dict[str, int]:
         """How this run's decided items stand — or one batch's, when given.
