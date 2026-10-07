@@ -709,11 +709,16 @@ def _goal_standard_work_html(goal) -> str:
            if serving else
            _tile("STANDARD WORK", "none",
                  "No keg is serving. Every " + one + " goes to a model until one is signed."))
-        + (_tile("IF RUN AGAIN TODAY", f"{coverage['share']:.0%}",
-                 f"{coverage['covered']} of {coverage['of']}, "
-                 + (f"up from {tally['by_keg']} during the run."
+        # The same items, two readings: what the keg decided while it was
+        # still being learned, and what the keg as it now stands would decide.
+        + (_tile(f"THE SAME {coverage['of']}, RUN AGAIN", f"{coverage['share']:.0%}",
+                 f"Keg v{coverage['version']} would decide {coverage['covered']} of these "
+                 f"{coverage['of']} {many} with no model. "
+                 + (f"The keg decided {tally['by_keg']} the first time, while its "
+                    f"rules were still being learned."
                     if coverage["covered"] > tally["by_keg"] else
-                    "the same as during the run.")) if coverage.get("keg") else "")
+                    f"The keg decided {tally['by_keg']} the first time."))
+           if coverage.get("keg") else "")
         + _tile("SESSION RULE", "signed" if grant is not None else "not signed",
                 ("In force. It decides what runs with no model."
                  if grant is not None else
