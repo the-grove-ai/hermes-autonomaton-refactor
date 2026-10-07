@@ -1288,3 +1288,16 @@ ul.listing li { padding: 0.7rem 0; }
 .sc-catches-many .sc-period { flex-wrap: wrap; gap: 12px 18px; }
 .sc-catches-many .sc-period .sc-figure { font-size: 26px; }
 .sc-tile .sc-figure { overflow-wrap: anywhere; }
+
+/* ── The declared nav: groups, their pages, and live counts ─────────────── */
+#main-nav .nav-group { font-family: var(--font-mono); font-size: 0.68rem; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-dim); padding: 1.1rem 0.75rem 0.3rem; }
+#main-nav .nav-group:first-child { padding-top: 0.3rem; }
+#main-nav .nav-sub { font-size: 0.82rem; color: var(--text-dim); padding: 0.45rem 0.75rem 0.15rem; }
+#main-nav .nav-entry a { display: flex; align-items: center; justify-content: space-between;
+  gap: 0.5rem; }
+#main-nav .nav-top { margin-top: 0.9rem; }
+#main-nav .nav-top a { font-weight: 700; }
+#main-nav .lvl1 a, #main-nav .nav-sub.lvl1 { padding-left: 1.6rem; }
+#main-nav .lvl2 a, #main-nav .nav-sub.lvl2 { padding-left: 2.4rem; }
+#main-nav .lvl3 a { padding-left: 3.2rem; }

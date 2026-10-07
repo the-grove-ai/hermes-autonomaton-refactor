@@ -1,0 +1,69 @@
+# ============================================================================
+# portal.nav.yaml — the Operator Portal's left navigation, declared
+# ============================================================================
+#
+# Repo-shipped default. An operator file at ~/.grove/portal.nav.yaml, if
+# present, replaces this one whole. The nav is only navigation and labels: no
+# entry changes what a page shows, and every target is an existing page.
+#
+# The order tells the story: do the work, sign what it learned, see the
+# result and check the record. What the system knows and how it is set up
+# come after.
+#
+# An item is one of:
+#   {label, target}                    a link to an existing page
+#   {label, target, badge}             ...with a live count (to_sign, suggestions)
+#   {goals_with_work: true}            one link per Dock goal that declares work
+#   {scheduled_skills: true}           one link per skill that runs on a schedule
+#   {label, items: [...]}              a sub-group
+# Any item may name a `flag`; it is shown only while that flag is true.
+# ============================================================================
+
+# The page the portal opens on. `first_goal_with_work` is the first Dock goal
+# that declares decision work; or give a target such as fragments/dock/goals.
+landing: first_goal_with_work
+
+flags:
+  # Skills that run on a schedule or a loop (researcher, cultivator, drafter,
+  # scout). Off: they do not appear in the nav at all.
+  scheduled_skills: false
+
+# Skills never listed in the nav, whatever the flags say. Nothing about them
+# is deleted: their configuration and records stay where they are.
+hidden_skills: [forge-jobsearch, scout-jobsearch]
+
+groups:
+  - label: Work
+    items:
+      - goals_with_work: true
+      - {label: All goals, target: fragments/dock/goals}
+
+  # What changes the system's authority, and so needs your signature: keg
+  # versions, session rules, Kaizen's requests. The badge counts only these.
+  - label: To sign
+    target: fragments/proposals/pending?type=signature
+    badge: to_sign
+
+  - label: Results
+    items:
+      - {label: Scorecard, target: fragments/audit/}
+      - {label: Audit check, target: "fragments/audit/?at=audit-integrity"}
+      - {label: Decision trace, target: fragments/trace/}
+
+  - label: What it knows
+    items:
+      - {label: Knowledge, target: fragments/cellar/pages}
+      - {label: Memory, target: fragments/memory/records}
+      # Approved in conversation or here; no signature. Counted on their own.
+      - {label: Suggestions, target: "fragments/proposals/pending?type=memory", badge: suggestions, indent: true}
+
+  - label: Setup
+    items:
+      - {label: Models, target: fragments/binding/panel}
+      - {label: Skills, target: fragments/skills/}
+      - {label: On a schedule, flag: scheduled_skills, indent: true, items: [{scheduled_skills: true}]}
+      - {label: Connected tools, target: fragments/composition/panel}
+      - label: Advanced
+        items:
+          - {label: Tool permissions, target: fragments/capabilities/admission}
+          - {label: System overview, target: fragments/dashboard/overview}

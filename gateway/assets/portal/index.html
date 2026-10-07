@@ -24,7 +24,7 @@
     <header class="topbar">
         <div class="brand">grove-autonomaton <span class="brand-sub">Operator Portal</span></div>
         <div class="search-wrap">
-            <input type="search" name="q" placeholder="Search the substrate…"
+            <input type="search" name="q" placeholder="Search knowledge, memory and goals…"
                    autocomplete="off"
                    hx-get="/portal/fragments/search"
                    hx-include="this"
@@ -51,7 +51,18 @@
              re-enter the shell, and exactly one dispatcher (the router) fires
              per navigation (F1). htmx history (hx-push-url) is NOT used anywhere
              in the portal — a second history actor cannot guarantee that. -->
-        <nav class="left-panel" aria-label="Categories">
+        <nav class="left-panel" aria-label="Sections">
+            <!-- The nav is declared in config/portal.nav.yaml (or the
+                 operator's ~/.grove/portal.nav.yaml) and rendered by
+                 /portal/fragments/nav/main, with its live counts. It is
+                 redrawn when a proposal is signed or dismissed, so the
+                 counts track the queue. -->
+            <ul class="nav-list" id="main-nav"
+                hx-get="/portal/fragments/nav/main"
+                hx-trigger="load, proposal-disposition from:body, fleet-disposition from:body"
+                hx-swap="innerHTML"></ul>
+            <!-- Without scripts the plain links below still reach every page. -->
+            <noscript>
             <ul class="nav-list">
                 <li><a href="/portal#fragments/dashboard/overview">Dashboard</a></li>
                 <li><a href="/portal#fragments/cellar/pages">Knowledge</a></li>
@@ -84,14 +95,14 @@
                 <!-- Every decision of the current run, step by step, from records. -->
                 <li><a href="/portal#fragments/trace/">Trace</a></li>
             </ul>
+            </noscript>
         </nav>
 
         <main id="center-panel" class="center-panel">
             <div class="welcome">
-                <h1>Knowledge Browser</h1>
-                <p>Select a category to browse the grove-autonomaton substrate,
-                   or search above. Knowledge pages, memory records, Dock goals,
-                   pending proposals, and skills are all read-only here.</p>
+                <h1>Operator Portal</h1>
+                <p>This is where you see the work Mylo is doing, sign what it
+                has learned, and check the record of every decision.</p>
             </div>
         </main>
 
@@ -217,6 +228,25 @@
       htmx.ajax('GET', '/portal/' + hash, {target: '#center-panel'});
     }
     document.addEventListener('DOMContentLoaded', handleHashRoute);
+    // The portal opens on the page the declared nav names (its `landing`),
+    // and only when no page was asked for: a deep link always wins. A target
+    // may carry ?at=<element id> to show one part of a page (the audit check
+    // sits below the scorecard on the same page).
+    document.body.addEventListener('htmx:afterSwap', function(evt) {
+      var el = evt.target;
+      if (el && el.id === 'main-nav' && !window.location.hash) {
+        var landing = document.getElementById('nav-landing');
+        if (landing && landing.dataset.landing) {
+          window.location.hash = landing.dataset.landing;
+        }
+      }
+      if (el && el.id === 'center-panel') {
+        var at = /[?&]at=([A-Za-z0-9_-]+)/.exec(window.location.hash);
+        var part = at && document.getElementById(at[1]);
+        if (part) { part.scrollIntoView({block: 'start'}); }
+        else { window.scrollTo(0, 0); }
+      }
+    });
     window.addEventListener('hashchange', handleHashRoute);
     // Re-clicking the CURRENT hash fires no hashchange event (the URL does not
     // change), and the guard would suppress a manual re-dispatch — so a

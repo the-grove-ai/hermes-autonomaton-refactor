@@ -1982,7 +1982,7 @@ def _proposal_type_tabs(counts: dict, active: str, extra_qs: str = "") -> str:
     ordered = (
         ["all"]
         + sorted(
-            (t for t in counts if t not in ("all", "memory")),
+            (t for t in counts if t not in ("all", "memory", "signature")),
             key=lambda t: (-counts[t], t),
         )
         + ["memory"]
@@ -2059,6 +2059,10 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
         type_counts[t] = type_counts.get(t, 0) + 1
     type_counts["memory"] = len(memory_items)
     type_counts["all"] = len(proposals) + len(memory_items)
+    # "signature": everything that waits for the operator's signature, which
+    # is every proposal card and no memory suggestion. The nav's "To sign"
+    # entry opens the page on this filter; it has no tab of its own.
+    type_counts["signature"] = len(proposals)
 
     if type_f == "all" or type_f not in type_counts:
         type_f = None            # absent / "all" / unrecognized → no filter
@@ -2069,6 +2073,8 @@ async def handle_proposals_pending(request: web.Request) -> web.Response:
 
     if type_f == "memory":
         proposals = []
+    elif type_f == "signature":
+        memory_items = []
     elif type_f:
         proposals = [p for p in proposals if p.get("type") == type_f]
         memory_items = []

@@ -3948,6 +3948,9 @@ class APIServerAdapter(BasePlatformAdapter):
             # read-only GRV-004 composition state at
             # /portal/fragments/composition/panel.
             register_composition_routes(self._app)
+            # The portal's left navigation, rendered from its declared file.
+            from grove.api.portal_nav import register_nav_routes
+            register_nav_routes(self._app)
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
