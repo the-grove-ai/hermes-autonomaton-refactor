@@ -697,7 +697,8 @@ def _goal_standard_work_html(goal) -> str:
                 changed = ["No rule changed."]
         facts = []
         if v["evidence"]:
-            facts.append(f"Evidence: {v['evidence']} confirmed decisions.")
+            facts.append(f"Evidence: {v['evidence']} confirmed "
+                         f"decision{'' if v['evidence'] == 1 else 's'}.")
         if v["feedback"]:
             facts.append("Your feedback: " + "; ".join(f"“{f}”" for f in v["feedback"]) + ".")
         if v["seconds_to_signature"] is not None:
@@ -744,7 +745,7 @@ def _goal_standard_work_html(goal) -> str:
               ("Lets the keg decide a backlog at once", ws.batch, "close wording")]
     phrases = "".join(
         f'<div class="sc-row"><span>{_esc(label)} <span class="sc-quiet">· {_esc(how)}</span>'
-        f'</span><span>{"".join(f"<span class=tag>{_esc(p)}</span>" for p in said)}</span></div>'
+        f'</span><span>{"".join(f'<span class="tag">{_esc(p)}</span>' for p in said)}</span></div>'
         for label, said, how in groups if said) if ws.enabled else ""
     rule_text = rule_mod.describe(dw.session_rule(cfg)).split(" Work session,")[0]
     pill = ('<span class="sc-status sc-status-signed">SIGNED · IN FORCE</span>'
@@ -763,7 +764,7 @@ def _goal_standard_work_html(goal) -> str:
 
     # What it works from.
     backlog = dw.backlog_state(cfg)
-    reads = [("Queue", f"{queued} {many}", cfg.queue.name)]
+    reads = [("Queue", f"{queued} {many}", f"folder {cfg.queue.name}/")]
     if cfg.reference is not None:
         reads.append(("Reference table", cfg.reference.path.name,
                       f"{cfg.reference.key_input} → {cfg.reference.value_output}"))
@@ -820,8 +821,8 @@ def _goal_standard_work_html(goal) -> str:
         '<div class="sc-check-line"><a class="sc-run sc-download" '
         'href="/portal#fragments/audit/">Open the scorecard</a>'
         '<a class="sc-back-btn sc-download" href="/portal#fragments/trace/">Decision trace</a>'
-        '<a class="sc-back-btn sc-download" href="/portal#fragments/proposals/pending">'
-        'Pending proposals</a></div>')
+        '<a class="sc-back-btn sc-download" '
+        'href="/portal#fragments/proposals/pending?type=signature">To sign</a></div>')
     return (f'{tiles}{links}<section class="sc-pair">{history}{in_force or how}</section>'
             f'<section class="sc-pair">{how if in_force else ""}{reads_html}</section>'
             f'{watching}')
@@ -850,8 +851,12 @@ def render_goal_detail(app, goal) -> str:
         '<div id="goal-detail">',
         '<p class="meta"><a href="/portal#fragments/dock/goals">'
         "&larr; all goals</a></p>",
-        f'<div class="sc sc-goal" {_ctx_attrs("dock", goal.id)}>'
-        f'<header class="sc-header"><div class="sc-eyebrow sc-event">GOAL · '
+        # The sidebar loads from the header only. On the whole page it made
+        # every link inside it dead: htmx cancels a click on a link that sits
+        # inside an element with its own request.
+        f'<div class="sc sc-goal">'
+        f'<header class="sc-header" {_ctx_attrs("dock", goal.id)}>'
+        f'<div class="sc-eyebrow sc-event">GOAL · '
         f'{_esc(str(goal.vector).upper())} · {_esc(str(goal.status).upper())}</div>'
         f'<h1>{_esc(goal.name)}</h1>'
         f'<p>{_esc(goal.definition_of_done)}</p>'

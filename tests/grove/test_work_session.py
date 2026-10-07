@@ -955,6 +955,31 @@ def test_the_goal_page_shows_the_goals_standard_work_from_its_own_records(env, m
     assert order == sorted(order)
     for phrase in ("looks good", "work the backlog", "let&#x27;s tag some messages"):
         assert phrase in html, phrase
+    # 2026-10-07: every link on the page is live. A link inside an element
+    # that makes its own request is dead in the browser (the click is
+    # cancelled), which is how the three buttons stopped working.
+    from html.parser import HTMLParser
+
+    class Links(HTMLParser):
+        open, dead, seen = [], [], 0
+
+        def handle_starttag(self, tag, attrs):
+            attrs = dict(attrs)
+            if tag == "a" and attrs.get("href"):
+                self.seen += 1
+                if any(self.open):
+                    self.dead.append(attrs["href"])
+            if tag not in ("br", "hr", "img", "input"):
+                self.open.append("hx-get" in attrs or "hx-post" in attrs)
+
+        def handle_endtag(self, tag):
+            if tag not in ("br", "hr", "img", "input"):
+                self.open.pop()
+
+    links = Links()
+    links.feed(html)
+    assert links.seen >= 4 and links.dead == []
+    assert 'href="/portal#fragments/proposals/pending?type=signature">To sign<' in html
     # Unsigned: the page says the rule is not in force, in the event color.
     grants_mod.get_grant_store().signed.clear()
     unsigned = fragments.render_goal_detail(None, goal)
