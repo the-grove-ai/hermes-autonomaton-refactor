@@ -149,6 +149,11 @@ class EvidenceRule:
     table, is the pattern."""
     threshold: int
     scope: str = SCOPE_SINGLE_VALUE_KEYS
+    # A second way a rule is earned, for a key the reference table does not
+    # list at all: this many model-decided items with that key, every one
+    # confirmed by the operator with the same output, and none revised. The
+    # operator's own confirmations are the evidence. None: not declared.
+    confirmed_key_threshold: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -380,7 +385,17 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         scope = str(ev_raw.get("scope", SCOPE_SINGLE_VALUE_KEYS))
         if scope != SCOPE_SINGLE_VALUE_KEYS:
             raise ValueError(f"goal {goal.id!r}: unknown evidence scope {scope!r}")
-        evidence = EvidenceRule(threshold=threshold, scope=scope)
+        confirmed_key = ev_raw.get("confirmed_key")
+        ck_threshold = None
+        if confirmed_key is not None:
+            ck_threshold = (confirmed_key.get("threshold")
+                            if isinstance(confirmed_key, Mapping) else None)
+            if (not isinstance(ck_threshold, int) or isinstance(ck_threshold, bool)
+                    or ck_threshold < 1):
+                raise ValueError(
+                    f"goal {goal.id!r}: evidence.confirmed_key needs a threshold of 1 or more")
+        evidence = EvidenceRule(threshold=threshold, scope=scope,
+                                confirmed_key_threshold=ck_threshold)
 
     isolation = raw.get("isolation")
     if isolation not in (None, ISOLATION_SOURCES_ONLY):
@@ -2382,6 +2397,52 @@ class DecisionWork:
         )
 
     # -- Jidoka's evidence ------------------------------------------------
+
+    def confirmed_key_evidence(self, key: Any) -> Dict[str, Any]:
+        """Count this run's evidence that one reference key has an answer the
+        operator keeps confirming, per the goal's declared ``confirmed_key``
+        rule. Jidoka reads this; it flags, it never fixes.
+
+        Only for a key the reference table does not list (a key with one
+        value is already standard work; a key with several is reserved for
+        judgment and never counts). A confirmation counts when a MODEL decided
+        the item and the operator confirmed it. An item the keg decided, or
+        accepted without review, never counts. One revision of any item with
+        this key, or two different confirmed answers, and there is no pattern."""
+        rule, ref_spec = self.config.evidence, self.config.reference
+        out: Dict[str, Any] = {"met": False, "confirmations": 0, "evidence": [],
+                               "output": None, "threshold": None}
+        if (rule is None or ref_spec is None or not rule.confirmed_key_threshold
+                or key in (None, "")):
+            return out
+        out["threshold"] = rule.confirmed_key_threshold
+        if ReferenceTable(ref_spec).values(key):
+            return out
+        proposed, decided = self._state()
+        answers: Dict[str, Dict[str, Any]] = {}
+        rows: List[Dict[str, Any]] = []
+        for record in proposed.values():
+            if _norm_key(record["inputs"].get(ref_spec.key_input)) != _norm_key(key):
+                continue
+            verdict = decided.get(record["id"])
+            if verdict is None:
+                continue
+            if verdict["decision"] == DECISION_CORRECT:
+                return out                    # the operator revised one: no pattern
+            if record.get("keg") or verdict["decision"] != DECISION_CONFIRM:
+                continue                      # keg-decided or unreviewed: never evidence
+            final = dict(verdict.get("output") or record["output"])
+            answers[json.dumps(final, sort_keys=True)] = final
+            rows.append({
+                "item_id": record["item_id"], "turn_id": record.get("turn_id"),
+                "turn_uid": record.get("turn_uid"), "decided_id": verdict["id"],
+            })
+        out["confirmations"] = len(rows)
+        if len(answers) != 1:
+            return out
+        out.update(evidence=rows, output=next(iter(answers.values())),
+                   met=len(rows) >= rule.confirmed_key_threshold)
+        return out
 
     def evidence(self) -> Dict[str, Any]:
         """Count this run's evidence for a tier-down pattern, per the goal's

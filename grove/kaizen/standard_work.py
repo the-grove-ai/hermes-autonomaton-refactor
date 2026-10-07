@@ -295,14 +295,33 @@ def goal_kegs(work: Any, statuses: tuple, *, store: Any = None) -> List[Any]:
     return out
 
 
+def _waiting_drafts(work: Any) -> List[Any]:
+    """This goal's keg proposals still waiting for a signature, in this run."""
+    from grove.eval.proposal_queue import read_all
+
+    run = work.log.current_run() or {}
+    return [
+        p for p in read_all()
+        if ((p.payload or {}).get("keg") or {}).get("dock_goal") == work.config.goal_id
+        and ((p.payload or {}).get("keg") or {}).get("lineage") == run.get("run_id")
+    ]
+
+
 def propose_direct_rule(
     work: Any, andon: Mapping[str, Any], *, key: Any, corrected: Mapping[str, Any],
-    store: Any = None,
+    store: Any = None, how: str = "corrected",
 ) -> Dict[str, Any]:
     """Propose a revision of the goal's signed keg that answers ``key`` with
-    the value the operator has repeatedly corrected it to. Called only once
-    that correction has been seen as often as the goal's evidence rule asks
-    of any rule. With no signed keg to revise there is nothing to propose."""
+    the value the operator has repeatedly given it: corrected it to
+    (``how="corrected"``) or confirmed a model's answer as
+    (``how="confirmed"``). Called only once that has been seen as often as
+    the goal's evidence rule asks. With no signed keg to revise there is
+    nothing to propose.
+
+    When a revision of this keg is already waiting for a signature, the new
+    rule is added TO it and the waiting draft is withdrawn in favor of one
+    card that carries both: two drafts built on the same signed version would
+    each erase the other's rule when signed."""
     from grove.eval.pattern_compiler import propose_keg
     from grove.pattern_cache import PatternCacheStore, STATUS_ACTIVE, STATUS_HALTED
 
@@ -313,14 +332,33 @@ def propose_direct_rule(
         return {"status": "no_keg_to_revise",
                 "detail": "no signed keg for this goal to add the rule to"}
     ref = cfg.reference
-    base = list((keg_mod.keg_of(current[-1]) or {}).get("conditions") or [])
+    signed = list((keg_mod.keg_of(current[-1]) or {}).get("conditions") or [])
     rule = {"if": f"{ref.key_input} == {_quote(key)}", "then": dict(corrected)}
+    waiting = _waiting_drafts(work)
+    base = signed
+    if waiting:
+        base = list(((waiting[-1].payload or {}).get("keg") or {}).get("conditions") or [])
+        if any(c.get("if") == rule["if"] and c.get("then") == rule["then"] for c in base):
+            return {"status": "already_proposed",
+                    "detail": f"a rule for {key!r} is already waiting for signature"}
     history = work.history()
-    matching = [
-        c for c in history
-        if keg_mod._norm(c["inputs"].get(ref.key_input)) == keg_mod._norm(key)
-        and c["confirmed"] == dict(corrected)
-    ]
+    conditions = [rule] + [c for c in base if c.get("if") != rule["if"]]
+    # Every rule this draft adds to the SIGNED keg, each with the operator's
+    # own decisions behind it.
+    known = {c.get("if") for c in signed}
+    added, matching = [], []
+    for condition in conditions:
+        if condition.get("if") in known or condition.get("defer") or "then" not in condition:
+            continue
+        behind = [c for c in history
+                  if keg_mod.evaluate({"conditions": [condition], "inputs": cfg.inputs},
+                                      c["inputs"]) is not None
+                  and c["confirmed"] == dict(condition["then"])]
+        matching += behind
+        named = condition["if"].split("==", 1)[-1].strip()
+        added.append(f"{ref.key_input} {named} is answered "
+                     f"{json.dumps(dict(condition['then']))}, as you {how} it "
+                     f"{len(behind)} times")
     run = work.log.current_run() or {}
     result = propose_keg(
         store,
@@ -331,10 +369,10 @@ def propose_direct_rule(
         intent_class=_intent_class([str(c.get("turn_id")) for c in matching]),
         tool_name=cfg.tool, tool_args={"verb": "apply_keg"},
         inputs=cfg.inputs, outputs=cfg.outputs,
-        conditions=[rule] + [c for c in base if c.get("if") != rule["if"]],
+        conditions=conditions,
         scope_text=(
-            f"Adds one rule: {ref.key_input} {key!r} is answered "
-            f"{json.dumps(dict(corrected))}, as you corrected it {len(matching)} times."
+            ("Adds one rule: " if len(added) == 1 else f"Adds {len(added)} rules: ")
+            + "; ".join(added) + "."
         ),
         reserve=(
             f"Any {ref.key_input} with more than one value in {ref.path.name}; "
@@ -342,13 +380,31 @@ def propose_direct_rule(
         ),
         dock_goal=cfg.goal_id, scope=cfg.keg.scope,
         authority_level=cfg.keg.authority_level,
-        flag=keg_mod.FLAG_ANOMALY,
+        flag=(keg_mod.FLAG_ANOMALY if how == "corrected"
+              else keg_mod.FLAG_TIER_DOWN_PATTERN),
         flag_detail=str(andon.get("summary") or ""),
         evidence_turn_ids=[str(c.get("turn_id") or c["ref"]) for c in matching]
         or [str(andon.get("andon_id"))],
         history=history, lineage=run.get("run_id"), andon_id=andon.get("andon_id"),
     )
-    return _summary(result)
+    summary = _summary(result)
+    summary["rules_added"] = len(added)
+    if summary.get("status") == "proposed" and waiting:
+        # One card, not two: the waiting drafts are withdrawn, on the record.
+        from grove.eval import proposal_queue
+        from grove.flywheel_cli import _record_kaizen_disposition
+        from grove.pattern_cache import STATUS_DEMOTED
+
+        for draft in waiting:
+            proposal_queue.remove(draft.proposal_id)
+            _record_kaizen_disposition(
+                draft, disposition="withdrawn",
+                reason="replaced by one draft that carries this rule and a further one")
+            old = (draft.payload or {}).get("pattern_id")
+            if old and store.get(old) is not None:
+                store.set_status(old, STATUS_DEMOTED)
+        summary["replaced"] = [d.proposal_id for d in waiting]
+    return summary
 
 
 def request_operator_condition(work: Any, andon: Mapping[str, Any]) -> Optional[str]:

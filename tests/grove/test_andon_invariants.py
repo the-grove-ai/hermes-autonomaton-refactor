@@ -734,3 +734,138 @@ def test_t0_record_names_what_answered_not_a_model():
     from grove.dispatcher import Dispatcher
     src = inspect.getsource(Dispatcher._write_intent_record)
     assert 'if tier_override == "T0":' in src and 'model_used = "pattern_cache"' in src
+
+
+# ── a rule earned from the operator's own confirmations ───────────────
+# For a key the reference table does not list: enough model-decided items,
+# all confirmed with the same answer, none revised. Same proposal, backtest
+# and portal signature as any other change to standard work.
+
+
+def _declare_confirmed_key(env, monkeypatch, threshold=3):
+    from dataclasses import replace
+
+    cfg = replace(env.work.config, evidence=replace(
+        env.work.config.evidence, confirmed_key_threshold=threshold))
+    env.work.config = cfg
+    monkeypatch.setattr(dw, "config_for_goal", lambda goal_id, dock=None: cfg)
+
+
+def _keg_proposals():
+    return [p for p in read_all() if (p.payload or {}).get("keg")]
+
+
+def test_confirmed_decisions_for_an_unlisted_key_become_a_proposed_rule(env, monkeypatch):
+    _declare_confirmed_key(env, monkeypatch)
+    env.earn_v1()
+    answers = []
+    for n in range(1, 4):
+        env.add("social", f"post {n}")
+        events = env.code("comms")
+        answers.append(events)
+        if n < 3:
+            assert events == [] and _keg_proposals() == []      # below the count: nothing
+    [event] = answers[-1]
+    assert event["detector"] == "confirmed_key" and event["flag"] == keg.FLAG_TIER_DOWN_PATTERN
+    assert len(event["provenance"]) == 3                        # the confirmations are the evidence
+    assert event["answer"]["kind"] == andon.KIND_STANDARD_WORK
+    assert event["answer"]["channel"] == andon.CHANNEL_PORTAL   # signed in the portal, never in chat
+    [proposal] = _keg_proposals()
+    k = proposal.payload["keg"]
+    assert (k["version"], k["flag"]) == (2, keg.FLAG_TIER_DOWN_PATTERN)
+    assert k["conditions"][0] == {"if": "channel == 'social'", "then": {"tag": "comms"}}
+    assert len(proposal.evidence) == 3
+    detail = event["answer"]["detail"]
+    assert (detail["would_change"], detail["rules_added"]) == (0, 1)
+    assert "You confirmed 'social' the same way 3 times" in event["answer"]["summary"]
+    # Nothing serves until it is signed; signed, the keg answers that key.
+    [serving] = [e for e in env.store.all() if e.status == STATUS_ACTIVE]
+    assert keg.evaluate(keg.keg_of(serving), {"channel": "social"}) is None
+    assert fc.cli_approve(proposal.proposal_id.split(":")[-1][:12]) == 0
+    [serving] = [e for e in env.store.all() if e.status == STATUS_ACTIVE]
+    assert keg.evaluate(keg.keg_of(serving), {"channel": "social"}) == {"tag": "comms"}
+    assert keg.evaluate(keg.keg_of(serving), {"channel": "billing"}) == {"tag": "finance"}
+    assert_every_andon_closed_exactly_once(env.events())
+
+
+def test_what_never_counts_as_a_confirmation(env, monkeypatch):
+    _declare_confirmed_key(env, monkeypatch)
+    env.earn_v1()
+    # Keg-decided items never count, however many are confirmed.
+    for n in range(4):
+        env.add("billing", f"invoice {n}")
+        env.code("finance", keg_served=True)
+    assert env.work.confirmed_key_evidence("billing")["confirmations"] == 0
+    # A key the reference table lists is not this rule's to earn.
+    assert env.work.confirmed_key_evidence("press")["met"] is False
+    # Two different confirmed answers: no pattern.
+    for tag in ("comms", "other", "comms", "comms"):
+        env.add("forum", "thread")
+        env.code(tag)
+    found = env.work.confirmed_key_evidence("forum")
+    assert (found["met"], found["confirmations"]) == (False, 4)
+    # One revision of any item with the key: no pattern.
+    for n in range(3):
+        env.add("social", f"post {n}")
+        env.code("comms")
+    assert len(_keg_proposals()) == 1
+    env.work.rule_on(f"m{env.n - 1:02d}", decision="correct",
+                     corrected_output={"tag": "escalate"}, provenance=env.prov())
+    assert env.work.confirmed_key_evidence("social")["met"] is False
+
+
+def test_the_rule_is_declared_or_it_does_not_exist(env):
+    env.earn_v1()
+    for n in range(5):
+        env.add("social", f"post {n}")
+        assert env.code("comms") == []
+    assert _keg_proposals() == []
+    assert env.work.confirmed_key_evidence("social")["threshold"] is None
+    bad = SimpleNamespace(
+        id=GOAL, root=env.work.config.queue.parent, keywords=(), resolved_sources=lambda: [],
+        extra={"decision_work": {
+            "tool": "t", "queue": "queue", "isolation": "sources_only",
+            "inputs": {"channel": {"data_type": "string", "required": True}},
+            "outputs": {"tag": {"data_type": "string"}},
+            "reference_table": {"path": "channels.csv", "key_column": "Channel",
+                                "value_column": "Default Tag", "key_input": "channel",
+                                "value_output": "tag"},
+            "evidence": {"threshold": 3, "confirmed_key": {"threshold": 0}}}})
+    with pytest.raises(ValueError, match="confirmed_key needs a threshold of 1 or more"):
+        dw.load_config(bad)
+
+
+def test_two_keys_earned_before_signing_ride_one_card(env, monkeypatch):
+    _declare_confirmed_key(env, monkeypatch)
+    env.earn_v1()
+    for n in range(3):
+        env.add("social", f"post {n}")
+        env.code("comms")
+    [first] = _keg_proposals()
+    # A fourth confirmation of the same key while its draft waits: watched, not re-proposed.
+    env.add("social", "post 4")
+    [again] = env.code("comms")
+    assert again["answer"]["kind"] == andon.KIND_WATCH and _keg_proposals() == [first]
+    for n in range(3):
+        env.add("forum", f"thread {n}")
+        events = env.code("other")
+    [event] = events
+    [card] = _keg_proposals()
+    assert card.proposal_id != first.proposal_id                 # the first draft was withdrawn
+    k = card.payload["keg"]
+    assert k["version"] == 2
+    assert k["conditions"][:2] == [
+        {"if": "channel == 'forum'", "then": {"tag": "other"}},
+        {"if": "channel == 'social'", "then": {"tag": "comms"}}]
+    assert event["answer"]["detail"]["rules_added"] == 2
+    assert event["answer"]["detail"]["replaced"] == [first.proposal_id]
+    assert "one card, 2 rules" in event["answer"]["summary"]
+    withdrawn = [e for e in env.events() if e.get("disposition") == "withdrawn"]
+    assert [e["proposal_id"] for e in withdrawn] == [first.proposal_id]
+    # One signature brings both rules into force.
+    assert fc.cli_approve(card.proposal_id.split(":")[-1][:12]) == 0
+    [serving] = [e for e in env.store.all() if e.status == STATUS_ACTIVE]
+    spec = keg.keg_of(serving)
+    assert keg.evaluate(spec, {"channel": "social"}) == {"tag": "comms"}
+    assert keg.evaluate(spec, {"channel": "forum"}) == {"tag": "other"}
+    assert_every_andon_closed_exactly_once(env.events())

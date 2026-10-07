@@ -9,6 +9,9 @@ confirmation turn ends.
       declared evidence rule).
   correction — anomaly: the operator changed an answer. When a keg produced
       that answer the event names the keg, and the handler halts it.
+  confirmed key — tier-down: for a key the reference table does not list,
+      enough model-decided items were confirmed by the operator with the same
+      answer and none was revised (the goal's declared ``confirmed_key`` rule).
   phrase reading — tier-down: a model read the operator's whole message as a
       verb the work session already has, and the count of such readings with
       no revision after is taken from the decision log. Only for a goal that
@@ -25,6 +28,7 @@ from grove.keg import FLAG_ANOMALY, FLAG_TIER_DOWN_PATTERN
 DETECTOR_REFERENCE_AGREEMENT = "reference_agreement"
 DETECTOR_CORRECTION = "correction"
 DETECTOR_PHRASE_READING = "phrase_reading"
+DETECTOR_CONFIRMED_KEY = "confirmed_key"
 
 
 def _plain(output: Any) -> str:
@@ -102,6 +106,7 @@ def observe(
     if decided.get("decision") != DECISION_CONFIRM:
         return []
     events = _phrase_readings(work, decided, context)
+    events += _confirmed_key(work, proposed, context)
     rule = work.evidence()
     if not rule.get("met") or _answered_already(work):
         return events
@@ -158,5 +163,33 @@ def _phrase_readings(
             "session_id": decided.get("session_id"),
         },
         observed_input={"phrase": said, "read_as": pattern.verb},
+        context=context,
+    )]
+
+
+def _confirmed_key(
+    work: Any, proposed: Mapping[str, Any], context: Mapping[str, Any],
+) -> List[Dict[str, Any]]:
+    """The operator just confirmed a model's answer for a key the reference
+    table does not list. When the goal's declared count of such
+    confirmations is reached — same key, same answer, none revised — flag
+    it. What the count becomes is Kaizen's answer."""
+    cfg = work.config
+    if cfg.reference is None or proposed.get("keg"):
+        return []
+    key = (proposed.get("inputs") or {}).get(cfg.reference.key_input)
+    found = work.confirmed_key_evidence(key)
+    if not found["met"]:
+        return []
+    return [raise_andon(
+        FLAG_TIER_DOWN_PATTERN, detector=DETECTOR_CONFIRMED_KEY, goal=cfg.goal_id,
+        summary=(
+            f"{found['confirmations']} confirmed decisions gave {key!r} the same answer "
+            f"({_plain(found['output'])}), with no revision"
+        ),
+        evidence=found["evidence"],
+        details={"key": key, "output": found["output"],
+                 "confirmations": found["confirmations"], "threshold": found["threshold"]},
+        observed_input={"key": key, "confirmations": found["confirmations"]},
         context=context,
     )]

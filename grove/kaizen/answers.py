@@ -478,6 +478,39 @@ def _operator_feedback(andon: Mapping[str, Any], context: Any) -> Answer:
     return _standard_work(andon, context)
 
 
+def _confirmed_key(andon: Mapping[str, Any], context: Any) -> Answer:
+    """The operator kept confirming a model's answer for a key the reference
+    table does not list. Propose that answer as a rule of the goal's keg —
+    drafted, backtested and signed in the portal like any other change to
+    standard work. Their own confirmations are the evidence."""
+    from grove.kaizen import standard_work
+
+    details = andon.get("details") or {}
+    work = _work(context, andon)
+    key, output = details.get("key"), details.get("output")
+    if work is None or work.config.keg is None or key is None or not output:
+        return watch_unresolved(andon, context)
+    out = standard_work.propose_direct_rule(
+        work, andon, key=key, corrected=output, how="confirmed")
+    if out.get("status") == "proposed":
+        more = out.get("rules_added", 1) > 1
+        return Answer(
+            kind=KIND_STANDARD_WORK,
+            summary=(
+                f"You confirmed {key!r} the same way {details.get('confirmations')} times, "
+                f"with no revision. Proposed v{out.get('version')} with that as a rule"
+                + (f" (one card, {out['rules_added']} rules)" if more else "")
+                + ", for your signature. " + replay_summary(out)
+            ),
+            artifact=out.get("proposal_id"), detail=out,
+        )
+    return watch(
+        andon, signature={"key": key, "status": out.get("status")},
+        description=str(out.get("detail") or out.get("status")),
+        promote_after=_UNREADABLE_PROMOTE_AFTER,
+    )
+
+
 def _phrase_reading(andon: Mapping[str, Any], context: Any) -> Answer:
     """A model read the operator's phrase as a verb the work session already
     has. Below the declared threshold: watch. At it: ask the operator, in
@@ -535,6 +568,7 @@ _ANSWERS: Dict[str, Callable[[Mapping[str, Any], Any], Answer]] = {
     "repetition": _repetition,
     "kaizen_failure": _kaizen_failure,
     "phrase_reading": _phrase_reading,
+    "confirmed_key": _confirmed_key,
 }
 
 
