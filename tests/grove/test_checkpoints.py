@@ -403,6 +403,34 @@ def test_the_command_line_does_the_same_two_things(node, capsys):
     assert checkpoints.admin_log(limit=1)[0]["surface"] == "cli"
 
 
+def test_a_restore_leaves_the_nodes_routing_file_alone(node):
+    """Found live, 2026-10-07: every restore put back the checkpoint's routing
+    file, silently reverting the operator's model bindings and dropping prices
+    and rules added since. Bindings, prices and routing rules are the node's
+    configuration; a checkpoint does not hold them and a restore never touches
+    them, including a checkpoint saved when the file was still copied."""
+    routing = node.home / "routing.operational.yaml"
+    routing.write_text("tier_preferences: {T1: {model: old}}\n")
+    node.month()
+    checkpoints.save("point")
+    manifest_path = checkpoints.root() / "point" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert "routing.operational.yaml" not in {e["path"] for e in manifest["entries"]}
+    # An older checkpoint that DID copy the file: make this one look like it.
+    state = checkpoints.root() / "point" / "state"
+    (state / "routing.operational.yaml").write_text("tier_preferences: {T1: {model: old}}\n")
+    manifest["entries"].append({
+        "path": "routing.operational.yaml", "present": True, "dir": False,
+        "files": {"": hashlib.sha256((state / "routing.operational.yaml").read_bytes()).hexdigest()}})
+    manifest_path.write_text(json.dumps(manifest))
+    routing.write_text("tier_preferences: {T1: {model: new}}\nrouting_rules: {goal_request: {}}\n")
+    node.month()
+    result = _restore(node, "point")
+    assert result["identical"] is True and "routing.operational.yaml" not in result["moved_to_archive"]
+    assert "model: new" in routing.read_text() and "goal_request" in routing.read_text()
+    assert node.decided() == ["m21", "m22"]
+
+
 def test_a_checkpoint_can_be_renamed_and_still_restores_exactly(node):
     node.month()
     checkpoints.save("before-month-3")

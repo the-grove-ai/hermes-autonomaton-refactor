@@ -80,7 +80,9 @@ def checkpoints_page_html(note: str = "", confirm: Optional[str] = None,
         f'<button type="submit" class="btn"{" disabled" if busy else ""}>Save</button></form>'
         '<p class="sc-foot">Every store is copied together: turn records, sessions and their '
         'chain anchors, decision logs, the Kaizen ledger, kegs, proposals waiting, the Dock, '
-        'signatures in force, learned phrases, the work queue and the scorecard\'s prices.</p>'
+        'signatures in force, learned phrases, the work queue and the backlog folders. Not part '
+        'of a checkpoint: which model each tier is bound to, model prices and routing rules. '
+        'A restore leaves those as they are.</p>'
         '</div>')
     rows = ""
     for m in checkpoints.listing():

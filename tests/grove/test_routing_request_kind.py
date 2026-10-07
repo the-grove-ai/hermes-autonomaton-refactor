@@ -20,21 +20,16 @@ from grove import decision_work as dw
 from grove.router import REQUEST_GOAL, CognitiveRouter
 
 REPO = Path(__file__).resolve().parents[2]
-RULE = """routing_rules:
-  goal_request:
-    enabled: true
-    match: {request: goal%s}
-    target_tier: T1
-"""
+SHIPPED_RULE = "  goal_request:\n    enabled: true\n    match:\n      request: goal\n    target_tier: T1\n"
 
 
-def _router(tmp_path, rule=RULE % "", strip=False):
-    op = tmp_path / "routing.operational.yaml"
+def _router(tmp_path, change=lambda text: text):
+    """A router on a copy of the shipped routing file, optionally changed."""
+    tmp_path.mkdir(parents=True, exist_ok=True)
     text = (REPO / "config" / "routing.operational.yaml").read_text(encoding="utf-8")
-    assert text.count("\nrouting_rules:\n") == 1
-    if not strip:
-        text = text.replace("\nrouting_rules:\n", "\n" + rule, 1)
-    op.write_text(text, encoding="utf-8")
+    assert text.count(SHIPPED_RULE) == 1                    # the shipped rule, as declared
+    op = tmp_path / "routing.operational.yaml"
+    op.write_text(change(text), encoding="utf-8")
     authority = REPO / "config" / "routing.authority.yaml"
     if authority.exists():
         shutil.copy(authority, tmp_path / "routing.authority.yaml")
@@ -65,17 +60,22 @@ def test_a_goals_own_request_is_routed_by_the_rule_whatever_the_classifier_reads
 
 
 def test_the_rule_can_name_goals_and_absent_it_nothing_changes(tmp_path):
-    named = _router(tmp_path, RULE % ", goals: [message-triage]")
+    named = _router(tmp_path / "named", lambda t: t.replace(
+        "      request: goal\n", "      request: goal\n      goals: [message-triage]\n"))
     assert named.route(**READ_AS_ANALYSIS, request=REQUEST_GOAL, goal="message-triage").tier == "T1"
     assert named.route(**READ_AS_ANALYSIS, request=REQUEST_GOAL, goal="another").reason == "premium"
-    # No such rule declared (the shipped file): a goal's request is routed as before.
-    shipped = _router(tmp_path / "s" if (tmp_path / "s").mkdir() is None else tmp_path, strip=True)
-    assert shipped.route(**READ_AS_ANALYSIS, request=REQUEST_GOAL, goal="g").reason == "premium"
+    # With the rule taken out (or switched off), a goal's request is routed by
+    # the classifier's read, as it was before.
+    without = _router(tmp_path / "without", lambda t: t.replace(SHIPPED_RULE, ""))
+    assert without.route(**READ_AS_ANALYSIS, request=REQUEST_GOAL, goal="g").reason == "premium"
+    off = _router(tmp_path / "off", lambda t: t.replace(
+        SHIPPED_RULE, SHIPPED_RULE.replace("enabled: true", "enabled: false")))
+    assert off.route(**READ_AS_ANALYSIS, request=REQUEST_GOAL, goal="g").reason == "premium"
 
 
 def test_an_unknown_request_kind_is_refused_at_load(tmp_path):
     with pytest.raises(ValueError, match="match.request has unknown value"):
-        _router(tmp_path, RULE.replace("request: goal%s", "request: gaol"))
+        _router(tmp_path, lambda t: t.replace("      request: goal\n", "      request: gaol\n"))
 
 
 def test_the_dispatcher_says_what_the_turn_is_with_no_model(monkeypatch):

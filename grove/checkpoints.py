@@ -59,7 +59,6 @@ STATE = (
     "grants.yaml",                          # signatures in force, the session rule among them
     "vocabulary",                           # phrases learned in conversation
     ".reissue",                             # transient notes (empty when nothing is in flight)
-    "routing.operational.yaml",             # tier bindings and prices: the scorecard's inputs
     "memory_records.jsonl",                 # memory the operator has accepted
     "memory_index.json",
     ".pushed_memory_ids.json",              # which suggestions were already offered
@@ -72,6 +71,12 @@ STATE = (
     "composer_events.jsonl",
 )
 SQLITE = frozenset({"telemetry.db", "pattern_cache.db", "red_pending.db"})
+# Node configuration, not a goal's records: which model each tier is bound to,
+# what each model costs, the routing rules. A checkpoint does not hold it, and
+# a restore never puts it back, including from a checkpoint saved when it was
+# still copied. (Found live, 2026-10-07: every restore silently reverted the
+# operator's model bindings and dropped prices added since the save.)
+NOT_RESTORED = frozenset({"routing.operational.yaml"})
 NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 # Transient notes that mean work is under way. A goal note (a backlog stage
 # just released) and a turn note are state, not motion.
@@ -422,6 +427,8 @@ def restore_now(name: str, *, home: Any = None, surface: str = "cli") -> Dict[st
     moved = []
     for entry in manifest.get("entries") or []:
         rel = entry["path"]
+        if rel in NOT_RESTORED:
+            continue
         current = base / rel
         if current.exists() or current.is_symlink():
             (archive / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -436,6 +443,8 @@ def restore_now(name: str, *, home: Any = None, surface: str = "cli") -> Dict[st
             _copy(source / "state" / rel, current, sqlite=False)
     mismatches = []
     for entry in manifest.get("entries") or []:
+        if entry["path"] in NOT_RESTORED:
+            continue
         if not entry.get("present"):
             if (base / entry["path"]).exists():
                 mismatches.append(f"{entry['path']}: present, though the checkpoint has none")

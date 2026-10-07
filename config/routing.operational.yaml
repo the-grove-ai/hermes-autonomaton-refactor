@@ -472,6 +472,17 @@ model_facts:
   # binding-capability-sync-v1 rewires them onto model_facts.cost_per_mtok_*.
 routing_rules:
 
+    # A goal's own declared work request starts on the default tier, whatever
+    # a classifier makes of the sentence. Matched on what the turn IS (the
+    # Dispatcher establishes it with no model), so it goes first. A tier that
+    # does not complete the turn still hands it one tier up (the ladder rule).
+    # Add `goals: [goal-id]` to the match to route one goal's work differently.
+  goal_request:
+    enabled: true
+    match:
+      request: goal
+    target_tier: T1
+
     # Coding — Premium (T2) through complex; Apex (T3) reserved for novel.
   premium_coding:
     enabled: true
