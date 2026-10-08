@@ -1148,6 +1148,27 @@ ul.listing li { padding: 0.7rem 0; }
 .sc-trace { border: 1px solid var(--sc-line); border-radius: 12px; background: var(--bg); }
 .sc-trace[open] { background: var(--sc-panel); }
 .sc-trace-revised { border-color: var(--sc-event); }
+.sc-trace-keg:not([open]) { border-color: transparent; opacity: 0.55; }
+.sc-trace-keg:not([open]) > summary { padding-top: 6px; padding-bottom: 6px; font-size: 0.92em; }
+.sc-trace-keg:not([open]):hover { opacity: 1; }
+.sc-trace-model, .sc-trace-revised { opacity: 1; }
+.sc-trace-revised { border-width: 2px; }
+.sc-tf { position: absolute; opacity: 0; pointer-events: none; }
+.sc-tcounts { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-bottom: 16px; }
+.sc-tcounts .sc-download { margin-left: auto; }
+.sc-tcount { border: 1px solid var(--sc-line); border-radius: 10px; padding: 10px 16px; font-size: 16px;
+  color: var(--sc-text-2); cursor: pointer; white-space: nowrap; }
+.sc-tcount b { font-size: 24px; font-weight: 600; color: var(--sc-text); margin-right: 6px; }
+.sc-tcount-plain { cursor: default; border-style: dashed; }
+.sc-tcount-rev b { color: var(--sc-event); }
+.sc-tf-all:checked ~ .sc-tcounts .sc-tcount-all, .sc-tf-keg:checked ~ .sc-tcounts .sc-tcount-keg,
+.sc-tf-model:checked ~ .sc-tcounts .sc-tcount-model, .sc-tf-rev:checked ~ .sc-tcounts .sc-tcount-rev {
+  border-color: var(--sc-text); color: var(--sc-text); }
+.sc-tf:focus-visible ~ .sc-tcounts { outline: 2px solid var(--accent); outline-offset: 4px; }
+.sc-tf-keg:checked ~ .sc-traces .sc-trace:not(.sc-trace-keg),
+.sc-tf-model:checked ~ .sc-traces .sc-trace:not(.sc-trace-model),
+.sc-tf-rev:checked ~ .sc-traces .sc-trace:not(.sc-trace-revised) { display: none; }
+.sc-tf-keg:checked ~ .sc-traces .sc-trace-keg { opacity: 1; border-color: var(--sc-line); }
 .sc-trace > summary { display: grid; align-items: center; gap: 14px; cursor: pointer;
     grid-template-columns: 32px minmax(160px, 1.4fr) minmax(160px, 1.6fr) max-content minmax(140px, 1fr);
     padding: 12px 16px; list-style: none; font-size: 15px; }

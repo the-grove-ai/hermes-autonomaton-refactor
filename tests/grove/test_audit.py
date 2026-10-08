@@ -546,12 +546,24 @@ def test_the_trace_reads_each_decision_step_by_step_from_records(tmp_path, monke
     for text in ("DECISION TRACE · MESSAGE TAGGING · RUN 3 · 6 MESSAGES",
                  "6 decisions on record.", "Download as JSONL (6 lines)",
                  f"/portal/fragments/trace/export?goal={GOAL}",
-                 "revised · was finance", "YOU REVISED", "JIDOKA FLAGGED",
-                 "A miss: keg v1 answered finance and you revised it. The keg was halted.",
-                 "KAIZEN PROPOSED", "AS ONE TRAINING EXAMPLE", "no model call"):
+                 "revised · was finance", "YOU REVISED", "THE KEG WAITED",
+                 "A miss: keg v1 answered finance and you revised it. The keg waited.",
+                 "A CHANGE WAS PROPOSED", "THIS DECISION, AS ITS LINE IN THE DOWNLOAD",
+                 "no model call", "its reasoning and what was signed."):
         assert text in html, text
     assert html.count('<details class="sc-trace') == 6
-    assert html.count('sc-trace-revised" open') == 1          # the revised item is open
+    assert html.count('sc-trace-revised sc-trace-keg" open') == 1   # the revised item is open
+    # 2026-10-08: the counts sit with the download and filter the list (a
+    # choice of one, no script); a row that settled from the keg is marked so
+    # it can be drawn quietly, and the words around the record are plain.
+    for text in ("<b>6</b> on record", "from the keg</label>", "on a model</label>",
+                 "<b>1</b> revised</label>", "not opened</span>"):
+        assert text in html, text
+    assert html.count('class="sc-tf ') == 4 and html.count(' checked>') == 1
+    assert (html.count('sc-trace-keg"') + html.count('sc-trace-model"')) == 6
+    for gone in ("your ruling", "KAIZEN", "JIDOKA", "TRAINING EXAMPLE", "was halted",
+                 "standard work"):
+        assert gone not in html, gone
     assert "Trace</a>" in (REPO / "gateway" / "assets" / "portal" / "index.html").read_text()
 
 

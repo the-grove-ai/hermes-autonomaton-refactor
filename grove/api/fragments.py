@@ -6672,11 +6672,13 @@ def _trace_turn_notes(step) -> List[str]:
 
 
 def _trace_html(report) -> str:
-    """The decision trace: every decision of the run with its inputs, who
-    decided and why, the operator's ruling and what the loop did — each step
-    naming the turn that carries it. Built from records; nothing is
-    summarized. One collapsed row per item; a revised item and one the model
-    asked about open on their own."""
+    """The decision trace: every decision of the run with its inputs, what
+    settled it and why, what the operator did and what was signed because of
+    it, each step naming the turn that carries it. Built from records; nothing
+    is summarized. One collapsed row per item. The rows that moved carry the
+    weight: one a model ran, and above all one the operator revised; a row
+    that settled from the keg is quiet. The counts above the list filter it.
+    A revised item and one the model asked about open on their own."""
     if not report["goals"]:
         return ('<div id="trace-page"><div class="card"><h4>Decision trace</h4>'
                 '<p>No decision work has run yet.</p></div></div>')
@@ -6689,32 +6691,51 @@ def _trace_html(report) -> str:
         revised = sum(1 for i in decided if i["revised"])
         unreviewed = sum(1 for i in decided if i["verdict"] == "not reviewed")
         asked = sum(1 for i in items if i["question"])
+        who = g.get("operator_called") or "operator"
+        on_model = len(decided) - by_keg
         header = (
             f'<header class="sc-header"><div class="sc-eyebrow sc-event">DECISION TRACE · '
             f'{_esc(str(g["title"]).upper())} · RUN {_esc(g["run_number"])} · {len(items)} '
             f'{_esc(many.upper())}</div>'
             f'<h1>{len(decided)} decisions on record. <span class="sc-event">Each with its '
-            f'inputs, its reasoning and your ruling.</span></h1>'
+            f'inputs, its reasoning and what was signed.</span></h1>'
             f'<p>Read straight from the decision log, the turn records and the ledger; '
-            f'nothing here is summarized by a model. {by_keg} settled from the keg, '
-            f'{len(decided) - by_keg} by a model; {revised} revised, {unreviewed} not '
-            f'reviewed, {asked} where the model asked first.</p>'
-            f'<div class="sc-check-line"><a class="sc-run sc-download" '
+            f'nothing here is summarized by a model.'
+            + (f' A model asked first on {asked}.' if asked else "") + '</p></header>')
+        # The counts are the point of the page, so they sit with the download
+        # and filter the list: the hundred lines stay there to download, and
+        # the room reads the ones that moved. No script: a choice of one.
+        name = f'tf-{_esc(g["goal"])}'
+
+        def _pick(key, n, words, checked=False):
+            return (f'<input class="sc-tf sc-tf-{key}" type="radio" name="{name}" '
+                    f'id="{name}-{key}"{" checked" if checked else ""}>',
+                    f'<label class="sc-tcount sc-tcount-{key}" for="{name}-{key}"><b>{n}</b> '
+                    f'{_esc(words)}</label>')
+
+        picks = [_pick("all", len(decided), "on record", True),
+                 _pick("keg", by_keg, "from the keg"), _pick("model", on_model, "on a model"),
+                 _pick("rev", revised, "revised")]
+        counts = (
+            "".join(i for i, _l in picks)
+            + '<div class="sc-tcounts">' + "".join(l for _i, l in picks)
+            + f'<span class="sc-tcount sc-tcount-plain"><b>{unreviewed}</b> not opened</span>'
+            f'<a class="sc-run sc-download" '
             f'href="/portal/fragments/trace/export?goal={_esc(g["goal"])}" '
             f'download="{_esc(g["goal"])}-run-{_esc(g["run_number"])}.jsonl">'
-            f'Download as JSONL ({len(decided)} lines)</a>'
-            f'<span class="sc-quiet">One decision per line: inputs, proposed answer, '
-            f'reasoning, who decided, your final answer and verdict.</span></div></header>')
+            f'Download as JSONL ({len(decided)} lines)</a></div>')
 
         rows = ""
         for it in items:
             who_cls = "sc-keg" if it["keg"] else "sc-model"
             verdict_cls = " sc-event" if it["revised"] else ""
-            verdict = it["verdict"]
+            # On the page a keg's answer nobody looked at is "not opened"; the
+            # record's own word for it (and the export's) is left as it is.
+            verdict = "not opened" if it["verdict"] == "not reviewed" else it["verdict"]
             if it["revised"]:
                 verdict += f' · was {_keg_value(it["proposed"])}'
             elif any(ev["kind"] == "proposed" for ev in it["loop"]):
-                verdict += " · keg proposed"
+                verdict += " · change proposed"
             summary = (
                 f'<summary><span class="sc-n">{it["order"]}</span>'
                 f'<span class="sc-trace-label">{_esc(it["label"] or it["item_id"])}</span>'
@@ -6752,8 +6773,8 @@ def _trace_html(report) -> str:
             for r in it["rulings"]:
                 if r["decision"] == "accepted":
                     body = (f'<div>Settled from the keg under its signed authority. '
-                            f'<strong>Not reviewed.</strong></div>')
-                    label = "ACCEPTED · " + _clock(r["at"])
+                            f'<strong>Not opened.</strong></div>')
+                    label = "SETTLED · " + _clock(r["at"])
                 elif r["decision"] == "correct":
                     body = (f'<div>You revised it to <strong>'
                             f'{_esc(it["final_text"] if r is it["rulings"][-1] else "")}'
@@ -6771,21 +6792,23 @@ def _trace_html(report) -> str:
                                mine=r["decision"] == "correct")
             for ev in it["loop"]:
                 if ev["kind"] == "flagged":
-                    halted = (" The keg was halted." if ev["halted"] else "")
+                    halted = (" The keg waited." if ev["halted"] else "")
                     if ev["flag"] == "anomaly":
                         said = (f"A miss: {it['decided_by']} answered "
                                 f"{_keg_value(it['proposed'])} and you revised it")
+                        label = "THE KEG WAITED · " if ev["halted"] else "A MISS · "
                     else:
-                        said = ("A tier-down pattern: enough confirmed decisions matched "
-                                "the reference table to compile them into the keg")
+                        said = ("Enough confirmed decisions matched the reference table "
+                                "to compile them into the keg")
+                        label = "THE EVIDENCE WAS IN · "
                     steps += _step(
-                        "JIDOKA FLAGGED · " + _clock(ev["at"]),
+                        label + _clock(ev["at"]),
                         f'<div>{_esc(said)}.{_esc(halted)}</div>'
                         f'<div class="sc-tturn">andon {_esc(str(ev["andon_id"])[:12])}</div>',
                         mine=True)
                 elif ev["kind"] == "proposed":
                     steps += _step(
-                        "KAIZEN PROPOSED · " + _clock(ev["at"]),
+                        "A CHANGE WAS PROPOSED · " + _clock(ev["at"]),
                         f'<div>Keg v{_esc(ev["version"])}, replayed on {_esc(ev["replayed"])} '
                         f'{_esc(many)}; {_esc(ev["would_change"])} would change.</div>',
                         mine=True)
@@ -6793,14 +6816,16 @@ def _trace_html(report) -> str:
                     steps += _step(
                         "SIGNED · " + _clock(ev["at"]),
                         f'<div>Keg v{_esc(ev["version"])} signed by the '
-                        f'{_esc(ev["by"] or "operator")}; it serves from the keg from here.</div>',
+                        f'{_esc(who if (ev["by"] or "operator") == "operator" else ev["by"])}; '
+                        f'it serves from here.</div>',
                         mine=True)
             example = json.dumps(it["example"], ensure_ascii=False, sort_keys=True)
             opened = " open" if (it["revised"] or it["question"]) else ""
             rows += (
-                f'<details class="sc-trace{" sc-trace-revised" if it["revised"] else ""}"{opened}>'
+                f'<details class="sc-trace{" sc-trace-revised" if it["revised"] else ""}'
+                f'{" sc-trace-keg" if it["keg"] else " sc-trace-model"}"{opened}>'
                 f'{summary}<div class="sc-tsteps">{steps}</div>'
-                f'<div class="sc-eyebrow">AS ONE TRAINING EXAMPLE</div>'
+                f'<div class="sc-eyebrow">THIS DECISION, AS ITS LINE IN THE DOWNLOAD</div>'
                 f'<code class="sc-rule">{_esc(example)}</code></details>')
         legend = (
             '<div class="sc-legend"><span><i class="sc-swatch sc-model"></i>Ran on a model'
@@ -6809,13 +6834,15 @@ def _trace_html(report) -> str:
             'questions are open already.</span></div>')
         footer = (
             f'<footer class="sc-footer">Every step names the turn that carries it; the audit '
-            f'check on the Audit page verifies those turn records are unaltered. The export '
-            f'holds only decided {_esc(many)}. An item marked not reviewed was decided by the '
-            f'keg under its signed authority and is flagged as such in the export '
+            f'check on the Audit page verifies those turn records are unaltered. The download '
+            f'holds one line for each decided {_esc(one)}: its inputs, the proposed answer, '
+            f'the reasoning, what settled it and the final answer. A line marked not opened '
+            f'settled from the keg under its signed authority and says so in the download '
             f'(reviewed_by_operator: false), so it is never mistaken for your judgment.'
             f'</footer>')
         blocks.append(f'<div class="sc sc-tracepage">{header}<section class="sc-panel">'
-                      f'{legend}<div class="sc-traces">{rows}</div></section>{footer}</div>')
+                      f'{counts}{legend}<div class="sc-traces">{rows}</div></section>'
+                      f'{footer}</div>')
     return f'<div id="trace-page">{"".join(blocks)}</div>'
 
 

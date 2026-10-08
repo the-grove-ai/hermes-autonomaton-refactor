@@ -995,6 +995,7 @@ def trace(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dict[st
         out.append({
             "goal": log_path.stem, "title": shown["title"] or log_path.stem,
             "item_name": shown["item_name"], "run_number": run.get("run_number"),
+            "operator_called": shown.get("operator_called") or "operator",
             "label": run.get("label") or "", "items": items,
         })
     return {"goals": out}
