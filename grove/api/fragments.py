@@ -5736,16 +5736,14 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
                  f'{cells}</div>')
     settled = sum(p["keg_units"] for p in periods)
     total = sum(p["units"] for p in periods)
-    every = (matched and all(not p["benchmark"]["keg_units"] for p in matched))
     rates = " · ".join(f'{(p["keg_units"] / p["units"] if p["units"] else 0) * 100:.0f}%'
                        for p in periods)
     chart = (
-        f'<section class="sc-panel sc-pf-chart"><div class="sc-eyebrow">MEASURED{so_far}</div>'
-        f'<h2>The Benefits of Compilation: More work, done faster, with less risk and a lower '
-        f'cost.</h2>'
-        f'<p class="sc-note">{settled} of {total} {_esc(many)} never called a model.'
-        + (f' {_esc(bench["label"])} called one every time.' if every else "")
-        + f'</p><div class="sc-wf">{grid}</div>'
+        f'<section class="sc-panel sc-pf-chart"><div class="sc-eyebrow">THE BENEFITS OF '
+        f'COMPILATION{so_far}</div>'
+        f'<h2>More work, done faster, with less risk and a radically lower cost.</h2>'
+        f'<p class="sc-note">{settled} of {total} {_esc(many)} never called a model.</p>'
+        f'<div class="sc-wf">{grid}</div>'
         f'<div class="sc-legend"><span><i class="sc-swatch sc-wf-hit"></i>Settled with no '
         f'model</span><span><i class="sc-swatch sc-wf-miss"></i>A model was called</span></div>'
         f'<p class="sc-foot">{rates} settled without a model, period by period.</p></section>')

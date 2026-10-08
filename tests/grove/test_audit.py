@@ -1168,7 +1168,8 @@ def test_the_scorecard_sets_the_proof_before_the_record(home, monkeypatch):
     html = fragments._scorecard_html(g, 1_000_000, "0")
     order = [html.index(t) for t in (
         "THE PROOF", "The same 3 messages, two ways",
-        "The Benefits of Compilation: More work, done faster, with less risk and a lower cost.",
+        "THE BENEFITS OF COMPILATION</div>",
+        "More work, done faster, with less risk and a radically lower cost.",
         "HOW IT GOT THERE", "THE RECORD", "Who decided, and how it went",
         "How these figures were measured")]
     assert order == sorted(order)
@@ -1180,7 +1181,7 @@ def test_the_scorecard_sets_the_proof_before_the_record(home, monkeypatch):
                  '<span class="sc-quiet">the same</span>'):          # nothing revised either way
         assert text in html, text
     # One square for each item, in order: lit when no model was called.
-    assert "1 of 3 messages never called a model. All model called one every time." in html
+    assert "1 of 3 messages never called a model.</p>" in html
     assert html.count('<i class="sc-wf-hit"') == 1 and html.count('<i class="sc-wf-miss"') == 2
     assert "0% · 50% settled without a model, period by period." in html
     # Each level that opens on a click says what is inside while it is closed.
