@@ -449,3 +449,29 @@ def test_an_earlier_invoice_is_revised_by_the_name_the_operator_gave_it(work):
     # A name no decided invoice answers to is refused, and nothing changes.
     refused = _call(verb="decide", decision="correct", corrected_gl_code="6110", item_id="77")
     assert refused["refused"] == "not_decided"
+
+
+def test_a_confirmation_with_nothing_waiting_on_a_request_for_the_next_invoice(work, monkeypatch):
+    # Live 2026-10-08: asked for the next invoice, the model confirmed the last
+    # one again, was refused and stopped; the turn failed and was retried a tier
+    # up. The operator's message says which step was asked for, so the tool
+    # takes it, and says what it did in place of the call.
+    monkeypatch.setattr(gl, "asks_for_work", lambda said, cfg: said == "Code the next invoice")
+    _call(verb="next")
+    _call(verb="record", gl_code="6110", reasoning="hosting")
+    _call(verb="decide", decision="confirm")
+    asked = {**turn_provenance.current(), "request": "Code the next invoice"}
+    turn_provenance.set_current(asked)
+    for named in ("", "01_AC"):                       # nothing waiting; already decided
+        out = _call(verb="decide", decision="confirm", item_id=named)
+        assert out["status"] == "ready" and out["item_id"] == "02_BO", out
+        assert out["instead_of"]["verb"] == "decide"
+        assert out["instead_of"]["refused"] in ("nothing_pending", "already_ruled")
+    assert work.pending() is None                     # fetching decides nothing
+    # A revision is never redirected: the operator's value is not thrown away.
+    revised = _call(verb="decide", decision="correct", corrected_gl_code="6300", item_id="01_AC")
+    assert revised["status"] == "revised"
+    # On any other message the refusal stands as it was.
+    turn_provenance.set_current({**asked, "request": "what did we do so far"})
+    refused = _call(verb="decide", decision="confirm")
+    assert refused["refused"] == "nothing_pending" and "instead_of" not in refused

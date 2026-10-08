@@ -263,6 +263,20 @@ def _record(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _asked_for_the_next(work: DecisionWork, exc: DecisionRefused, args: Dict[str, Any]) -> bool:
+    """Whether a refused confirmation came on a turn whose request, in the
+    operator's own words, asks for the next invoice: nothing was waiting (or
+    the invoice named is already decided), no value was given to revise to,
+    and the message matches the goal's declared request. Read from the turn's
+    record and the goal's config; the model's call decides nothing here."""
+    if exc.andon_id or exc.reason not in ("nothing_pending", "already_ruled"):
+        return False
+    if str(args.get("decision") or "").strip().lower() != "confirm":
+        return False
+    request = str((turn_provenance.current() or {}).get("request") or "")
+    return bool(request) and asks_for_work(request, work.config)
+
+
 def _named_item(named: str, decided: Any) -> str:
     """The id of the decided invoice the operator named. An id is matched as
     given; otherwise the name is read as the invoice's number ("BL-260912") or
@@ -549,7 +563,25 @@ def gl_coding(args: Dict[str, Any]) -> str:
         elif verb == "record":
             result = _record(work, args)
         elif verb == "decide":
-            result = _decide(work, args)
+            try:
+                result = _decide(work, args)
+            except DecisionRefused as exc:
+                if not _asked_for_the_next(work, exc, args):
+                    raise
+                # Seen live 2026-10-08, three runs in five: the operator asks
+                # for the next invoice and the model confirms the last one
+                # again, is refused, and stops; the turn then fails and is
+                # retried a tier up at many times the cost. Which step the
+                # operator asked for is known from their message, so the tool
+                # takes that step and says that it did.
+                import logging
+                logging.getLogger(__name__).warning(
+                    "[gl_coding] a confirmation with nothing waiting (%s) on a request for "
+                    "the next invoice: fetched the next invoice instead", exc.reason)
+                result = {**_next(work), "instead_of": {
+                    "verb": "decide", "refused": exc.reason,
+                    "why": "nothing was waiting to be confirmed; the operator asked "
+                           "for the next invoice"}}
         else:
             return json.dumps(
                 {"success": False,
