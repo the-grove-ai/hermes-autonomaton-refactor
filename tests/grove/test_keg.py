@@ -474,24 +474,24 @@ def test_keg_card_reads_in_review_order(env):
                 flag=keg.FLAG_ANOMALY, feedback=["be stricter"])
     html = _card(read_all(path=env.queue)[0].to_dict())
     order = [html.index(s) for s in (
-        "KAIZEN PROPOSAL · STANDARD WORK · MESSAGE TAGGING",
+        "KAIZEN PROPOSAL · A CHANGE TO THE KEG · MESSAGE TAGGING",
         "DRAFT · AWAITING YOUR SIGNATURE",
         "Keg v2: answer items where channel is billing and urgent is true directly, escalate.",
         "Everything else stays the same.",
         "Revised after your feedback: “be stricter”.",
         "1 · JIDOKA FLAGGED", "2 · ANDON STOPPED THE LINE", "Keg v1 halted.",
-        "3 · KAIZEN DRAFTED A FIX", "1 added rule, replayed on all 6 items so far.",
+        "3 · KAIZEN DRAFTED A FIX", "1 added case, replayed on all 6 items so far.",
         "4 · YOU DECIDE", "Sign it and v2 replaces v1, or send it back with feedback.",
         "What changes from v1",
         "If channel is billing and urgent is true, answer escalate.",
         "→ tag escalate",                         # the formal rule, beneath the sentence
-        "Nothing removed. The other 2 rules from v1 are unchanged.",
+        "Nothing removed. The other 2 cases from v1 are unchanged.",
         "Replayed on history: 6 items", "REVIEW THESE FIRST",
         "Matches your revision", "Not covered by design",
         "Show the 4 unchanged items",
         "What v2 covers", "ANSWERS DIRECTLY, NO MODEL", "ALWAYS SENDS TO THE MODEL",
         "Your 2 confirmed decisions are the evidence",
-        "The rules, in order", '<span class="sc-new">New</span>',
+        "What the keg serves, in order", '<span class="sc-new">New</span>',
         "Technical details", "replaces keg:message-tagging:v1:",
         "GRV-004 keg · scope reserved · authority green",
         "Sign v2</button>", 'name="reason"', "Send back with feedback",
@@ -518,7 +518,7 @@ def test_handing_a_case_back_is_consistent_with_a_correction_not_a_match(env):
     assert "If channel is billing and urgent is true, send it to the model." in html
     assert "<strong>sends it to the model</strong>" in html
     assert "Consistent with your revision" in html and "Matches your revision" not in html
-    assert "Handed back by rule: channel is billing and urgent is true." in html
+    assert "Kept on a model: channel is billing and urgent is true." in html
 
 
 def test_a_first_version_says_it_is_the_first(env):
@@ -526,7 +526,7 @@ def test_a_first_version_says_it_is_the_first(env):
     html = _card(read_all(path=env.queue)[0].to_dict())
     for text in ("Keg v1: answer 2 kinds of item with no model.",
                  "Everything else still goes to the model.",
-                 "What v1 does", "This is the first version, so every rule is new.",
+                 "What v1 does", "This is the first version, so every case is new.",
                  "Sign it and v1 starts serving", "· first version",
                  "Signing takes effect immediately. Demo mode"):
         assert text in html, text

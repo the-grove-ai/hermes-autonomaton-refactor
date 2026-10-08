@@ -1570,7 +1570,7 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
         parts = [f"{len(diff[k])} {word}" for k, word in
                  (("added", "added"), ("removed", "removed"), ("changed", "changed"))
                  if diff[k]]
-        lead = f"Keg v{version}: {', '.join(parts) or 'no rule changes'}."
+        lead = f"Keg v{version}: {', '.join(parts) or 'nothing changed'}."
         clause = ""
     feedback = [f for f in (keg.get("feedback") or []) if f]
     if anomaly:
@@ -1585,13 +1585,13 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
                + f" Tested against every {one} so far.")
     else:
         why = (f"Your confirmed decisions matched {ctx['table'] or 'the reference table'} "
-               f"every time. This puts those cases on standard work, tested against "
+               f"every time. This compiles those cases into the keg, tested against "
                f"every {one} so far.")
     if feedback:
         why += " Revised after your feedback: " + "; ".join(f"“{f}”" for f in feedback) + "."
     header = (
         f'<header class="sc-header"><div class="sc-check-line"><span class="sc-eyebrow '
-        f'sc-event">KAIZEN PROPOSAL · STANDARD WORK · {_esc(title)}</span>'
+        f'sc-event">KAIZEN PROPOSAL · A CHANGE TO THE KEG · {_esc(title)}</span>'
         f'<span class="sc-status sc-status-draft">DRAFT · AWAITING YOUR SIGNATURE</span></div>'
         f'<h1>{_esc(lead)} <span class="sc-event">{_esc(clause)}</span></h1>'
         f'<p>{_esc(why)}</p></header>')
@@ -1611,21 +1611,21 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
         flagged = _esc(keg.get("flag_detail") or
                        f"{len(view.evidence)} confirmed decisions matched the reference table.")
     if anomaly and prior_version:
-        andon = (f"Keg v{prior_version} halted. Its {many} went back to the model until "
-                 f"you rule on this.")
+        andon = (f"Keg v{prior_version} halted. The {many} it served run on a model until "
+                 f"you sign this.")
         andon_title = "2 · ANDON STOPPED THE LINE"
     else:
         andon = "Nothing was stopped. This is a tier-down pattern, so the line kept running."
         andon_title = "2 · ANDON RAISED"
     if first:
-        drafted = f"{len(rules)} rule{'' if len(rules) == 1 else 's'}"
-        fix_title = "3 · KAIZEN DRAFTED STANDARD WORK"
+        drafted = f"{len(rules)} case{'' if len(rules) == 1 else 's'}"
+        fix_title = "3 · KAIZEN DRAFTED THE CHANGE"
     else:
         words = []
         for key, word in (("added", "added"), ("removed", "removed"), ("changed", "changed")):
             if diff[key]:
-                words.append(f"{len(diff[key])} {word} rule{'' if len(diff[key]) == 1 else 's'}")
-        drafted = ", ".join(words) or "No rule changes"
+                words.append(f"{len(diff[key])} {word} case{'' if len(diff[key]) == 1 else 's'}")
+        drafted = ", ".join(words) or "Nothing changed"
         fix_title = "3 · KAIZEN DRAFTED A FIX"
     drafted = (drafted[0].upper() + drafted[1:]) + (
         f", replayed on all {replayed} {many} so far." if replayed is not None
@@ -1654,14 +1654,14 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
     if first:
         change_title = f"What v{version} does"
         change_body = (
-            f'<div class="sc-note">This is the first version, so every rule is new. '
-            f'The {len(rules)} rule{"" if len(rules) == 1 else "s"} are listed below, '
+            f'<div class="sc-note">This is the first version, so every case is new. '
+            f'The {len(rules)} case{"" if len(rules) == 1 else "s"} are listed below, '
             f'in order.</div>')
     elif prior_rules is None:
         change_title = f"What changes from v{prior_version}"
         change_body = (
-            f'<div class="sc-note sc-event">The rules of v{_esc(prior_version)} could not be '
-            f'read, so the change cannot be shown rule by rule. Review the full rule list '
+            f'<div class="sc-note sc-event">Keg v{_esc(prior_version)} could not be '
+            f'read, so the change cannot be shown case by case. Review the full list '
             f'below before signing.</div>')
     else:
         change_title = f"What changes from v{prior_version}"
@@ -1675,9 +1675,9 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
                 f'<div class="sc-change-formal">now: {_esc(_keg_formal(new))}</div></div></div>')
         kept = len(diff["unchanged"])
         still = ("Nothing removed. " if not diff["removed"] else "") + (
-            f"The other {kept} rule{'' if kept == 1 else 's'} from v{prior_version} "
+            f"The other {kept} case{'' if kept == 1 else 's'} from v{prior_version} "
             f"{'is' if kept == 1 else 'are'} unchanged." if kept
-            else f"No rule from v{prior_version} is carried over unchanged.")
+            else f"Nothing from v{prior_version} is carried over unchanged.")
         change_body += f'<div class="sc-note">{_esc(still)}</div>'
     change = (f'<section class="sc-panel"><h3>{_esc(change_title)}</h3>{change_body}</section>')
 
@@ -1729,7 +1729,7 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
             if c.result != "not_covered":
                 continue
             review += (
-                f'<div class="sc-case">{_case_head(c)}<div>{_esc(c.note or "No rule covers it")}'
+                f'<div class="sc-case">{_case_head(c)}<div>{_esc(c.note or "Not compiled")}'
                 f'</div><div>{_esc(both)}: <strong>send it to the model</strong></div>'
                 f'<div class="sc-quiet">Not covered by design</div></div>')
         same = [c for c in backtest.cases if c.result == "unchanged"]
@@ -1771,7 +1771,7 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
     handed = [_keg_plain(r, inputs) for r in rules if r.get("defer")]
     reserve = str(keg.get("reserve") or "").strip()
     always = reserve + (
-        " Handed back by rule: " + "; ".join(handed) + "." if handed else "")
+        " Kept on a model: " + "; ".join(handed) + "." if handed else "")
     confirmed = len(view.evidence)
     basis = (
         (f"The answers come from {ctx['table']}. " if ctx["table"] else "")
@@ -1801,7 +1801,7 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
         f'<div class="sc-version"><div class="sc-eyebrow">ALWAYS SENDS TO THE MODEL</div>'
         f'<div>{_esc(always)}</div></div>'
         f'<div class="sc-note">{_esc(basis)}</div></div>'
-        f'<div class="sc-panel"><h3>The rules, in order</h3><div class="sc-rows">{rule_rows}'
+        f'<div class="sc-panel"><h3>What the keg serves, in order</h3><div class="sc-rows">{rule_rows}'
         f'</div></div></section>')
 
     # 6. Technical details (collapsed)
@@ -1821,7 +1821,7 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
         f"Keg: {view.payload.get('pattern_id')}"
         + (f" · replaces {prior_id}" if prior_id else " · first version"),
         f"GRV-004 keg · scope {keg.get('scope')} · authority {keg.get('authority_level')} "
-        f"· standard work for {goal} · serves at T0 once signed",
+        f"· for {goal} · compiles into the keg and serves at T0 once signed",
         "Answers: " + " · ".join(f"“{r}”" for r in keg_mod.trigger_requests(keg)),
     ] + ([matching] if matching else []) + [
         f"Jidoka flag: {keg.get('flag')}"
@@ -1840,7 +1840,7 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
         f'<button type="button" class="sc-sign-btn" '
         f'hx-post="/portal/actions/proposals/{_esc(pid)}/approve" '
         f'hx-target="#proposal-{short_id}" hx-swap="outerHTML" '
-        f'hx-confirm="Sign {_esc(name)} v{_esc(version)} as standard work?">'
+        f'hx-confirm="Sign this change? It compiles into the keg and serves.">'
         f'Sign v{_esc(version)}</button>'
     ) if backtest is not None else ""
     effect = ("Signing takes effect immediately"
@@ -1866,7 +1866,7 @@ def keg_resolved_html(short_id: str, keg: dict, signed: bool, reason: str = "") 
     version = keg.get("version", "?")
     if signed:
         pill = f'<span class="sc-status sc-status-signed">SIGNED · V{_esc(version)} SERVING</span>'
-        lead = f"Keg v{version} is now standard work."
+        lead = f"Signed. Keg v{version} is serving."
         text = ("It serves at T0 from the next request"
                 + (f", in place of v{keg.get('supersedes_version')}."
                    if keg.get("supersedes_version") else "."))
@@ -1878,7 +1878,7 @@ def keg_resolved_html(short_id: str, keg: dict, signed: bool, reason: str = "") 
     return (
         f'<div class="sc sc-kz sc-kz-done" id="proposal-{short_id}"><header class="sc-header">'
         f'<div class="sc-check-line"><span class="sc-eyebrow sc-event">KAIZEN PROPOSAL · '
-        f'STANDARD WORK</span>{pill}</div><h2>{_esc(lead)}</h2><p>{_esc(text)}</p>'
+        f'A CHANGE TO THE KEG</span>{pill}</div><h2>{_esc(lead)}</h2><p>{_esc(text)}</p>'
         f'</header></div>')
 
 
