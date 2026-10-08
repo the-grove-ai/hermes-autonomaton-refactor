@@ -25,6 +25,10 @@ class CanonicalUsage:
     reasoning_tokens: int = 0
     request_count: int = 1
     raw_usage: Optional[dict[str, Any]] = None
+    # What the provider says it charged for this call, in USD, when its usage
+    # report carries a figure (OpenRouter's ``usage.cost``). None otherwise.
+    # Reported, not derived: no price table is consulted here.
+    cost: Optional[float] = None
 
     @property
     def prompt_tokens(self) -> int:
@@ -127,7 +131,17 @@ def normalize_usage(
         cache_read_tokens=cache_read_tokens,
         cache_write_tokens=cache_write_tokens,
         reasoning_tokens=reasoning_tokens,
+        cost=_reported_cost(response_usage),
     )
+
+
+def _reported_cost(response_usage: Any) -> Optional[float]:
+    """The provider's own charge for the call, when its usage report has one."""
+    value = (response_usage.get("cost") if isinstance(response_usage, dict)
+             else getattr(response_usage, "cost", None))
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return None
+    return float(value)
 
 
 def _subscription_included(provider: Optional[str]) -> bool:

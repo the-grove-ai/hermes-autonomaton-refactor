@@ -984,3 +984,78 @@ def test_a_version_says_what_led_to_it_from_the_detector_that_fired():
     # The wording never branches on a version.
     import inspect
     assert "version" not in inspect.getsource(fragments._version_ground).split('"""')[2]
+
+
+# ── what a turn cost ──────────────────────────────────────────────────
+
+
+def test_a_turns_cost_is_what_the_provider_charged_when_it_said_so():
+    """Found live, 2026-10-07: a month of model turns showed as $0.02 per
+    1,000 items. The model's input was almost all served from (or written to)
+    the provider's cache, the node had no cache price on file, and those
+    tokens were priced at nothing. The provider reports what it charged for
+    every call; that figure is the cost. Declared prices are the fallback,
+    and a fallback that leaves something out says so."""
+    from types import SimpleNamespace
+
+    from agent.usage_pricing import CanonicalUsage, _reported_cost
+    from grove.api import fragments
+
+    tokens = {"input": 9, "output": 170, "cache_read": 160_000, "cache_write": 12_000}
+    fact = {"cost_per_mtok_input": 0.10, "cost_per_mtok_output": 0.50}
+    # The provider reported every call: its total is the cost, and it is complete.
+    measured = audit._turn_cost(tokens, fact, {"usd": 0.0031, "calls": 3}, model_calls=3)
+    assert (measured["cost"], measured["source"], measured["fully_priced"]) == (
+        0.0031, audit.COST_FROM_PROVIDER, True)
+    # It reported only some of the calls: not the whole cost, so fall back.
+    partial = audit._turn_cost(tokens, fact, {"usd": 0.0020, "calls": 2}, model_calls=3)
+    assert partial["source"] == audit.COST_FROM_PRICES
+    # Declared prices, no cache-read price: cached input is left out and the
+    # turn says it is not fully priced. Input written to the cache is charged
+    # at the input price when no write price is declared.
+    estimated = audit._turn_cost(tokens, fact)
+    assert estimated["fully_priced"] is False and estimated["cache_read_priced"] is False
+    assert estimated["cost"] == pytest.approx((9 * 0.10 + 170 * 0.50 + 12_000 * 0.10) / 1e6)
+    # With both cache prices declared the estimate is complete.
+    full = audit._turn_cost(tokens, {**fact, "cost_per_mtok_cache_read": 0.01,
+                                     "cost_per_mtok_cache_write": 0.125})
+    assert full["fully_priced"] is True
+    assert full["cost"] == pytest.approx(
+        (9 * 0.10 + 170 * 0.50 + 160_000 * 0.01 + 12_000 * 0.125) / 1e6)
+    assert full["cache_write"] == 12_000
+    # A model with no price at all is not priced, as before.
+    assert audit._turn_cost(tokens, {})["priced"] is False
+
+    # The provider's figure is read off its usage report, never derived.
+    assert _reported_cost({"cost": 0.00148005}) == 0.00148005
+    assert _reported_cost(SimpleNamespace(cost=0.00012098)) == 0.00012098
+    for none in ({}, SimpleNamespace(), {"cost": None}, {"cost": True}, {"cost": -1}, {"cost": "x"}):
+        assert _reported_cost(none) is None
+    assert CanonicalUsage().cost is None
+
+    # The page says where the figure comes from, beside the number.
+    basis = fragments._cost_basis
+    assert basis({"cost_source": "provider", "model_units": 4}) == (
+        "Cost is what the provider charged, call by call.")
+    assert basis({"cost_source": "declared_prices", "model_units": 4, "all_priced": True,
+                  "fully_priced": False}).endswith(
+        "NOT FULLY PRICED: cached input has no price on file and is left out, so the "
+        "figure is too low.")
+    assert basis({"cost_source": "declared_prices", "model_units": 4, "all_priced": True,
+                  "fully_priced": True}) == "Cost is estimated from declared list prices."
+    assert "no price on file" in basis({"cost_source": "mixed", "model_units": 2,
+                                        "all_priced": False, "fully_priced": False})
+    assert basis({"cost_source": None, "model_units": 0}) == ""
+
+
+def test_the_turn_record_carries_the_providers_charge_and_cache_writes():
+    import inspect
+
+    import run_agent
+    from grove import dispatcher
+    src = inspect.getsource(dispatcher)
+    assert '**({"cache_write": _written} if (_written := sum(' in src
+    assert '**({"cost_reported": {' in src and "agent._turn_call_usage = []" in src
+    agent_src = inspect.getsource(run_agent)
+    assert '"cost": canonical_usage.cost,' in agent_src
+    assert '"cache_write": canonical_usage.cache_write_tokens})' in agent_src

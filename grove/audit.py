@@ -427,25 +427,48 @@ def _prices(home: Path) -> Dict[str, Any]:
     return {"facts": {}, "tiers": {}, "source": None}
 
 
-def _turn_cost(tokens: Mapping[str, Any], fact: Optional[Mapping[str, Any]]) -> Dict[str, Any]:
-    """Price one turn's recorded tokens. Fresh input and output are priced
-    when the model's prices are declared. Cached context re-read is priced
-    ONLY when ``cost_per_mtok_cache_read`` is declared; otherwise it is
-    reported as tokens and left out of the dollars (understating cost)."""
+COST_FROM_PROVIDER = "provider"       # what the provider says it charged, call by call
+COST_FROM_PRICES = "declared_prices"  # tokens times the prices the routing file declares
+
+
+def _turn_cost(tokens: Mapping[str, Any], fact: Optional[Mapping[str, Any]],
+               reported: Optional[Mapping[str, Any]] = None,
+               model_calls: int = 0) -> Dict[str, Any]:
+    """What one turn cost.
+
+    When the provider reported its charge for EVERY model call of the turn,
+    that sum is the cost: it already reflects the upstream provider that
+    served each call, cached input and cache writes, none of which a price
+    table can know. Otherwise the turn is priced from its recorded tokens and
+    the declared prices: fresh input and output when declared; cached input
+    only when ``cost_per_mtok_cache_read`` is declared; input written to the
+    provider's cache at ``cost_per_mtok_cache_write`` when declared, else at
+    the input price. Anything with tokens and no price is left out of the
+    dollars and the turn says so (``fully_priced`` False)."""
     fresh_in = int(tokens.get("input") or 0)
     out = int(tokens.get("output") or 0)
     cached = int(tokens.get("cache_read") or 0)
+    written = int(tokens.get("cache_write") or 0)
+    counts = {"input": fresh_in, "output": out, "cache_read": cached, "cache_write": written}
+    reported = reported or {}
+    if (isinstance(reported.get("usd"), (int, float)) and reported.get("calls")
+            and int(reported["calls"]) >= int(model_calls or 0)):
+        return {**counts, "cost": float(reported["usd"]), "priced": True,
+                "cache_read_priced": True, "fully_priced": True, "source": COST_FROM_PROVIDER}
     fact = fact or {}
     p_in, p_out = fact.get("cost_per_mtok_input"), fact.get("cost_per_mtok_output")
-    p_cache = fact.get("cost_per_mtok_cache_read")
+    p_cache, p_write = fact.get("cost_per_mtok_cache_read"), fact.get("cost_per_mtok_cache_write")
     priced = isinstance(p_in, (int, float)) and isinstance(p_out, (int, float))
     cost = (fresh_in * p_in + out * p_out) / 1_000_000 if priced else None
     cache_priced = priced and isinstance(p_cache, (int, float))
     if cache_priced:
         cost += cached * p_cache / 1_000_000
+    if priced and written:
+        cost += written * (p_write if isinstance(p_write, (int, float)) else p_in) / 1_000_000
     return {
-        "input": fresh_in, "output": out, "cache_read": cached,
-        "cost": cost, "priced": priced, "cache_read_priced": bool(cache_priced),
+        **counts, "cost": cost, "priced": priced, "cache_read_priced": bool(cache_priced),
+        "fully_priced": bool(priced and (cache_priced or not cached)),
+        "source": COST_FROM_PRICES,
     }
 
 
@@ -453,13 +476,18 @@ def _turn(record: Optional[Mapping[str, Any]], prices: Mapping[str, Any]) -> Dic
     """One turn's measured work, from its intent record."""
     if record is None:
         return {"on_record": False, "tier": None, "model": None, "model_calls": 0,
-                "seconds": None, "input": 0, "output": 0, "cache_read": 0,
-                "cost": None, "priced": False, "cache_read_priced": False}
+                "seconds": None, "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+                "cost": None, "priced": False, "cache_read_priced": False,
+                "fully_priced": False, "source": None}
     execution = (record.get("stages") or {}).get("execution") or {}
     model = record.get("model_used")
-    cost = _turn_cost(execution.get("tokens") or {}, prices["facts"].get(model))
+    cost = _turn_cost(
+        execution.get("tokens") or {}, prices["facts"].get(model),
+        execution.get("cost_reported"),
+        int(execution.get("model_calls", record.get("api_calls") or 0) or 0))
     if record.get("tier_selected") == "T0":
-        cost.update(cost=0.0, priced=True)        # no model ran: nothing to price
+        # no model ran: nothing to price
+        cost.update(cost=0.0, priced=True, fully_priced=True, source=None)
     return {
         "on_record": True,
         "tier": record.get("tier_selected"),
@@ -928,6 +956,15 @@ def _periods(units: List[Dict[str, Any]], shown: Mapping[str, Any]) -> List[Dict
             "seconds_per_unit": _mean([u["deciding"]["seconds"] for u in group]),
             "cost": cost, "cost_per_unit": cost / n if n else None,
             "all_priced": all(u["deciding"]["priced"] for u in model),
+            # Whether every model-decided item's cost is complete (nothing with
+            # tokens went unpriced), and where the figures came from.
+            "fully_priced": all(u["deciding"].get("fully_priced") for u in model),
+            "cost_source": (None if not model else
+                            COST_FROM_PROVIDER if all(
+                                u["deciding"].get("source") == COST_FROM_PROVIDER for u in model)
+                            else COST_FROM_PRICES if all(
+                                u["deciding"].get("source") == COST_FROM_PRICES for u in model)
+                            else "mixed"),
             "baseline": baseline, "baseline_rate": rate,
             "savings": (baseline - cost) if baseline is not None else None,
             "confirmed": sum(1 for u in group if u["confirmed"]),

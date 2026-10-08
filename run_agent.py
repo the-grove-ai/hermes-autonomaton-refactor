@@ -15938,6 +15938,14 @@ class AIAgent:
                         self.session_output_tokens += canonical_usage.output_tokens
                         self.session_cache_read_tokens += canonical_usage.cache_read_tokens
                         self.session_cache_write_tokens += canonical_usage.cache_write_tokens
+                        # This turn's calls, one entry each: what the provider
+                        # says it charged, and the input it wrote to its cache
+                        # (the Dispatcher puts both on the turn's record).
+                        _usage_log = getattr(self, "_turn_call_usage", None)
+                        if isinstance(_usage_log, list):
+                            _usage_log.append({
+                                "cost": canonical_usage.cost,
+                                "cache_write": canonical_usage.cache_write_tokens})
                         self.session_reasoning_tokens += canonical_usage.reasoning_tokens
 
                         # Log API call details for debugging/observability

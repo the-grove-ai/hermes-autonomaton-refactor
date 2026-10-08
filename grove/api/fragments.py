@@ -5163,9 +5163,29 @@ def _rate_row_html(g) -> str:
         f'<div><div class="sc-note">Versus {_esc(short)}</div>{delta}</div>'
         f'<div><div class="sc-note">{_esc(before["label"])}</div><div class="sc-rate-then">'
         f'{_esc(_rate(a))}</div></div></div>'
-        f'<p class="sc-foot">Measured model cost this run, not the all-model counterfactual. '
+        f'<p class="sc-foot">{_esc(_cost_basis(batch))} '
+        f'Measured model cost this run, not the all-model counterfactual. '
         f'Keg decisions are $0 and are already in the {_esc(str(batch["label"]).split(" · ")[0].lower())} '
         f'rate.</p>{against}</section>')
+
+
+def _cost_basis(period) -> str:
+    """One sentence on where a period's cost figure comes from, and whether
+    it is complete. A figure that leaves something out says so here, beside
+    the number, not only in the footnotes."""
+    source = period.get("cost_source")
+    if source == "provider":
+        return "Cost is what the provider charged, call by call."
+    if not period.get("model_units"):
+        return ""
+    lead = ("Cost is partly the provider's own charge and partly estimated from declared "
+            "prices." if source == "mixed" else "Cost is estimated from declared list prices.")
+    if not period.get("all_priced"):
+        return lead + " NOT FULLY PRICED: a model used here has no price on file."
+    if not period.get("fully_priced"):
+        return lead + (" NOT FULLY PRICED: cached input has no price on file and is left "
+                       "out, so the figure is too low.")
+    return lead
 
 
 def _tickets_html(g) -> str:

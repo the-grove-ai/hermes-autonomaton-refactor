@@ -2972,6 +2972,7 @@ class Dispatcher:
         try:
             agent._turn_retries = 0
             agent._turn_call_ms = []
+            agent._turn_call_usage = []
             agent._call_over_budget = None
             agent._call_budget_seconds = None
         except Exception:  # a frozen / exotic agent stand-in — nothing to reset
@@ -3035,6 +3036,8 @@ class Dispatcher:
 
         base_in, base_out, base_cache = self._current_turn_token_base
         now_in, now_out, now_cache = self._agent_token_snapshot(agent)
+        _call_usage = [u for u in (getattr(agent, "_turn_call_usage", None) or [])
+                       if isinstance(u, dict)]
         tools_run = list(self._current_turn_tools_yielded)
 
         cap = self._STAGE_DETAIL_CAP
@@ -3140,7 +3143,19 @@ class Dispatcher:
                     "input": max(0, now_in - base_in),
                     "output": max(0, now_out - base_out),
                     "cache_read": max(0, now_cache - base_cache),
+                    # Fresh input the provider also wrote to its cache: charged
+                    # at its own rate, and in none of the three counts above.
+                    # Present only when there was some.
+                    **({"cache_write": _written} if (_written := sum(
+                        int(u.get("cache_write") or 0) for u in _call_usage)) else {}),
                 },
+                # What the provider says it charged for this turn's calls, and
+                # how many of them carried a figure. Absent when none did.
+                **({"cost_reported": {
+                        "usd": round(sum(u["cost"] for u in _call_usage
+                                         if u.get("cost") is not None), 8),
+                        "calls": sum(1 for u in _call_usage if u.get("cost") is not None)}}
+                   if any(u.get("cost") is not None for u in _call_usage) else {}),
                 "tools_run": len(tools_run),
             },
         }
