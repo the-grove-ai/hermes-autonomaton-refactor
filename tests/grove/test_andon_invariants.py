@@ -1284,3 +1284,38 @@ def test_a_goals_work_turn_is_offered_the_goals_own_tool_and_nothing_else(tmp_pa
     agent._turn_only_tools = None
     assert [t["function"]["name"] for t in agent._tools_for_api] == ["gmail_send", "terminal"]
     assert agent._seam5_admission_refusal("gmail_send") is None
+
+
+def test_a_drafted_rule_that_fits_only_the_one_corrected_item_is_refused(env):
+    """Found live, 2026-10-07: after a correction a model drafted "the
+    description is exactly <that item's whole line>". It fixed that item,
+    passed the replay, was signed, and the next item of the same kind was
+    decided wrongly by the keg with nobody looking. A rule has to say what
+    makes the case different, not name the one case."""
+    target = {"channel": "billing", "subject": "Refund request for order 44"}
+    check = lambda cond: standard_work._check_condition(env.work, cond, [], target=target)
+
+    refused = check("subject == 'Refund request for order 44'")
+    assert refused is not None and refused.startswith(
+        "it matches only this one item's exact subject")
+    assert "for example a word it CONTAINS" in refused
+    # The same, however it is dressed: with the key beside it, or in a list.
+    assert check("channel == 'billing' AND subject == 'Refund request for order 44'") is not None
+    assert check("subject IN ['Refund request for order 44', 'x']") is not None
+    # What a rule should say passes: what in the text marks the case.
+    assert check("subject CONTAINS 'refund'") is None
+    assert check("channel == 'billing' AND subject CONTAINS 'refund'") is None
+    # Equality on the reference key is how rules are made; it is not refused here.
+    assert check("channel == 'billing'") is None
+    # The refusal is what the next tier is told, so it drafts differently.
+    seen = []
+
+    def call(prompt, *, system=None, tool=None, tier=None, max_tokens=0):
+        seen.append((tier, "matches only this one item" in prompt))
+        return {"condition": ("subject == 'Refund request for order 44'" if tier == "T1"
+                              else "subject CONTAINS 'refund'")}
+    condition, attempts = standard_work.draft_condition(
+        env.work, [], [], target=target, reason="r", call=call)
+    assert condition == "subject CONTAINS 'refund'"
+    assert seen == [("T1", False), ("T2", True)]
+    assert attempts[0]["refused"].startswith("it matches only this one item's exact subject")

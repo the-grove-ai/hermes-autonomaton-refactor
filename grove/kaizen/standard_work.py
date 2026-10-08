@@ -192,6 +192,27 @@ def _check_condition(
         return None
     if not keg_mod.defers(probe, target):
         return "it is not true for the corrected case."
+    # A rule that is an exact match on the corrected item's own descriptive
+    # text fixes that one item and can never apply to another: the next case of
+    # the same kind sails past it, unreviewed. (Found live, 2026-10-07: a draft
+    # "<a text field> == '<the whole line>'" passed every check, and a later
+    # item of the same kind was decided wrongly by the keg.) The reference
+    # key is the item's identity, so equality on it is what rules are made of;
+    # equality on any other input to this item's own value is refused, and the
+    # drafter is told what to write instead.
+    key = work.config.reference.key_input if work.config.reference is not None else None
+    for group in keg_mod.parse_condition(condition, work.config.inputs):
+        for name, op, operand in group:
+            if name == key or op not in ("==", "IN") or target.get(name) in (None, ""):
+                continue
+            values = operand if isinstance(operand, (list, tuple, set, frozenset)) else [operand]
+            if any(keg_mod._norm(v) == keg_mod._norm(target[name]) for v in values):
+                return (
+                    f"it matches only this one item's exact {name} (\"{target[name]}\"), "
+                    f"so it would never apply to another item of the same kind. Say what "
+                    f"in the {name} makes this case different, for example a word it "
+                    f"CONTAINS."
+                )
     wrongly = [
         case["ref"] for case in history
         if case["confirmed"] == case["served"] and keg_mod.defers(probe, case["inputs"])
