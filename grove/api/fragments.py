@@ -5522,7 +5522,7 @@ def _roi_rows_html(g, proj, scale: int) -> str:
     rows = ""
     n, months = tickets.get("count") or 0, tickets.get("months") or 1
     if tickets.get("dollars") is not None and n:
-        rows += _row("Engineering avoided", f'${tickets["dollars"]:,.0f}',
+        rows += _row("Engineering expense avoided", f'${tickets["dollars"]:,.0f}',
                      f'{tickets["hours"]:g} hours', f'{months} month{"" if months == 1 else "s"}')
     # At the selected volume, in the same dollars as the sum below: what a
     # month of these calls costs with every one on a model, and with the keg
@@ -5530,7 +5530,7 @@ def _roi_rows_html(g, proj, scale: int) -> str:
     saved = (proj.get("avoided") or {}).get("cost")
     every = (proj.get("all_model") or {}).get("cost")
     if saved is not None and every:
-        rows += _row("Model cost", f'{int(saved / every * 100 + 0.5)}% lower',
+        rows += _row("Reduced inference expense", f'{int(saved / every * 100 + 0.5)}% lower',
                      f'${every - saved:,.0f} vs ${every:,.0f} a month',
                      bar=(every - saved) / every,
                      under=f'With the keg serving against every {one} on a model, scaled '
@@ -5544,7 +5544,7 @@ def _roi_rows_html(g, proj, scale: int) -> str:
     if wait_all and wait_kept is not None:
         faster = (f'Settled work is {model["seconds"] / keg["seconds"]:,.0f}× faster. '
                   if model.get("seconds") and keg.get("seconds") else "")
-        rows += _row("Time waiting on a model",
+        rows += _row("Reduced wait on models",
                      f'{int((1 - wait_kept / wait_all) * 100 + 0.5)}% lower',
                      f'{wait_kept:,.0f} vs {wait_all:,.0f} hours a month',
                      bar=wait_kept / wait_all, note=True,
