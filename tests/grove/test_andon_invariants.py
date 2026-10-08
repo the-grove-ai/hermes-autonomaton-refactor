@@ -1201,3 +1201,41 @@ def test_kaizens_drafting_call_does_not_wait_past_the_time_budget(monkeypatch):
         work(5), [], [], target=None, reason="r", call=broken)
     assert [a["refused"] for a in attempts] == ["the %s call failed (ConnectionError)." % t
                                                 for t in ("T1", "T2", "T3")]
+
+
+def test_the_dispatchers_own_call_passes_the_admission_seam_and_a_models_does_not():
+    """Found live, 2026-10-07: on the API surface every work-session step was
+    refused ("not in the per-turn offered surface"). The seam is about a tool a
+    MODEL names without having been offered it. The Dispatcher's own call is
+    admitted for its length, for a tool that exists on the surface, and the
+    turn's offer is put back afterwards."""
+    from grove.dispatcher import _own_call_admitted
+
+    def tool(name):
+        return {"type": "function", "function": {"name": name}}
+
+    agent = SimpleNamespace(tools=[tool("tag_message"), tool("search")],
+                            _tools_for_turn=[tool("search")])
+    offered = agent._tools_for_turn
+    with _own_call_admitted(agent, "tag_message"):
+        assert [t["function"]["name"] for t in agent._tools_for_turn] == ["search", "tag_message"]
+    assert agent._tools_for_turn is offered                    # put back exactly
+    # A tool that is not on this surface at all is not admitted.
+    with _own_call_admitted(agent, "launch_rocket"):
+        assert agent._tools_for_turn is offered
+    # Already offered, or no per-turn narrowing: nothing is touched.
+    with _own_call_admitted(agent, "search"):
+        assert agent._tools_for_turn is offered
+    wide = SimpleNamespace(tools=[tool("tag_message")], _tools_for_turn=None)
+    with _own_call_admitted(wide, "tag_message"):
+        assert wide._tools_for_turn is None
+    # Put back even when the call raises.
+    with pytest.raises(RuntimeError):
+        with _own_call_admitted(agent, "tag_message"):
+            raise RuntimeError("boom")
+    assert agent._tools_for_turn is offered
+    # Both of the Dispatcher's own calls use it; nothing else does.
+    import inspect
+    from grove import dispatcher
+    src = inspect.getsource(dispatcher.Dispatcher)
+    assert src.count("with _own_call_admitted(agent, tool_name):") == 2

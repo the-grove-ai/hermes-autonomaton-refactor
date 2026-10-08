@@ -38,6 +38,7 @@ removes the fallback once every caller routes through the Dispatcher.
 from __future__ import annotations
 
 import json as _json_mod
+import contextlib
 import hashlib
 import logging
 import os
@@ -565,6 +566,40 @@ def _run_guarded_producer(
             "(contained — no other producer affected)", producer,
         )
         _file_producer_failure(producer, exc)
+
+
+@contextlib.contextmanager
+def _own_call_admitted(agent: Any, tool_name: str):
+    """For the length of ONE call the Dispatcher itself makes (a work-session
+    step, a signed pattern's tool), count that tool as offered this turn.
+
+    The execution-admission seam refuses a tool the MODEL names that was not
+    offered to it this turn. Here no model is naming anything: the Dispatcher
+    is carrying out the operator's signed rule or signed standard work, under
+    a verified-internal token. The per-turn offer is narrowed for the model
+    (by intent, by tier) and can leave the goal's tool out; on a surface that
+    builds its agent fresh for each request it always did, so the step was
+    refused there (found live on the API surface, 2026-10-07), while a surface
+    that keeps its agent happened to carry the tool over from an earlier turn.
+
+    Only a tool on the agent's CONSTRUCTION surface is admitted: the platform
+    toolset and the capability record still decide whether the tool exists
+    here at all. The turn's offer is put back exactly as it was afterwards."""
+    from grove.context_budget import _name_of
+
+    offered = getattr(agent, "_tools_for_turn", None)
+    added = None
+    if isinstance(offered, list) and tool_name not in {
+            _name_of(t) for t in offered if isinstance(t, dict)}:
+        added = next((t for t in (getattr(agent, "tools", None) or [])
+                      if isinstance(t, dict) and _name_of(t) == tool_name), None)
+        if added is not None:
+            agent._tools_for_turn = offered + [added]
+    try:
+        yield
+    finally:
+        if added is not None:
+            agent._tools_for_turn = offered
 
 
 def _completed_model_calls(agent: Any, counted_at_tools: Any) -> int:
@@ -4365,7 +4400,8 @@ class Dispatcher:
         self._approval_gate.activate()
         self._approval_gate.mint(canonical_effect_signature(tool_name, args))
         try:
-            raw = agent._invoke_tool(tool_name, args, self._current_turn_id or "")
+            with _own_call_admitted(agent, tool_name):
+                raw = agent._invoke_tool(tool_name, args, self._current_turn_id or "")
         finally:
             self._approval_gate.flush()
             if mode != "t0":
@@ -4533,9 +4569,10 @@ class Dispatcher:
         self._approval_gate.activate()
         self._approval_gate.mint(live_sig)
         try:
-            result = agent._invoke_tool(
-                tool_name, tool_args, self._current_turn_id or "",
-            )
+            with _own_call_admitted(agent, tool_name):
+                result = agent._invoke_tool(
+                    tool_name, tool_args, self._current_turn_id or "",
+                )
         finally:
             self._approval_gate.flush()
         return result if isinstance(result, str) else str(result)
