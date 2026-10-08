@@ -1319,3 +1319,51 @@ def test_a_drafted_rule_that_fits_only_the_one_corrected_item_is_refused(env):
     assert condition == "subject CONTAINS 'refund'"
     assert seen == [("T1", False), ("T2", True)]
     assert attempts[0]["refused"].startswith("it matches only this one item's exact subject")
+
+
+def test_the_no_model_drafting_rung_reads_the_condition_off_the_records(env):
+    """2026-10-07: after the exact-match guard, a model still drafted a
+    near-copy of the corrected item's line ("CONTAINS 'Certified Admin
+    course'"), and the next item of the kind slipped past. A goal can declare
+    a drafting rung with no model ("T0" in revision_tiers): the words that set
+    the corrected item apart from the confirmed items with the same key, any
+    one of which sends a case back to a model. Broad on purpose: the cost of a
+    word that does not matter is one model call and a look."""
+    from dataclasses import replace
+
+    target = {"channel": "billing", "subject": "Refund request for a cancelled course"}
+    history = [
+        {"ref": "m1", "inputs": {"channel": "billing", "subject": "Invoice for March request"},
+         "confirmed": {"tag": "finance"}, "served": {"tag": "finance"}},
+        {"ref": "m2", "inputs": {"channel": "outage", "subject": "Refund the course"},
+         "confirmed": {"tag": "ops"}, "served": {"tag": "ops"}},       # another key: not compared
+    ]
+    condition = standard_work._words_condition(env.work, history, target)
+    assert condition == " OR ".join(
+        f"channel == 'billing' AND subject CONTAINS '{w}'"
+        for w in ("refund", "cancelled", "course"))               # not "request", "for": seen before
+    assert standard_work._check_condition(env.work, condition, history, target=target) is None
+    probe = {"inputs": env.work.config.inputs, "conditions": [{"if": condition, "defer": True}]}
+    assert keg.defers(probe, {"channel": "billing", "subject": "Course fee refund"})     # the next of the kind
+    assert not keg.defers(probe, {"channel": "billing", "subject": "Invoice for April request"})
+    assert standard_work._words_condition(env.work, history, target) == condition       # deterministic
+    # Declared as the first rung, it drafts with no model call at all.
+    work = SimpleNamespace(config=replace(env.work.config, keg=replace(
+        env.work.config.keg, revision_tiers=("T0", "T1", "T2"))))
+    drafted, attempts = standard_work.draft_condition(
+        work, [], history, target=target, reason="r",
+        call=lambda *a, **k: pytest.fail("a model was called"))
+    assert drafted == condition and attempts == [
+        {"tier": "T0", "condition": condition, "refused": None}]
+    # Nothing sets the case apart in the records: the rung says so and the
+    # next tier (a model) drafts.
+    same = [{"ref": "m3", "inputs": dict(target), "confirmed": {"tag": "finance"},
+             "served": {"tag": "finance"}}]
+    drafted, attempts = standard_work.draft_condition(
+        work, [], same, target=target, reason="r",
+        call=lambda prompt, **k: {"condition": "subject CONTAINS 'zzz'"})
+    assert attempts[0] == {"tier": "T0", "condition": "",
+                           "refused": "the records give no word that sets the corrected case apart."}
+    assert [a["tier"] for a in attempts][:2] == ["T0", "T1"]
+    # Not declared: drafting starts with a model, as before.
+    assert "T0" not in env.work.config.keg.revision_tiers

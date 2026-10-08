@@ -31,6 +31,7 @@ the goal's ``decision_work`` declaration.
 
 from __future__ import annotations
 
+import re
 import collections
 import json
 import logging
@@ -254,6 +255,48 @@ def _ask(call: Any, prompt: str, tier: str) -> str:
     return lines[-1] if lines else ""
 
 
+# A drafting rung with no model: declared as "T0" in a goal's revision_tiers.
+TIER_NO_MODEL = "T0"
+_WORD = re.compile(r"[A-Za-z][A-Za-z'-]{2,}")
+
+
+def _words_condition(work: Any, history: List[Mapping[str, Any]],
+                     target: Optional[Mapping[str, Any]]) -> Optional[str]:
+    """A separating condition drafted from the records alone, or None.
+
+    The operator corrected one item that a rule on its reference key had
+    answered. What sets it apart from the items with the SAME key that the
+    operator confirmed? Every word in its descriptive text that none of those
+    confirmed items carries. The condition is that key AND any one of those
+    words. It errs toward sending work back to a model: a word that turns out
+    not to matter costs one model call and a look from the operator, where a
+    rule drawn too narrowly lets the next case of the kind through unreviewed.
+    Deterministic: the same records give the same condition."""
+    cfg = work.config
+    if target is None or cfg.reference is None:
+        return None
+    key = cfg.reference.key_input
+    mine = target.get(key)
+    if mine in (None, ""):
+        return None
+    fields = [name for name in cfg.inputs
+              if name != key and isinstance(target.get(name), str) and target[name].strip()]
+    seen = {name: set() for name in fields}
+    for case in history:
+        inputs = case.get("inputs") or {}
+        if case.get("confirmed") != case.get("served") or keg_mod._norm(inputs.get(key)) != keg_mod._norm(mine):
+            continue
+        for name in fields:
+            seen[name] |= {w.lower() for w in _WORD.findall(str(inputs.get(name) or ""))}
+    quote = lambda text: "'" + str(text).replace("\\", "\\\\").replace("'", "\\'") + "'"
+    clauses = []
+    for name in fields:
+        for word in dict.fromkeys(w.lower() for w in _WORD.findall(target[name])):
+            if word not in seen[name] and word not in keg_mod._norm(str(mine)):
+                clauses.append(f"{key} == {quote(mine)} AND {name} CONTAINS {quote(word)}")
+    return " OR ".join(clauses) or None
+
+
 class DraftOverBudget(Exception):
     """A drafting call gave no answer inside the goal's time budget for one
     model call. That tier's draft has failed; the next tier is tried."""
@@ -306,6 +349,18 @@ def draft_condition(
     attempts: List[Dict[str, Any]] = []
     failure: Optional[str] = None
     for tier in work.config.keg.revision_tiers:
+        if tier == TIER_NO_MODEL:
+            # The bottom rung, when the goal declares it: no model. The
+            # condition is read off the records (see _words_condition).
+            condition = _words_condition(work, history, target) or ""
+            problem = ("the records give no word that sets the corrected case apart."
+                       if not condition else
+                       _check_condition(work, condition, history, target=target))
+            attempts.append({"tier": tier, "condition": condition, "refused": problem})
+            if problem is None:
+                return condition, attempts
+            failure = f"\"{condition}\" was refused because {problem}" if condition else None
+            continue
         prompt = _draft_prompt(work, rules, history, target=target,
                                reason=reason, failure=failure)
         from grove import t1_call
