@@ -6004,6 +6004,9 @@ def _trace_turn_notes(step) -> List[str]:
         except Exception:  # noqa: BLE001 — the rule's own words still say it
             plain = back["rule"]
         notes.append(f"The keg handed it back: {plain} → model.")
+    elif back.get("kind") == "resembles_corrected" and back.get("item"):
+        notes.append(f"The keg handed it back: it resembles {back['item']}, which you revised "
+                     f"({back.get('share')} of their words in common).")
     elif back.get("kind"):
         notes.append("The keg handed it back: " + str(back["kind"]).replace("_", " ") + ".")
     over = step.get("over_budget") or {}

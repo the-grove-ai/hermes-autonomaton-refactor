@@ -625,7 +625,8 @@ def _t0_handback_why(response_text: Any) -> Optional[Dict[str, str]]:
         return None
     if not isinstance(why, dict) or not why.get("kind"):
         return None
-    return {k: str(why[k])[:200] for k in ("kind", "rule", "key", "value") if why.get(k)}
+    return {k: str(why[k])[:200] for k in ("kind", "rule", "key", "value", "item", "share")
+            if why.get(k)}
 
 
 def _t0_declined(response_text: Any) -> bool:

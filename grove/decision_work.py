@@ -171,6 +171,14 @@ class EvidenceRule:
     alias_confirmations: Optional[int] = None
     alias_same: Tuple[str, ...] = ()
     alias_names: Tuple[str, ...] = ()
+    # A flagged check on what a keg may decide (``resembles_corrected``): an
+    # item whose text resembles one the operator corrected the keg on, for the
+    # same key in this run, is handed back to a model. ``resemble_threshold``
+    # is the share of words the two texts have in common (0 to 1) at or above
+    # which they resemble each other; ``resemble_on`` the inputs compared.
+    # None: off, and a keg decides whatever its rules cover, as before.
+    resemble_threshold: Optional[float] = None
+    resemble_on: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -455,10 +463,30 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
             if not (alias_same or alias_names):
                 raise ValueError(
                     f"{where} needs an identity match: an input under 'same' or 'names'")
+        resemble = ev_raw.get("resembles_corrected")
+        r_threshold, r_on = None, ()
+        if resemble is not None:
+            where = f"goal {goal.id!r}: evidence.resembles_corrected"
+            if not isinstance(resemble, Mapping):
+                raise ValueError(f"{where} must be a mapping")
+            if resemble.get("enabled", False) not in (True, False):
+                raise ValueError(f"{where}.enabled must be true or false")
+            r_threshold = resemble.get("threshold")
+            if (isinstance(r_threshold, bool) or not isinstance(r_threshold, (int, float))
+                    or not 0 < r_threshold <= 1):
+                raise ValueError(f"{where} needs a threshold above 0 and at most 1")
+            r_on = resemble.get("on") or ()
+            if not isinstance(r_on, (list, tuple)) or not r_on or not all(
+                    isinstance(n, str) and n in inputs for n in r_on):
+                raise ValueError(f"{where}.on must list declared inputs")
+            if not resemble.get("enabled", False):
+                r_threshold = None                  # declared and switched off
         evidence = EvidenceRule(threshold=threshold, scope=scope,
                                 confirmed_key_threshold=ck_threshold,
                                 alias_confirmations=alias_n, alias_same=alias_same,
-                                alias_names=alias_names)
+                                alias_names=alias_names,
+                                resemble_threshold=(float(r_threshold) if r_threshold else None),
+                                resemble_on=tuple(r_on))
 
     isolation = raw.get("isolation")
     if isolation not in (None, ISOLATION_SOURCES_ONLY):
@@ -1405,6 +1433,19 @@ def call_budget_for(budget: Any, tier: Any) -> Optional[float]:
     return budget
 
 
+_WORDS = re.compile(r"[a-z][a-z'-]{2,}")
+
+
+def _text_words(inputs: Mapping[str, Any], names: Any) -> set:
+    """The words of an item's descriptive inputs: lower case, letters only,
+    three or more. Numbers and dates are not words, so two items that differ
+    only in a quantity or a month read as the same text."""
+    out: set = set()
+    for name in names or ():
+        out |= set(_WORDS.findall(str(inputs.get(name) or "").lower()))
+    return out
+
+
 def default_decisions_dir() -> Path:
     from hermes_constants import get_hermes_home
     return Path(get_hermes_home()) / "decisions"
@@ -2064,7 +2105,7 @@ class DecisionWork:
         for position, path in enumerate(todo):
             try:
                 inputs = dict(inputs_for(path))
-                output = keg_mod.evaluate(spec, inputs)
+                output = self.keg_answer(spec, inputs)
             except (ValueError, OSError):
                 output = None     # unreadable: the ordinary loop surfaces it
             if output is None:
@@ -2076,7 +2117,7 @@ class DecisionWork:
                 waiting = []
                 for later in todo[position:]:
                     try:
-                        if keg_mod.evaluate(spec, dict(inputs_for(later))) is not None:
+                        if self.keg_answer(spec, dict(inputs_for(later))) is not None:
                             break
                     except (ValueError, OSError):
                         pass
@@ -2861,7 +2902,7 @@ class DecisionWork:
         back to the interpreter. The same turn checks apply as for a model."""
         from grove import keg as keg_mod
 
-        output = keg_mod.evaluate(spec, inputs)
+        output = self.keg_answer(spec, inputs)
         if output is None:
             return None
         return self.record(
@@ -2871,6 +2912,55 @@ class DecisionWork:
         )
 
     # -- Jidoka's evidence ------------------------------------------------
+
+    def resembles_corrected(self, inputs: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        """The corrected item this one resembles, when the goal switches the
+        check on: ``{"item_id", "share"}``, else None.
+
+        Looked at only for an item a keg is about to decide. Compared with
+        every item in this run that has the SAME reference key, that a keg
+        decided, and that the operator then revised: the share of words the
+        two texts have in common (words in either, counted once). At or above
+        the declared threshold the keg hands the item back. Deterministic, no
+        model. It cannot catch the first miss of a kind; it stops the second.
+
+        Measured before it was built, on every keg decision then on record
+        (2026-10-07): of 61 made after a correction for the same key, it
+        handed back the 2 that were wrong and none of the 59 that were right,
+        at any threshold from 0.35 to 0.6. One key, one kind of miss: a small
+        sample, which is why it ships switched off."""
+        rule, ref = self.config.evidence, self.config.reference
+        if rule is None or ref is None or not rule.resemble_threshold:
+            return None
+        key = _norm_key(inputs.get(ref.key_input))
+        mine = _text_words(inputs, rule.resemble_on)
+        if not key or not mine:
+            return None
+        proposed, decided = self._state()
+        best: Optional[Dict[str, Any]] = None
+        for record in proposed.values():
+            verdict = decided.get(record["id"])
+            if (verdict is None or verdict.get("decision") != DECISION_CORRECT
+                    or not record.get("keg")
+                    or _norm_key((record.get("inputs") or {}).get(ref.key_input)) != key):
+                continue
+            theirs = _text_words(record.get("inputs") or {}, rule.resemble_on)
+            share = len(mine & theirs) / len(mine | theirs) if (mine | theirs) else 0.0
+            if share >= rule.resemble_threshold and (best is None or share > best["share"]):
+                best = {"item_id": record["item_id"], "share": round(share, 2)}
+        return best
+
+    def keg_answer(self, spec: Mapping[str, Any],
+                   inputs: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        """What a keg decides for an item, or None when it does not answer it:
+        no rule matches, the matching rule defers, or (when the goal switches
+        that check on) the item resembles one the operator corrected."""
+        from grove import keg as keg_mod
+
+        output = keg_mod.evaluate(spec, inputs)
+        if output is not None and self.resembles_corrected(inputs) is not None:
+            return None
+        return output
 
     def confirmed_key_evidence(self, key: Any) -> Dict[str, Any]:
         """Count this run's evidence that one reference key has an answer the

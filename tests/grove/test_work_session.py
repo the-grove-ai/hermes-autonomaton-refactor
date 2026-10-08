@@ -1536,3 +1536,79 @@ def test_the_batch_block_is_declared_and_the_hold_can_be_switched_off(env, tmp_p
         assert ("pauses here" in card["text"]) is hold
         assert bool(reissue.held("sess")) is hold
     reissue.release_hold("sess")
+
+
+# ── a flagged check: a keg hands back what resembles a case it was corrected on ──
+
+
+def _resembling(env, tmp_path, monkeypatch, resemble):
+    goal = _goal(tmp_path)
+    block = goal.extra["decision_work"]
+    block["inputs"]["subject"] = {"data_type": "string"}
+    if resemble is not None:
+        block["evidence"]["resembles_corrected"] = resemble
+    cfg = dw.load_config(goal)
+    grants_mod.get_grant_store().sign(cfg)
+    monkeypatch.setattr(dw, "config_for_goal", lambda goal_id, dock=None: cfg)
+    work = DecisionWork(cfg)
+    spec = _serve_keg()
+    spec["inputs"]["subject"] = {"data_type": "string"}
+    # The keg decides a message on its channel; the operator revises it.
+    env.add("billing")
+    work.apply_keg(
+        spec, item_id="m01",
+        inputs={"channel": "billing", "subject": "Admin certification course, 2 seats"},
+        keg_ref={"name": "Message tagging", "version": 2, "pattern_id": "keg:mt:v2"},
+        provenance=env.prov(tier="T0"))
+    work.decide(decision="correct", corrected_output={"tag": "other"}, provenance=env.prov())
+    return work, spec
+
+
+ALIKE = {"channel": "billing", "subject": "Certification course for the admin team, 5 seats"}
+PLAIN = {"channel": "billing", "subject": "Monthly subscription, 30 seats"}
+
+
+def test_switched_on_a_keg_hands_back_what_resembles_a_corrected_item(env, tmp_path, monkeypatch):
+    work, spec = _resembling(env, tmp_path, monkeypatch,
+                             {"enabled": True, "threshold": 0.5, "on": ["subject"]})
+    assert work.resembles_corrected(ALIKE) == {"item_id": "m01", "share": 0.57}
+    assert work.keg_answer(spec, ALIKE) is None                  # goes to a model
+    # An ordinary item with the same key is still the keg's to decide.
+    assert work.resembles_corrected(PLAIN) is None
+    assert work.keg_answer(spec, PLAIN) == {"tag": "finance"}
+    # The same words under another key: no correction there, nothing to resemble.
+    assert work.keg_answer(spec, {**ALIKE, "channel": "outage"}) == {"tag": "ops"}
+
+
+def test_the_resemblance_check_is_off_unless_the_goal_switches_it_on(env, tmp_path, monkeypatch):
+    work, spec = _resembling(env, tmp_path, monkeypatch, None)
+    assert work.resembles_corrected(ALIKE) is None
+    assert work.keg_answer(spec, ALIKE) == {"tag": "finance"}
+
+
+def test_the_resemblance_check_declared_and_switched_off_changes_nothing(
+        env, tmp_path, monkeypatch):
+    work, spec = _resembling(env, tmp_path, monkeypatch,
+                             {"enabled": False, "threshold": 0.5, "on": ["subject"]})
+    assert work.config.evidence.resemble_threshold is None
+    assert work.keg_answer(spec, ALIKE) == {"tag": "finance"}
+    # It is not part of the signed session rule: switching it needs no new signature.
+    on = _goal(tmp_path)
+    on.extra["decision_work"]["inputs"]["subject"] = {"data_type": "string"}
+    on.extra["decision_work"]["evidence"]["resembles_corrected"] = {
+        "enabled": True, "threshold": 0.5, "on": ["subject"]}
+    assert dw.session_rule_digest(dw.load_config(on)) == dw.session_rule_digest(work.config)
+
+
+@pytest.mark.parametrize("bad", [
+    "yes", {"enabled": True}, {"enabled": True, "threshold": 0, "on": ["subject"]},
+    {"enabled": True, "threshold": 1.5, "on": ["subject"]},
+    {"enabled": True, "threshold": 0.5}, {"enabled": True, "threshold": 0.5, "on": ["nope"]},
+    {"enabled": "on", "threshold": 0.5, "on": ["subject"]},
+])
+def test_a_resemblance_declaration_that_cannot_be_read_is_refused(tmp_path, bad):
+    goal = _goal(tmp_path)
+    goal.extra["decision_work"]["inputs"]["subject"] = {"data_type": "string"}
+    goal.extra["decision_work"]["evidence"]["resembles_corrected"] = bad
+    with pytest.raises(ValueError, match="resembles_corrected"):
+        dw.load_config(goal)

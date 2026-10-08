@@ -435,6 +435,11 @@ def _apply_keg(work: DecisionWork, args: Dict[str, Any]) -> str:
     if record is None:
         from grove import keg as keg_mod
         rule = keg_mod.match(spec, item_inputs(invoice, work.config.inputs))
+        alike = work.resembles_corrected(item_inputs(invoice, work.config.inputs))
+        if alike is not None:
+            return _decline("this invoice resembles one the operator revised",
+                            "resembles_corrected", item=str(alike["item_id"]),
+                            share=str(alike["share"]))
         if rule is not None and rule.get("defer"):
             return _decline("a rule of the keg sends this invoice to the model",
                             "rule_defers", rule=str(rule.get("if") or ""))
