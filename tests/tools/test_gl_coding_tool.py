@@ -407,3 +407,29 @@ def test_the_adapter_reads_the_account_and_a_printed_notice_when_declared():
     plain = tool.parse_invoice(text.replace("Customer account: HF-44817\n", "").split("NOTICE:")[0])
     assert tool.item_inputs(plain, declared)["customer_account"] == ""
     assert tool.item_inputs(plain, declared)["notice"] == ""
+
+
+def test_the_goals_own_request_cannot_pause_the_session(work):
+    """Found live, 2026-10-07: asked to "code the next invoice", a model called
+    the pause step, turn after turn. Whether a message is about something else
+    is decided in code: the goal's own request never is."""
+    from dataclasses import replace
+    from grove.decision_work import KegDeclaration
+
+    asked = "Code the next invoice"
+    declared = replace(work.config, keg=KegDeclaration(
+        name="Invoice GL coding", request=asked, requests=(), match_threshold=0.8,
+        verb_bonus=0.0, scope="reserved", authority_level="green", revision_tiers=("T1",)))
+    work.config = declared
+    prov = turn_provenance.current()
+    turn_provenance.set_current({**prov, "request": asked, "turn_uid": "p1", "turn_id": "s#p1"})
+    out = json.loads(gl.gl_coding({"verb": "pause"}))
+    assert (out["success"], out["status"]) == (False, "not_paused")
+    assert "Call verb='next' now" in out["message"]
+    from grove import reissue
+    assert reissue.take("s") is None                      # nothing was armed: no pause happened
+    # A message that really is about something else is not stopped by this
+    # check: the pause goes on to the work session's own handling.
+    turn_provenance.set_current({**prov, "request": "what's the weather in Tulsa?",
+                                 "turn_uid": "p2", "turn_id": "s#p2"})
+    assert json.loads(gl.gl_coding({"verb": "pause"})).get("status") != "not_paused"

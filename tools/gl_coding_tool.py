@@ -31,6 +31,7 @@ from grove.decision_work import (
     DECISION_CORRECT,
     DecisionRefused,
     DecisionWork,
+    asks_for_work,
     config_for_goal,
 )
 
@@ -493,6 +494,17 @@ def gl_coding(args: Dict[str, Any]) -> str:
                     raise
                 return _t0_stop(exc)
         if verb == "pause":
+            # Decided here, not left to the model: a message that IS the goal's
+            # own request for the work is never "about something else", so it
+            # cannot pause the session. (Found live, 2026-10-07: a model
+            # answered "code the next invoice" by pausing, turn after turn.)
+            asked = str((turn_provenance.current() or {}).get("request") or "")
+            if asks_for_work(asked, work.config):
+                return json.dumps({
+                    "success": False, "status": "not_paused",
+                    "message": ("The operator's message asks for the next invoice, so the "
+                                "session is not paused. Call verb='next' now and carry on."),
+                }, ensure_ascii=False)
             work.pause(turn_provenance.current())
             return json.dumps({
                 "success": True, "status": "pausing",

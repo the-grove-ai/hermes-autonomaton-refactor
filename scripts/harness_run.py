@@ -274,7 +274,9 @@ class Harness:
                 for p in st["keg_proposals"]:
                     short = p.proposal_id.split(":")[-1][:12]
                     time.sleep(self.rng.uniform(2.0, 5.0))      # the operator reads the card
-                    code = self.gw.portal(f"/portal/actions/proposals/{short}/approve")
+                    # The portal's approve action takes the proposal's full id.
+                    code = self.gw.portal("/portal/actions/proposals/"
+                                          + urllib.parse.quote(p.proposal_id, safe="") + "/approve")
                     version = ((p.payload or {}).get("keg") or {}).get("version")
                     self.note(action=f"sign keg v{version}", reply=f"portal approve http {code}")
                     if code != 200:
@@ -308,10 +310,21 @@ class Harness:
                 reply = self.say(ws.start[0], "the session paused itself: reopen the work")
             elif stuck and "?" in reply:
                 value = next(iter(self.ruling(st["next"]).values()))
-                reply = self.say(f"Code it {value}.", "answer the model's question from the ruling")
+                reply = self.say(f"It is {value}.", "answer the model's question from the ruling")
             else:
-                reply = self.say(work.config.keg.request, "ask for the next item")
+                reply = self.say(self.next_phrase(work), "ask for the next item")
         return self.summary()
+
+    def next_phrase(self, work) -> str:
+        """How the scripted operator asks for the next item: the goal's own
+        request, which is what the system re-issues in chat after each
+        decision, and the phrase a serving keg is triggered by. (The start
+        phrase asks for the same work but does not trigger a keg, so using it
+        would send every item to a model; --next-phrase start is for
+        diagnosis only.)"""
+        if self.args.next_phrase == "request":
+            return work.config.keg.request
+        return work.config.work_session.start[0]
 
     def save_checkpoint(self, name: str) -> None:
         from grove import checkpoints
@@ -346,6 +359,7 @@ def main(argv=None) -> int:
     parser.add_argument("--months", type=int, default=3, help="stop after this many months")
     parser.add_argument("--checkpoint", default="", help="save this checkpoint when --months is reached")
     parser.add_argument("--no-earn-phrase", dest="earn_phrase", action="store_false")
+    parser.add_argument("--next-phrase", choices=["start", "request"], default="request")
     parser.add_argument("--max-turns", type=int, default=400)
     parser.add_argument("--transcript", default="")
     parser.add_argument("--quiet", action="store_true")
