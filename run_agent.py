@@ -1222,27 +1222,29 @@ def _seam5_refusal_message(function_name, reason, *, intent, tier, record=None):
     record, not the tier (the tier gate is inert since fallback-retirement-v1).
     Pure: no context reads, so it is unit-testable without an Agent.
     """
+    # Plain words: what happened, why, and which file changes it. No internal
+    # sprint or seam codes; an operator reads this in the log and the model
+    # reads it as the tool's result.
     base = (
-        f"Tool {function_name!r} refused by the execution-admission seam "
-        f"(GRV-009 E5 C-SEAM5): {reason}. Offering is the governance; execution "
-        f"honors it."
+        f"Tool {function_name!r} was not run: {reason}. A tool runs only when it "
+        f"was offered for the turn."
     )
     if record is not None:
         gov = (
-            f" Admission is governed by the tool's capability record "
-            f"config/capabilities/{record.id}.yaml — NOT the routing tier. "
-            f"This turn's intent {intent!r} is not admitted by "
+            f" What is offered is set by the tool's capability record, "
+            f"config/capabilities/{record.id}.yaml, not by the tier. "
+            f"This turn's intent {intent!r} is not in "
             f"{record.id}.trigger.intents {sorted(record.trigger.intents)} "
             f"(always={record.trigger.always}, "
             f"disclosure={record.trigger.disclosure.value!r}). To offer "
             f"{function_name!r} for this intent, edit that record (add the intent, "
-            f"or set always: true). tier={tier} is non-determinative."
+            f"or set always: true). The tier (tier={tier}) is non-determinative here."
         )
     else:
         gov = (
-            f" Admission is governed by the per-turn offered surface (capability "
-            f"records + mcp_allow), NOT the routing tier. No capability record "
-            f"governs {function_name!r}. tier={tier} is non-determinative; "
+            f" What is offered is set by capability records and the allowed "
+            f"connected tools, not by the tier. No capability record covers "
+            f"{function_name!r}. The tier (tier={tier}) is non-determinative here; "
             f"intent={intent!r}."
         )
     return base + gov
@@ -13042,7 +13044,7 @@ class AIAgent:
         msg = _seam5_refusal_message(
             function_name, reason, intent=intent, tier=tier, record=record
         )
-        logging.warning("[grove.seam5] %s", msg)
+        logging.warning("[tool admission] %s", msg)
         # operator-mutable-admission-v1 P3 — emit ONE capability_refusals record
         # so the Flywheel can observe admission friction. Side-effect only: the
         # verdict below is returned regardless of the emit's outcome (governance
