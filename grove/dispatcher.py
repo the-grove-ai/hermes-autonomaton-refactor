@@ -2233,6 +2233,9 @@ class Dispatcher:
         # declares one (the agent enforces it; the ladder rule answers it).
         try:
             agent._call_budget_seconds = self._turn_call_budget()
+            # ...and the tools it is offered: on a turn of a goal's own work,
+            # the goal's tool (and any it declares beside it), nothing else.
+            agent._turn_only_tools = self._turn_tools()
         except Exception:  # a frozen / exotic agent stand-in
             pass
         self._current_turn_t0_handback = None
@@ -3008,6 +3011,7 @@ class Dispatcher:
             agent._turn_retries = 0
             agent._turn_call_ms = []
             agent._turn_call_usage = []
+            agent._turn_only_tools = None
             agent._call_over_budget = None
             agent._call_budget_seconds = None
         except Exception:  # a frozen / exotic agent stand-in — nothing to reset
@@ -3042,6 +3046,12 @@ class Dispatcher:
 
         selection = getattr(agent, "_last_tool_selection", None) or {}
         offered = sorted(str(n) for n in (selection.get("selected_names") or ()))
+        _only = getattr(agent, "_turn_only_tools", None)
+        if _only:
+            # Narrowed to the goal's own tools: that is what was offered.
+            from grove.context_budget import _name_of
+            offered = sorted({_name_of(t) for t in (getattr(agent, "tools", None) or [])
+                              if isinstance(t, dict)} & set(_only))
         decision = self._current_turn_routing_decision
         events = list(self._current_turn_ledger_events)
         verdicts = list(self._current_turn_zone_verdicts)
@@ -5999,6 +6009,23 @@ class Dispatcher:
             return None
         return {"proposal_id": str(hold.get("proposal_id") or "")[:90],
                 "what": str(hold.get("what") or "")[:60]}
+
+    def _turn_tools(self) -> Optional[frozenset]:
+        """Compilation stage. The only tools a model is offered on THIS turn,
+        when the turn belongs to a goal that narrows them (``also_offer`` in
+        its declaration; the goal's own tool by default). None for every other
+        turn, and for a goal that declares ``also_offer: all``."""
+        goal = getattr(self, "_current_turn_isolation", None)
+        if not goal:
+            return None
+        try:
+            from grove.decision_work import config_for_goal
+            names = config_for_goal(str(goal)).session_tools
+            return frozenset(names) if names else None
+        except Exception as exc:  # noqa: BLE001
+            logger.error("[grove.dispatcher] could not read the tools for goal %s: %r — "
+                         "offering the surface's own set", goal, exc)
+            return None
 
     def _turn_call_budget(self) -> Any:
         """Compilation stage. The time budget for one model call of THIS turn:

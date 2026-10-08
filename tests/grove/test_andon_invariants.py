@@ -1239,3 +1239,48 @@ def test_the_dispatchers_own_call_passes_the_admission_seam_and_a_models_does_no
     from grove import dispatcher
     src = inspect.getsource(dispatcher.Dispatcher)
     assert src.count("with _own_call_admitted(agent, tool_name):") == 2
+
+
+def test_a_goals_work_turn_is_offered_the_goals_own_tool_and_nothing_else(tmp_path, monkeypatch):
+    """Found live, 2026-10-07: on a goal's work turn the model was offered 64
+    general tools (mail, drive, a terminal), paid for on every call, and on one
+    surface the goal's own tool was not among them. A goal's turn is offered
+    the goal's tool, plus what it declares beside it; the same set is what the
+    execution-admission check admits."""
+    import run_agent
+    from grove.dispatcher import Dispatcher
+    from tests.grove.test_work_session import SESSION, _goal
+
+    def cfg(**over):
+        goal = _goal(tmp_path, SESSION); goal.extra["decision_work"].update(over)
+        return dw.load_config(goal)
+
+    assert cfg().session_tools == ("tag_message",)                       # by default: its own
+    assert cfg(also_offer=["clarify"]).session_tools == ("tag_message", "clarify")
+    assert cfg(also_offer="all").session_tools is None                   # declared: no narrowing
+    with pytest.raises(ValueError, match="also_offer"):
+        cfg(also_offer="some")
+    assert dw.session_rule_digest(cfg()) == dw.session_rule_digest(cfg(also_offer=["clarify"]))
+
+    # The Dispatcher reads it for a goal's turn only.
+    monkeypatch.setattr(dw, "config_for_goal", lambda goal_id, dock=None: cfg())
+    assert Dispatcher._turn_tools(SimpleNamespace(_current_turn_isolation=GOAL)) == frozenset(
+        {"tag_message"})
+    assert Dispatcher._turn_tools(SimpleNamespace(_current_turn_isolation=None)) is None
+
+    # The agent offers exactly that, from its own surface, and admits exactly that.
+    def tool(name):
+        return {"type": "function", "function": {"name": name}}
+
+    agent = run_agent.AIAgent.__new__(run_agent.AIAgent)
+    agent.tools = [tool("gmail_send"), tool("tag_message"), tool("terminal")]
+    agent._tools_for_turn = [tool("gmail_send"), tool("terminal")]      # the general offer, without it
+    agent._turn_only_tools = frozenset({"tag_message"})
+    assert [t["function"]["name"] for t in agent._tools_for_api] == ["tag_message"]
+    assert agent._seam5_admission_refusal("tag_message") is None
+    agent._seam5_refusal = lambda name, reason: f"refused {name}"
+    assert agent._seam5_admission_refusal("gmail_send") == "refused gmail_send"
+    # Any other turn: the general offer, as before.
+    agent._turn_only_tools = None
+    assert [t["function"]["name"] for t in agent._tools_for_api] == ["gmail_send", "terminal"]
+    assert agent._seam5_admission_refusal("gmail_send") is None

@@ -334,6 +334,10 @@ class DecisionWorkConfig:
     # later.
     batch_order: str = BATCH_KEG_FIRST
     hold_on_proposal: bool = True
+    # The tools a model is offered on a turn of this goal's work: the goal's
+    # own tool, plus any named in ``also_offer``. None: no narrowing (declared
+    # as ``also_offer: all``), the surface's general tool set is offered.
+    session_tools: Optional[Tuple[str, ...]] = None
     adaptation: Adaptation = field(default_factory=Adaptation)
     ticket_model: Optional[TicketModel] = None
 
@@ -574,6 +578,8 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         call_budget_seconds=_call_budget(raw.get("call_budget_seconds", CALL_BUDGET_DEFAULT),
                                          str(goal.id)),
         **_load_batch(raw.get("batch"), str(goal.id)),
+        session_tools=_session_tools(raw.get("also_offer"), str(raw.get("tool") or ""),
+                                     str(goal.id)),
         adaptation=adaptation,
         ticket_model=_load_ticket_model(raw.get("ticket_model"), str(goal.id)),
     )
@@ -1334,6 +1340,23 @@ def _domain_values(domain: OutputDomain) -> List[str]:
 
 
 CALL_BUDGET_DEFAULT = 30
+
+
+def _session_tools(raw: Any, tool: str, goal_id: str) -> Optional[Tuple[str, ...]]:
+    """The goal's ``also_offer``: a list of tool names offered beside the
+    goal's own tool on a turn of its work (absent: the goal's tool alone), or
+    ``all`` for the surface's whole tool set. A goal's work needs its own tool;
+    offering a model dozens of unrelated ones costs context on every turn and
+    invites it to wander (found live, 2026-10-07: 63 tools offered, the goal's
+    own not among them, and the model went searching the operator's mail)."""
+    if raw == "all":
+        return None
+    if raw is None:
+        return (tool,)
+    if not isinstance(raw, (list, tuple)) or not all(isinstance(n, str) and n for n in raw):
+        raise ValueError(
+            f"goal {goal_id!r}: also_offer must be a list of tool names, or 'all'")
+    return tuple(dict.fromkeys((tool, *raw)))
 
 
 def _load_batch(raw: Any, goal_id: str) -> Dict[str, Any]:

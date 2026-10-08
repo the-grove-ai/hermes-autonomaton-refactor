@@ -2984,9 +2984,24 @@ class AIAgent:
         ``None`` — callers handle by passing ``None`` to the transport
         (LLM call with no tools).
         """
+        narrowed = self._goal_only_surface()
+        if narrowed is not None:
+            return narrowed
         if self._tools_for_turn is not None:
             return self._tools_for_turn
         return self.tools
+
+    def _goal_only_surface(self) -> Optional[List[Dict[str, Any]]]:
+        """The tools offered on a turn of a goal's own work, when the goal
+        narrows them (the Dispatcher sets ``_turn_only_tools`` from the goal's
+        declaration): those tools, taken from this agent's construction
+        surface. None on every other turn. The model is offered exactly this,
+        and the execution-admission check admits exactly this."""
+        only = getattr(self, "_turn_only_tools", None)
+        if not only:
+            return None
+        from grove.context_budget import _name_of
+        return [t for t in (self.tools or []) if isinstance(t, dict) and _name_of(t) in only]
 
     def _compute_mcp_allow(self, intent_class, goal_alignment):
         """The per-turn MCP disclose-on-match set, threaded into
@@ -13126,7 +13141,9 @@ class AIAgent:
         # Robust read (no reliance on the _tools_for_api property, which would
         # raise on a bare instance): per-turn surface if filtered, else the full
         # construction surface (== no new constraint).
-        surface = getattr(self, "_tools_for_turn", None)
+        surface = self._goal_only_surface() if hasattr(self, "_goal_only_surface") else None
+        if surface is None:
+            surface = getattr(self, "_tools_for_turn", None)
         if surface is None:
             surface = getattr(self, "tools", None)
         if not surface:
