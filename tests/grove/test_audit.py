@@ -1167,7 +1167,7 @@ def test_the_scorecard_sets_the_proof_before_the_record(home, monkeypatch):
     assert g["in_progress"] is False and g["periods_declared"] == 1
     html = fragments._scorecard_html(g, 1_000_000, "0")
     order = [html.index(t) for t in (
-        "THE PROOF", "The same 3 messages, two ways", "Messages that needed a model",
+        "THE PROOF", "The same 3 messages, two ways", "Messages settled with no model",
         "HOW IT GOT THERE", "THE RECORD", "Who decided, and how it went",
         "How these figures were measured")]
     assert order == sorted(order)

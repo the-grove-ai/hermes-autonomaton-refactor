@@ -5483,7 +5483,12 @@ def _returns_html(g, proj, scale: int, toggle: str, detail: str = "",
         f'{_esc(pace_text)} × {model["hours_per_ticket"]:g} hours × '
         f'${model["loaded_rate"]:,.2f}. Measured: {n} change{"" if n == 1 else "s"} signed '
         f'in {months} month{"" if months == 1 else "s"}. Model cost saved, measured: at '
-        f'{_esc(volume)}, scaled from this run.</p>{frontier}{detail}</details>')
+        f'{_esc(volume)}, scaled from this run.</p>'
+        f'<p class="sc-foot">What scales with what. Calls move the inference line only: model '
+        f'cost and time waiting. A ticket is avoided when someone with authority signs the '
+        f'change instead of filing it with engineering, whatever the volume. Docks scale with '
+        f'distinct contexts, not with headcount, the number of agents or calls.</p>'
+        f'{frontier}{detail}</details>')
     return (
         f'<section class="sc-panel sc-returns" aria-label="What one dock returns in a month">'
         f'<div class="sc-panel-head"><div>'
@@ -5501,6 +5506,8 @@ def _returns_html(g, proj, scale: int, toggle: str, detail: str = "",
         f'<div class="sc-note">net ${net:,.0f} on a ${price:,.0f} dock'
         f'{_esc(_payback(g))}</div></div></div>'
         f'{_roi_rows_html(g, proj, scale)}'
+        f'<p class="sc-roi-unit">One dock. One shared context. Run as many agentic workflows '
+        f'as practicable. Settled cases stay settled.</p>'
         f'<div class="sc-returns-sum">'
         f'<div title="At this run\'s pace of {_esc(pace_text)}."><div class="sc-eyebrow">'
         f'TICKETS AVOIDED · <span class="sc-event">ESTIMATE</span></div>'
@@ -5707,27 +5714,29 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
             f'{bench.get("did_not_complete") or 0} in run {bench["run_number"]}; a stalled '
             f'session that had to be reopened is not on record and is not counted.</p>'
             f'</section>')
+    # The hit rate: the share of each period's items settled with no model.
+    # It is the signal that the shared context is still paying back.
     cols = ""
     for p in periods:
-        share = p["model_units"] / p["units"] if p["units"] else 0.0
+        share = p["keg_units"] / p["units"] if p["units"] else 0.0
         theirs = p.get("benchmark")
         them = ""
         if theirs:
-            t = theirs["model_units"] / theirs["units"] if theirs["units"] else 0.0
+            t = theirs["keg_units"] / theirs["units"] if theirs["units"] else 0.0
             them = (f'<div class="sc-pf-col"><span>{t * 100:.0f}%</span>'
                     f'<i class="sc-pf-them" style="height:{t * 100:.0f}%"></i></div>')
         cols += (
             f'<div class="sc-pf-month"><div class="sc-pf-cols">{them}'
             f'<div class="sc-pf-col"><span class="sc-down">{share * 100:.0f}%</span>'
-            f'<i class="sc-pf-us" style="height:{max(share * 100, 1):.0f}%"></i></div></div>'
+            f'<i class="sc-pf-us" style="height:{share * 100:.0f}%"></i></div></div>'
             f'<div class="sc-pf-mlabel">{_esc(str(p["label"]).split(" · ")[0])}</div>'
-            f'<div class="sc-quiet">{p["model_units"]} of {p["units"]}</div></div>')
+            f'<div class="sc-quiet">{p["keg_units"]} of {p["units"]}</div></div>')
     legend = ((f'<span><i class="sc-swatch sc-pf-them"></i>{_esc(bench["label"])}</span>'
                if matched else "")
               + f'<span><i class="sc-swatch sc-pf-us"></i>{_esc(ours_label)}</span>')
     chart = (
         f'<section class="sc-panel sc-pf-chart"><div class="sc-eyebrow">MEASURED{so_far}</div>'
-        f'<h2>{_esc(many.capitalize())} that needed a model</h2>'
+        f'<h2>{_esc(many.capitalize())} settled with no model</h2>'
         f'<div class="sc-pf-curve">{cols}</div><div class="sc-legend">{legend}</div></section>')
     return f'<div class="sc-pf{" sc-pf-two" if table else ""}">{table}{chart}</div>'
 

@@ -1283,6 +1283,7 @@ ul.listing li { padding: 0.7rem 0; }
   color: var(--text); }
 #main-nav .nav-brand .brand-sub { margin-left: 0; }
 .sc-roi-title { font-size: 26px; font-weight: 700; margin: 0 0 8px; }
+.sc-roi-unit { font-size: 17px; line-height: 1.5; color: var(--sc-text-2); margin: 16px 0 4px; }
 .sc-level { align-self: flex-start; font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.14em; color: var(--sc-text-2); border: 1px solid var(--sc-line);
   border-radius: 6px; padding: 6px 9px; margin-top: 14px; }
