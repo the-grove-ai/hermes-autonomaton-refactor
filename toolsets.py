@@ -225,6 +225,18 @@ TOOLSETS = {
         "includes": []
     },
 
+    # Decision work: a Dock goal's queue of items, each decided once and
+    # confirmed. Declared as a tool set of its own so every surface whose
+    # default set includes the tool keeps it. Without this entry the tool was
+    # registered under a tool set no surface could name, and a surface that
+    # resolves its tools by tool-set name (the API server) silently lost it
+    # while Telegram kept it (found live, 2026-10-07).
+    "decision_work": {
+        "description": "Decision work for a Dock goal: next item, record a decision, the operator's ruling",
+        "tools": ["gl_coding"],
+        "includes": []
+    },
+
     # TOMBSTONE (retrieval-ambient-class-v1 P1): the "memory" toolset's lone
     # tool was deleted by legacy-memory-tool-retirement-v1 (registration
     # forbidden in tools/registry.py) and its capability record is gone. The

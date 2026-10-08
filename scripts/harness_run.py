@@ -196,6 +196,38 @@ class Harness:
         time.sleep(self.rng.uniform(0.3, 1.5))
         reply = self.gw.say(self.session, text)
         self.note(say=text, why=why, reply=reply.replace("\n", " | ")[:400])
+        return self.after_turn(reply)
+
+    def after_turn(self, reply: str) -> str:
+        """What a chat surface does for the operator after each turn, done
+        here because the API surface answers a request and cannot push:
+
+          * a request the ladder armed to be retried one tier up is re-issued,
+            pinned to that tier, exactly as the gateway re-issues it in chat;
+          * a request armed to bring the next item is dropped (this loop asks
+            for the next item itself);
+          * cards and buttons offered for the turn are taken, as a chat
+            surface takes them when it shows them.
+        """
+        from grove import reissue
+
+        reissue.take_cards(self.session)
+        reissue.take_actions(self.session)
+        for _ in range(3):                       # at most T1 -> T2 -> T3
+            armed = reissue.take(self.session)
+            if not armed or not armed.get("tier"):
+                break
+            request = str(armed.get("request") or "")
+            if not request:
+                break
+            reissue.arm_tier(self.session, str(armed["tier"]), attempts=armed.get("attempts"),
+                             andon_id=armed.get("andon_id"), request=request)
+            self.turns += 1
+            reply = self.gw.say(self.session, request)
+            self.note(say=request, why=f"the ladder's retry at {armed['tier']}",
+                      reply=reply.replace("\n", " | ")[:400])
+            reissue.take_cards(self.session)
+            reissue.take_actions(self.session)
         return reply
 
     def ruling(self, item_id: str) -> dict:

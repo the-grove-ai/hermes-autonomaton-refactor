@@ -142,4 +142,6 @@ class TestApiServerAdapterToolset:
             # list never silently drops them. This now matches Telegram exactly
             # — the same override on any messaging platform yields the same set
             # (Sprint 64 toolset parity correction).
-            assert sorted(toolsets) == ["escalate", "kanban", "terminal", "web"]
+            # 2026-10-07: decision_work joined that non-configurable set (it holds
+            # the goal's tool, which this surface had silently lost).
+            assert sorted(toolsets) == ["decision_work", "escalate", "kanban", "terminal", "web"]
