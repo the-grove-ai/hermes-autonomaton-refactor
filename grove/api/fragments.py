@@ -5714,30 +5714,41 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
             f'{bench.get("did_not_complete") or 0} in run {bench["run_number"]}; a stalled '
             f'session that had to be reopened is not on record and is not counted.</p>'
             f'</section>')
-    # The hit rate: the share of each period's items settled with no model.
-    # It is the signal that the shared context is still paying back.
-    cols = ""
-    for p in periods:
-        share = p["keg_units"] / p["units"] if p["units"] else 0.0
-        theirs = p.get("benchmark")
-        them = ""
-        if theirs:
-            t = theirs["keg_units"] / theirs["units"] if theirs["units"] else 0.0
-            them = (f'<div class="sc-pf-col"><span>{t * 100:.0f}%</span>'
-                    f'<i class="sc-pf-them" style="height:{t * 100:.0f}%"></i></div>')
-        cols += (
-            f'<div class="sc-pf-month"><div class="sc-pf-cols">{them}'
-            f'<div class="sc-pf-col"><span class="sc-down">{share * 100:.0f}%</span>'
-            f'<i class="sc-pf-us" style="height:{share * 100:.0f}%"></i></div></div>'
-            f'<div class="sc-pf-mlabel">{_esc(str(p["label"]).split(" · ")[0])}</div>'
-            f'<div class="sc-quiet">{p["keg_units"]} of {p["units"]}</div></div>')
-    legend = ((f'<span><i class="sc-swatch sc-pf-them"></i>{_esc(bench["label"])}</span>'
-               if matched else "")
-              + f'<span><i class="sc-swatch sc-pf-us"></i>{_esc(ours_label)}</span>')
+    # Every item of the run as one square, in the order it was worked, a row
+    # of them at a time under its period: lit when it was settled with no
+    # model, dim when a model was called. The hit rate, item by item: it is
+    # the signal that the shared context is still paying back.
+    units = g.get("units") or []
+    batches = [p.get("batch") for p in periods]
+    per_row = 10 if len(units) <= 200 else 25 if len(units) <= 1000 else 50
+    grid = ""
+    for index, p in enumerate(periods):
+        mine = [u for u in units
+                if (u.get("batch") == batches[index] if index else not u.get("batch"))]
+        cells = "".join(
+            f'<i class="{"sc-wf-hit" if u["keg"] else "sc-wf-miss"}" title="'
+            + _esc(f'#{u["order"]}' + (f' · {u["label"]}' if u.get("label") else "")
+                   + (f' · settled by rule, v{u["keg_version"]}: no model' if u["keg"]
+                      else " · a model was called"))
+            + '"></i>' for u in mine)
+        grid += (f'<div class="sc-wf-label">{_esc(str(p["label"]).split(" · ")[0])}</div>'
+                 f'<div class="sc-wf-cells" style="grid-template-columns:repeat({per_row},1fr)">'
+                 f'{cells}</div>')
+    settled = sum(p["keg_units"] for p in periods)
+    total = sum(p["units"] for p in periods)
+    every = (matched and all(not p["benchmark"]["keg_units"] for p in matched))
+    rates = " · ".join(f'{(p["keg_units"] / p["units"] if p["units"] else 0) * 100:.0f}%'
+                       for p in periods)
     chart = (
         f'<section class="sc-panel sc-pf-chart"><div class="sc-eyebrow">MEASURED{so_far}</div>'
-        f'<h2>{_esc(many.capitalize())} settled with no model</h2>'
-        f'<div class="sc-pf-curve">{cols}</div><div class="sc-legend">{legend}</div></section>')
+        f'<h2>The Benefits of Compilation: More work, done faster, with less risk and a lower '
+        f'cost.</h2>'
+        f'<p class="sc-note">{settled} of {total} {_esc(many)} never called a model.'
+        + (f' {_esc(bench["label"])} called one every time.' if every else "")
+        + f'</p><div class="sc-wf">{grid}</div>'
+        f'<div class="sc-legend"><span><i class="sc-swatch sc-wf-hit"></i>Settled with no '
+        f'model</span><span><i class="sc-swatch sc-wf-miss"></i>A model was called</span></div>'
+        f'<p class="sc-foot">{rates} settled without a model, period by period.</p></section>')
     return f'<div class="sc-pf{" sc-pf-two" if table else ""}">{table}{chart}</div>'
 
 
