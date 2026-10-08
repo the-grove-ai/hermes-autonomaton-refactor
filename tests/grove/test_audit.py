@@ -1154,3 +1154,64 @@ def test_a_benchmark_that_names_no_run_on_record_is_refused(home, monkeypatch):
 def test_no_benchmark_declared_changes_nothing(home):
     [g] = audit.economics(home)["goals"]
     assert g["benchmark"] is None
+
+
+# ── the page, answer first: verdict, proof, how it got there, the record ──
+
+
+def test_the_scorecard_sets_the_proof_before_the_record(home, monkeypatch):
+    from grove.api import fragments
+
+    _two_more_runs(home, monkeypatch)
+    [g] = audit.economics(home)["goals"]
+    assert g["in_progress"] is False and g["periods_declared"] == 1
+    html = fragments._scorecard_html(g, 1_000_000, "0")
+    order = [html.index(t) for t in (
+        "THE PROOF", "The same 3 messages, two ways", "Messages that needed a model",
+        "HOW IT GOT THERE", "THE RECORD", "Who decided, and how it went",
+        "How these figures were measured")]
+    assert order == sorted(order)
+    # The same work two ways, from the periods' own figures.
+    for text in ("MEASURED · RUN 3 AGAINST RUN 2", "Model cost", "Model calls", "Machine time",
+                 "Messages the operator reviewed", "Proposals the operator revised",
+                 "Turns that did not complete: 0 here, 1 in run 2;",
+                 '<span class="sc-down">33% lower</span>',          # 4 model calls against 6
+                 '<span class="sc-quiet">the same</span>'):          # nothing revised either way
+        assert text in html, text
+    # Each level that opens on a click says what is inside while it is closed.
+    assert html.count('<details class="sc-fold">') == 2
+    assert "No change to the standard work has been signed in this run yet." in html
+
+
+def test_a_run_with_more_to_come_says_so_far(home, monkeypatch):
+    from grove.api import fragments
+
+    _two_more_runs(home, monkeypatch)
+    shown = audit._presentation("x")
+    monkeypatch.setattr(audit, "_presentation", lambda goal: {
+        **shown, "stage_labels": ["Month 2", "Month 3"]})        # a second stage, not released
+    [g] = audit.economics(home)["goals"]
+    assert g["in_progress"] is True and g["periods_declared"] == 3
+    html = fragments._scorecard_html(g, 1_000_000, "0")
+    assert "· SO FAR: 2 OF 3 PERIODS" in html and "AGAINST RUN 2 · SO FAR" in html
+    assert "So far, rules the operator signed took 1 of 3 messages off the model." in html
+
+
+def test_payback_is_the_first_period_the_signed_changes_cover_the_price():
+    from grove.api import fragments
+
+    def g(price, signed_before):
+        return {"tickets": {"model": {"hours_per_ticket": 12.0, "loaded_rate": 100.0,
+                                      "price_per_month": price}},
+                "periods": [{"label": "Month 1 · learning", "units": 20},
+                            {"label": "Month 2 · production", "units": 40}],
+                "events": [{"kind": "signed", "before": b} for b in signed_before]}
+
+    # One change signed in month 1 is $1,200 of engineering against a $1,000 month.
+    assert fragments._payback(g(1000.0, [7])) == " · paid back in month 1"
+    # Signed only in month 2: two months of price by then, so two changes are needed.
+    assert fragments._payback(g(1000.0, [30])) == ""
+    assert fragments._payback(g(1000.0, [30, 45])) == " · paid back in month 2"
+    # No price, or no periods: no claim.
+    assert fragments._payback(g(None, [7])) == ""
+    assert fragments._payback({**g(1000.0, [7]), "periods": []}) == ""

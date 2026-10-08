@@ -641,8 +641,9 @@ def _against(periods: List[Dict[str, Any]], bench: Optional[Mapping[str, Any]]) 
             period["benchmark"] = None
             continue
         period["benchmark"] = {k: other[k] for k in (
-            "units", "model_units", "model_calls", "cost", "cost_per_unit",
-            "seconds_per_unit", "cost_source", "fully_priced")}
+            "units", "model_units", "keg_units", "model_calls", "cost", "cost_per_unit",
+            "seconds_per_unit", "cost_source", "fully_priced", "confirmed", "accepted",
+            "revised")}
 
 
 def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dict[str, Any]:
@@ -747,6 +748,11 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
                 _periods(units, shown), open_items := _open_items(log_path.stem, records))),
             "benchmark": (_against(periods, bench), bench)[1],
             "did_not_complete": _did_not_complete(records, intents),
+            # More of the run is still to come: items waiting in the queue, or
+            # a declared backlog stage that has not been released yet.
+            "in_progress": bool(open_items) or (
+                bool(periods) and len(periods) - 1 < len(shown.get("stage_labels") or [])),
+            "periods_declared": 1 + len(shown.get("stage_labels") or []),
             # Of the model-decided units, how many were routed with no
             # classifier call (their record says so), and how many there are.
             "classifier_not_called": (
