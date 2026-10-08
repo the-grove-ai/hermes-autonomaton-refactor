@@ -335,6 +335,10 @@ class Harness:
                 if self.args.new_session_each_month:
                     self.session = f"harness-s{self.args.seed}-{int(time.time())}"
                     self.note(action="new session for the month", reply=self.session)
+                    # A new session is the goal's only once the goal's start
+                    # phrase opens it; said before the release, as an operator
+                    # opening the month's work would.
+                    self.say(ws.start[0], "open the work in the new session")
                 code = self.gw.portal(f"/portal/actions/demo/{self.goal}/release")
                 self.note(action=f"release {st['stage']['label']}", reply=f"portal http {code}")
                 reply = self.say(ws.batch[0] if ws.batch else work.config.keg.request,
