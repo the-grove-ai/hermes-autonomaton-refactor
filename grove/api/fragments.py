@@ -5462,6 +5462,7 @@ def _returns_html(g, proj, scale: int, toggle: str) -> str:
         f'{toggle}</div></div>'
         f'<p class="sc-returns-head"><strong>{times:,.1f}×</strong> the dock\'s price at '
         f'{_esc(volume)}. {_esc(verdict)}</p>'
+        f'{_case_html(g, proj, scale)}'
         f'<div class="sc-returns-sum">'
         f'<div title="At this run\'s pace of {_esc(pace_text)}."><div class="sc-eyebrow">'
         f'TICKETS AVOIDED · <span class="sc-event">ESTIMATE</span></div>'
@@ -5476,8 +5477,75 @@ def _returns_html(g, proj, scale: int, toggle: str) -> str:
         f'<div class="sc-op">=</div>'
         f'<div><div class="sc-eyebrow">TOTAL · <span class="sc-event">ESTIMATE</span></div>'
         f'<div class="sc-save-figure">${total:,.0f}<span class="sc-unit"> / month</span></div>'
-        f'<div class="sc-quiet">against a dock price of ${price:,.0f} a month.</div></div>'
-        f'</div>{frontier}</section>')
+        f'<div class="sc-quiet">against a dock price of ${price:,.0f} a month.'
+        + (f' Net ${total - price:,.0f} a month.' if total > price else "")
+        + f'</div></div></div>{frontier}</section>')
+
+
+def _case_html(g, proj, scale: int) -> str:
+    """The case for the dock in three figures, side by side: engineering time
+    that was never spent (an estimate, from the goal's ticket model), model
+    cost that was never paid (measured) and the speed of settled work
+    (measured). Each says what it rests on. Speed carries no dollar figure and
+    is not in the total."""
+    tickets = g.get("tickets") or {}
+    one, many = g["item_name"]
+
+    def _card(eyebrow, figure, unit, lead, text):
+        return (f'<div class="sc-tile"><div class="sc-eyebrow">{eyebrow}</div>'
+                f'<div class="sc-figure">{_esc(figure)}'
+                + (f'<span class="sc-unit"> {_esc(unit)}</span>' if unit else "")
+                + f'</div><div class="sc-roi-lead">{_esc(lead)}</div>'
+                f'<div class="sc-note">{_esc(text)}</div></div>')
+
+    cards = ""
+    n, months = tickets.get("count") or 0, tickets.get("months") or 1
+    if tickets.get("dollars") is not None and n:
+        review = _span(tickets.get("review_seconds"))
+        cards += _card(
+            'ENGINEERING NEVER SPENT · <span class="sc-event">ESTIMATE</span>',
+            f'${tickets["dollars"]:,.0f}', f'in {months} month{"" if months == 1 else "s"}',
+            f'{tickets["hours"]:g} engineering hours replaced by {review} of expert review.',
+            f'{n} change{"" if n == 1 else "s"} to the standard work, each proposed by the '
+            f'system and signed by the operator. Engineering tickets filed: 0. '
+            f'${tickets["dollars_per_month"]:,.0f} a month at this pace.')
+    saved = (proj.get("avoided") or {}).get("cost")
+    bench = g.get("benchmark")
+    ours = (g.get("totals") or {}).get("cost")
+    whole = bool(bench and not bench["keg_units"] and bench["totals"]["cost"]
+                 and bench["units"] == len(g.get("units") or ()))
+    if whole and ours is not None:
+        theirs = bench["totals"]
+        cards += _card(
+            "MODEL COST NEVER PAID · MEASURED", _less(ours, theirs["cost"]), "model cost",
+            f'{_money(ours)} against {_money(theirs["cost"])} for the same {bench["units"]} '
+            f'{many}.',
+            f'Against run {bench["run_number"]}, where a model decided every one. '
+            f'{g["totals"]["model_calls"]:g} model calls against {theirs["model_calls"]:g}. '
+            + (f'At {scale:,} model calls a month: ${saved:,.0f} a month.'
+               if saved is not None else ""))
+    elif saved is not None and (proj.get("all_model") or {}).get("cost"):
+        every = proj["all_model"]["cost"]
+        cards += _card(
+            "MODEL COST NEVER PAID · MEASURED", f'${saved:,.0f}', "/ month",
+            f'{_less(every - saved, every)} model cost at {scale:,} model calls a month.',
+            f'Scaled from what this run\'s own model turns cost. A {one} the keg answers '
+            f'makes no model call.')
+    model, keg = g.get("model_avg") or {}, g.get("keg_avg") or {}
+    if model.get("seconds") and keg.get("seconds"):
+        machine = ""
+        if whole and bench["totals"].get("seconds"):
+            a, b = g["totals"]["seconds"], bench["totals"]["seconds"]
+            machine = (f' The same {bench["units"]} {many} took {_span(a)} of machine time '
+                       f'against {_span(b)} ({_less(a, b)}).')
+        cards += _card(
+            "SETTLED WORK IS FASTER · MEASURED", f'{model["seconds"] / keg["seconds"]:,.0f}×',
+            "faster",
+            f'{_sc_seconds(keg["seconds"])} for a settled {one}, '
+            f'{_sc_seconds(model["seconds"])} when a model decides.',
+            f'The expert meets only what is new.{machine} Time is not priced and is not in '
+            f'the total.')
+    return f'<div class="sc-tiles sc-roi">{cards}</div>' if cards else ""
 
 
 def _chart_title(g) -> str:
@@ -5954,11 +6022,17 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     own_toggle = ("" if returns else
                   f'<div class="sc-toggle" role="group" aria-label="{_esc(many.capitalize())} '
                   f'per month">{toggles}</div>')
-    volume = (
-        f'<div class="sc-econ" id="sc-volume-{key}">{returns}{_tickets_html(g)}'
+    detail = (
+        f'{_tickets_html(g)}'
         f'<section class="sc-panel" aria-labelledby="sc-vol-{key}">'
         f'<div class="sc-panel-head"><h2 id="sc-vol-{key}">If your agents make {scale:,} '
-        f'model calls a month today</h2>{own_toggle}</div>{body}{table}</section></div>')
+        f'model calls a month today</h2>{own_toggle}</div>{body}{table}</section>')
+    if returns:
+        # The case is made above; how each figure is built is one click away.
+        detail = (f'<details class="sc-older sc-roi-working"><summary>How each figure is '
+                  f'built: the changes signed, and the model cost at volume</summary>'
+                  f'{detail}</details>')
+    volume = f'<div class="sc-econ" id="sc-volume-{key}">{returns}{detail}</div>'
 
     # 6. Footer — the methodology caveats, unchanged in substance.
     footer = (
