@@ -532,6 +532,12 @@ if AIOHTTP_AVAILABLE:
         response = await handler(request)
         for k, v in _SECURITY_HEADERS.items():
             response.headers.setdefault(k, v)
+        if request.path.startswith("/portal/static/"):
+            # The portal's stylesheet and scripts change with a deploy. Sent
+            # with no caching rule, a browser keeps showing its old copy: new
+            # markup, old styles (seen 2026-10-08). "no-cache" keeps the copy
+            # but checks it against the ETag on every load.
+            response.headers.setdefault("Cache-Control", "no-cache")
         return response
 else:
     security_headers_middleware = None  # type: ignore[assignment]
