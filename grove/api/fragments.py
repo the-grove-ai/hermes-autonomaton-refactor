@@ -5500,9 +5500,10 @@ def _roi_rows_html(g, proj, scale: int) -> str:
     """The three things behind the return, a row each: what it is, the figure
     that matters in green, and what it rests on. Engineering avoided is the
     run's own total (the sum below turns it into a month at the run's pace).
-    Model cost is set against the goal's benchmark run when one is declared
-    and covers the same items; otherwise against the scaled all-model figure.
-    Settled work's speed carries no dollar figure and is not in the return."""
+    Model cost is a month at the selected volume, the same figures the sum
+    uses; the measured comparison with the goal's benchmark run is in "How
+    this is built". Settled work's speed carries no dollar figure and is not
+    in the return."""
     tickets = g.get("tickets") or {}
     one, many = g["item_name"]
 
@@ -5522,23 +5523,17 @@ def _roi_rows_html(g, proj, scale: int) -> str:
     if tickets.get("dollars") is not None and n:
         rows += _row("Engineering avoided", f'${tickets["dollars"]:,.0f}',
                      f'{tickets["hours"]:g} hours', f'{months} month{"" if months == 1 else "s"}')
+    # At the selected volume, in the same dollars as the sum below: what a
+    # month of these calls costs with every one on a model, and with the keg
+    # serving. (The run's own cost is cents; cents make no case at a glance.)
     saved = (proj.get("avoided") or {}).get("cost")
-    bench = g.get("benchmark")
-    ours = (g.get("totals") or {}).get("cost")
-    whole = bool(bench and not bench["keg_units"] and bench["totals"]["cost"]
-                 and bench["units"] == len(g.get("units") or ()))
     every = (proj.get("all_model") or {}).get("cost")
-    if whole and ours is not None:
-        theirs = bench["totals"]["cost"]
-        rows += _row("Model cost", f'{int((1 - ours / theirs) * 100 + 0.5)}% lower',
-                     f'{_money(ours)} vs {_money(theirs)}', bar=ours / theirs,
-                     under=f'This run against run {bench["run_number"]}, the same '
-                           f'{bench["units"]} {many} with a model deciding every one')
-    elif saved is not None and every:
+    if saved is not None and every:
         rows += _row("Model cost", f'{int(saved / every * 100 + 0.5)}% lower',
                      f'${every - saved:,.0f} vs ${every:,.0f} a month',
                      bar=(every - saved) / every,
-                     under=f'Scaled from this run to {scale:,} model calls a month')
+                     under=f'With the keg serving against every {one} on a model, scaled '
+                           f'from this run to {scale:,} model calls a month')
     model, keg = g.get("model_avg") or {}, g.get("keg_avg") or {}
     if model.get("seconds") and keg.get("seconds"):
         rows += _row("Settled work", f'{model["seconds"] / keg["seconds"]:,.0f}×',
