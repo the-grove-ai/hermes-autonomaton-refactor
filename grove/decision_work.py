@@ -353,6 +353,10 @@ class DecisionWorkConfig:
     # run like any other (the same items, worked another way), named here by
     # its number; nothing about it is stored anywhere else. None: no comparison.
     benchmark: Optional[Tuple[int, str]] = None
+    # What this goal calls the person who rules on its work ("controller",
+    # "reviewer"). Used where a page speaks to that person's business; the
+    # records and the engine say "operator" whatever is declared here.
+    operator_called: str = "operator"
 
     @property
     def isolated(self) -> bool:
@@ -616,8 +620,17 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         adaptation=adaptation,
         ticket_model=_load_ticket_model(raw.get("ticket_model"), str(goal.id)),
         benchmark=_load_benchmark(raw.get("benchmark"), str(goal.id)),
+        operator_called=_operator_called(raw.get("operator_called"), str(goal.id)),
     )
     return _with_learned(cfg)
+
+
+def _operator_called(raw: Any, goal_id: str) -> str:
+    if raw is None:
+        return "operator"
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError(f"goal {goal_id!r}: operator_called must be a word or two")
+    return raw.strip()
 
 
 def _load_benchmark(raw: Any, goal_id: str) -> Optional[Tuple[int, str]]:

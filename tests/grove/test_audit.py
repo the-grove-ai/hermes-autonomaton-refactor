@@ -1215,3 +1215,63 @@ def test_payback_is_the_first_period_the_signed_changes_cover_the_price():
     # No price, or no periods: no claim.
     assert fragments._payback(g(None, [7])) == ""
     assert fragments._payback({**g(1000.0, [7]), "periods": []}) == ""
+
+
+# ── a declared brand: whose portal this is ────────────────────────────
+
+
+def test_no_brand_file_means_no_brand(tmp_path, monkeypatch):
+    from grove.api import portal_nav
+
+    monkeypatch.setattr(portal_nav, "_operator_brand_path", lambda: tmp_path / "none.yaml")
+    assert portal_nav.load_brand() == {} and portal_nav.render_brand({}) == ""
+
+
+def test_a_brand_is_declared_in_a_file_and_never_guessed(tmp_path):
+    from grove.api import portal_nav
+
+    path = tmp_path / "portal.brand.yaml"
+    path.write_text("name: Acme\n")
+    assert portal_nav.load_brand(path) == {
+        "name": "Acme", "product": "Acme", "wordmark": "ACME", "wordmark_font": "",
+        "font_stylesheet": ""}
+    path.write_text("name: Acme\nproduct: Acme Runtime\nwordmark: ACME\n"
+                    "wordmark_font: Some Face\nfont_stylesheet: https://fonts.example/x.css\n")
+    brand = portal_nav.load_brand(path)
+    assert (brand["product"], brand["wordmark_font"]) == ("Acme Runtime", "Some Face")
+    mark = portal_nav.render_brand(brand)
+    assert '<li class="nav-brand" style="font-family: Some Face,' in mark and ">ACME</li>" in mark
+    assert '<link rel="stylesheet" href="https://fonts.example/x.css">' in mark
+    # The top bar's name is swapped to the product, beside the nav.
+    assert 'id="portal-brand" hx-swap-oob="true">Acme Runtime <span' in mark
+    for bad in ("product: Acme Runtime\n", "name: Acme\ncolour: red\n", "name: 7\n",
+                "name: Acme\nfont_stylesheet: http://fonts.example/x.css\n", "- Acme\n"):
+        path.write_text(bad)
+        with pytest.raises(ValueError, match="portal brand"):
+            portal_nav.load_brand(path)
+
+
+def test_a_branded_scorecard_speaks_in_the_brand_above_the_mechanism(home, monkeypatch):
+    from grove.api import fragments
+
+    _two_more_runs(home, monkeypatch)
+    shown = audit._presentation("x")
+    monkeypatch.setattr(audit, "_presentation", lambda goal: {
+        **shown, "operator_called": "reviewer"})
+    [g] = audit.economics(home)["goals"]
+    assert g["operator_called"] == "reviewer"
+    plain = fragments._scorecard_html(g, 1_000_000, "0")
+    assert "SCORECARD · MESSAGE TAGGING" in plain and "With the keg" in plain
+    monkeypatch.setattr(fragments, "_brand", lambda: {
+        "name": "Acme", "product": "Acme Runtime", "wordmark": "ACME",
+        "wordmark_font": "", "font_stylesheet": ""})
+    html = fragments._scorecard_html(g, 1_000_000, "0")
+    for text in ("ACME RUNTIME · MESSAGE TAGGING · RUN 3",
+                 "With Acme, rules the reviewer signed took 1 of 3 messages off the model.",
+                 "The same 3 messages: all model vs. Acme", ">With Acme<",
+                 "Messages the reviewer reviewed", "Proposals the reviewer revised"):
+        assert text in html, text
+    # Above the fold the mechanism's word is gone; below it, it stays.
+    top = html[:html.index("HOW IT GOT THERE")]
+    assert "keg" not in top.lower()
+    assert "Decided by the keg" in html[html.index("HOW IT GOT THERE"):]

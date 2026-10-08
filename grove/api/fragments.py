@@ -5300,10 +5300,10 @@ def _tickets_html(g) -> str:
                    + ("".join(f"{text}. " for text in grew))
                    + "A phrase alias, a revocation and a draft sent back are not counted.")
     filed = _tile("ENGINEERING TICKETS FILED", "0",
-                  _esc("The 1 change was proposed by Mylo and signed by the operator. It "
-                       "needed no code change." if n == 1 else
-                       f"Each of the {n} changes was proposed by Mylo and signed by the "
-                       f"operator. None needed a code change."),
+                  _esc(f"The 1 change was proposed by {_proposer()} and signed by the "
+                       "operator. It needed no code change." if n == 1 else
+                       f"Each of the {n} changes was proposed by {_proposer()} and signed "
+                       f"by the operator. None needed a code change."),
                   "Measured from the ledger: every change to this goal's standard work in this "
                   "run is a signed proposal. No ticket system is connected, so this is the "
                   "count of changes that went to engineering through this system: none.")
@@ -5412,7 +5412,21 @@ def _benchmark_foot(g) -> str:
             f'{bench["units"]} {_esc(many)}, {how}, measured the same way.{_esc(whole)}')
 
 
-def _returns_html(g, proj, scale: int, toggle: str, detail: str = "") -> str:
+def _brand() -> Dict[str, str]:
+    """The operator's declared brand, or {} (none declared, or the file
+    cannot be read: said loudly in the log and in the nav, and the page still
+    draws, unbranded)."""
+    from grove.api.portal_nav import load_brand
+
+    try:
+        return load_brand()
+    except (ValueError, OSError) as exc:
+        logger.error("[scorecard] brand file unreadable: %r", exc)
+        return {}
+
+
+def _returns_html(g, proj, scale: int, toggle: str, detail: str = "",
+                  brand: Optional[Mapping[str, str]] = None) -> str:
     """What one dock returns in a month, at the selected volume, said once:
     the return and the ROI, then the three things behind them in a row each
     (engineering avoided, model cost, the speed of settled work), then the
@@ -5472,8 +5486,11 @@ def _returns_html(g, proj, scale: int, toggle: str, detail: str = "") -> str:
         f'{_esc(volume)}, scaled from this run.</p>{frontier}{detail}</details>')
     return (
         f'<section class="sc-panel sc-returns" aria-label="What one dock returns in a month">'
-        f'<div class="sc-panel-head"><div class="sc-eyebrow"><span class="sc-event">ESTIMATE'
-        f'</span> · ONE DOCK, ONE MONTH</div>'
+        f'<div class="sc-panel-head"><div>'
+        + (f'<h2 class="sc-roi-title">{_esc(brand["product"])} ROI analysis</h2>'
+           if brand else "")
+        + f'<div class="sc-eyebrow"><span class="sc-event">ESTIMATE'
+        f'</span> · ONE DOCK, ONE MONTH</div></div>'
         f'<div class="sc-toggle" role="group" aria-label="{_esc(many.capitalize())} per month">'
         f'{toggle}</div></div>'
         f'<div class="sc-roi-hero"><div><div class="sc-eyebrow">RETURN</div>'
@@ -5495,6 +5512,13 @@ def _returns_html(g, proj, scale: int, toggle: str, detail: str = "") -> str:
         f'<div><div class="sc-eyebrow">RETURN · <span class="sc-event">ESTIMATE</span></div>'
         f'<div class="sc-fact-figure">${total:,.0f}<span class="sc-unit"> / month</span></div>'
         f'</div></div>{built}</section>')
+
+
+def _proposer() -> str:
+    """Who the scorecard says proposes a change: the assistant by its own
+    name, or "the system" on a portal that carries a brand (one name on the
+    page; the assistant keeps its name in chat)."""
+    return "the system" if _brand() else "Mylo"
 
 
 def _millions(n: int) -> str:
@@ -5548,7 +5572,7 @@ def _fold(title: str, summary: str, inner: str) -> str:
             f'<div class="sc-fold-body">{inner}</div></details>')
 
 
-def _how_summary(g) -> str:
+def _how_summary(g, branded: bool = False) -> str:
     """The changes signed in the run, in a sentence: how many, how long the
     operator spent signing them, and (when the goal declares a ticket model)
     the engineering hours they stand in place of."""
@@ -5557,7 +5581,8 @@ def _how_summary(g) -> str:
     if not n:
         return "No change to the standard work has been signed in this run yet."
     text = (f'{n} change{"" if n == 1 else "s"} to the standard work, each proposed by the '
-            f'system and signed by the operator: {_span(tickets.get("review_seconds"))} of '
+            f'system and signed by the {g.get("operator_called") or "operator"}: '
+            f'{_span(tickets.get("review_seconds"))} of '
             f'expert review')
     if tickets.get("hours") is not None:
         text += f' in place of {tickets["hours"]:g} engineering hours (estimate)'
@@ -5608,7 +5633,7 @@ def _changes_html(g) -> str:
             f'</div>{rows}</section>')
 
 
-def _proof_html(g) -> str:
+def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
     """The run against the goal's declared benchmark run, both measured: the
     same items worked two ways, over the periods this run has completed, and
     beside it the share of each period's items that needed a model. With no
@@ -5620,6 +5645,10 @@ def _proof_html(g) -> str:
     bench = g.get("benchmark") or {}
     matched = [p for p in periods if p.get("benchmark")]
     so_far = " · SO FAR" if g.get("in_progress") else ""
+    # The top of the page speaks in the brand and in the goal's own word for
+    # its expert; "keg" is the mechanism and belongs to the levels below.
+    ours_label = f'With {brand["name"]}' if brand else "With the keg"
+    who = g.get("operator_called") or "operator"
     table = ""
     if matched:
         n = sum(p["units"] for p in matched)
@@ -5649,27 +5678,30 @@ def _proof_html(g) -> str:
             return (f'<div class="sc-pf-row"><div>{_esc(label)}'
                     + (f'<div class="sc-quiet">{_esc(note)}</div>' if note else "")
                     + f'</div><div>{_line(bench["label"], theirs, "sc-pf-them")}'
-                    f'{_line("With the keg", ours, "sc-pf-us")}</div>'
+                    f'{_line(ours_label, ours, "sc-pf-us")}</div>'
                     f'<div class="sc-pf-change">{change}</div></div>')
 
         whole = lambda v: f"{v:g}"
         table = (
             f'<section class="sc-panel"><div class="sc-eyebrow">MEASURED · RUN '
             f'{_esc(g["run_number"])} AGAINST RUN {bench["run_number"]}{so_far}</div>'
-            f'<h2>The same {n} {_esc(many)}, two ways</h2>'
+            + (f'<h2>The same {n} {_esc(many)}: {_esc(bench["label"].lower())} vs. '
+               f'{_esc(brand["name"])}</h2>' if brand else
+               f'<h2>The same {n} {_esc(many)}, two ways</h2>')
             + _row("Model cost", _sum(lambda p: p["cost"], lambda b: b["cost"]), _money)
             + _row("Model calls", _sum(lambda p: p["model_calls"], lambda b: b["model_calls"]),
                    whole)
             + _row("Machine time",
                    _sum(lambda p: (p["seconds_per_unit"] or 0) * p["units"],
                         lambda b: (b["seconds_per_unit"] or 0) * b["units"]), _span)
-            + _row(f'{many.capitalize()} the operator reviewed',
+            + _row(f'{many.capitalize()} the {who} reviewed',
                    _sum(lambda p: p["units"] - p["accepted"],
                         lambda b: b["units"] - b["accepted"]), whole,
-                   note="the rest were decided by rules the operator signed")
-            + _row("Proposals the operator revised",
+                   note=f"the rest were decided by rules the {who} signed")
+            + _row(f"Proposals the {who} revised",
                    _sum(lambda p: p["revised"], lambda b: b["revised"]), whole,
-                   note="a revision of a keg's answer halts the keg until a fix is signed")
+                   note=("a revision halts the rule until a fix is signed" if brand else
+                         "a revision of a keg's answer halts the keg until a fix is signed"))
             + f'<p class="sc-foot">Both runs worked the same {_esc(many)} with the same '
             f'models. Turns that did not complete: {g.get("did_not_complete") or 0} here, '
             f'{bench.get("did_not_complete") or 0} in run {bench["run_number"]}; a stalled '
@@ -5692,7 +5724,7 @@ def _proof_html(g) -> str:
             f'<div class="sc-quiet">{p["model_units"]} of {p["units"]}</div></div>')
     legend = ((f'<span><i class="sc-swatch sc-pf-them"></i>{_esc(bench["label"])}</span>'
                if matched else "")
-              + '<span><i class="sc-swatch sc-pf-us"></i>With the keg</span>')
+              + f'<span><i class="sc-swatch sc-pf-us"></i>{_esc(ours_label)}</span>')
     chart = (
         f'<section class="sc-panel sc-pf-chart"><div class="sc-eyebrow">MEASURED{so_far}</div>'
         f'<h2>{_esc(many.capitalize())} that needed a model</h2>'
@@ -6234,7 +6266,9 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         f'<section class="sc-panel" aria-labelledby="sc-vol-{key}">'
         f'<div class="sc-panel-head"><h2 id="sc-vol-{key}">If your agents make {scale:,} '
         f'model calls a month today</h2>OWN_TOGGLE</div>{body}{table}</section>')
-    returns = _returns_html(g, proj, scale, toggles, detail.replace("OWN_TOGGLE", ""))
+    brand = _brand()
+    who = g.get("operator_called") or "operator"
+    returns = _returns_html(g, proj, scale, toggles, detail.replace("OWN_TOGGLE", ""), brand)
     if returns:
         detail = ""
     else:
@@ -6265,19 +6299,21 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     so_far = bool(g.get("in_progress"))
     months = len(g.get("periods") or []) or 1
     eyebrow = (
-        f'SCORECARD · {_esc(str(g["title"]).upper())} · RUN {_esc(g["run_number"])} · {total} '
+        f'{_esc(brand["product"].upper()) if brand else "SCORECARD"} · '
+        f'{_esc(str(g["title"]).upper())} · RUN {_esc(g["run_number"])} · {total} '
         f'{_esc(many.upper())}'
         + (f' · SO FAR: {months} OF {g.get("periods_declared") or months} PERIODS'
            if so_far and g.get("periods") else ""))
     if figures:
-        lead = (f'One dock returns ${figures["total"]:,.0f} a month at '
-                f'{_millions(scale)} model calls.')
+        lead = (f'{brand["name"] if brand else "One dock"} returns '
+                f'${figures["total"]:,.0f} a month at {_millions(scale)} model calls.')
     elif g.get("headline") and g.get("periods"):
         lead = g["headline"]["lead"]
     else:
         lead = f'{keg_n} of {total} {many} decided with no model. {traceable}'
-    took = (f'{"So far, r" if so_far else "R"}ules the operator signed took {keg_n} of '
-            f'{total} {many} off the model.' if keg_n else
+    opener = ("So far, " if so_far else "") + (f'with {brand["name"]}, ' if brand else "")
+    took = (f'{opener[:1].upper()}{opener[1:]}{"r" if opener else "R"}ules the {who} signed '
+            f'took {keg_n} of {total} {many} off the model.' if keg_n else
             f'No rule has been signed yet, so a model decided every {one}.')
     if not figures and not (g.get("headline") and g.get("periods")):
         took = loop + under          # a run with no periods and no return to state
@@ -6290,7 +6326,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     else:
         verdict = top
         standalone = f'<div class="sc-econ" id="sc-volume-{key}">{detail}</div>'
-    proof = _proof_html(g)
+    proof = _proof_html(g, brand)
     if proof:
         proof = f'<div class="sc-level">THE PROOF</div>{proof}'
     # What the page opened with before: kept, as the record's own account.
@@ -6304,7 +6340,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                  f'with no model. <span class="sc-event">{_esc(traceable)}</span></h3>'
                  f'<p class="sc-note">{_esc(loop + under)}</p></section>')
     how = _fold(
-        "How it got there", _how_summary(g),
+        "How it got there", _how_summary(g, bool(brand)),
         f'{_changes_html(g)}{chart}{tiles}{_tickets_html(g)}')
     record = _fold(
         "The record",

@@ -65,6 +65,72 @@ def _check_item(item: Any, where: str, flags: Mapping[str, Any]) -> None:
         raise ValueError(f"{where} ({item['label']}) needs a target that begins 'fragments/'")
 
 
+def _operator_brand_path() -> Path:
+    from hermes_constants import get_hermes_home
+    return Path(get_hermes_home()) / "portal.brand.yaml"
+
+
+_BRAND_KEYS = frozenset({"name", "product", "wordmark", "wordmark_font", "font_stylesheet"})
+
+
+def load_brand(path: Optional[Path] = None) -> Dict[str, str]:
+    """Whose portal this is, when the operator declares it in
+    ``~/.grove/portal.brand.yaml``. Nothing is shipped: with no file the
+    portal carries no brand and every page reads as it always has.
+
+        name: Acme                  # the company: "Acme returns ...", "With Acme"
+        product: Acme Runtime       # the scorecard's eyebrow and its analysis heading
+        wordmark: ACME              # the mark at the top of the left nav
+        wordmark_font: Space Grotesk            # optional: the mark's typeface
+        font_stylesheet: https://fonts.example/css?family=...   # optional: where to load it
+
+    Only ``name`` is required. A file that cannot be read as a brand raises
+    ValueError naming what is wrong; a brand is never guessed."""
+    import yaml
+
+    if path is None:
+        path = _operator_brand_path()
+        if not path.exists():
+            return {}
+    data = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    if not isinstance(data, Mapping):
+        raise ValueError(f"portal brand {path} must be a mapping")
+    unknown = sorted(set(data) - _BRAND_KEYS)
+    if unknown:
+        raise ValueError(f"portal brand {path} has unknown keys {unknown}")
+    for key, value in data.items():
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"portal brand {path}: {key} must be text")
+    if "name" not in data:
+        raise ValueError(f"portal brand {path} needs a name")
+    sheet = data.get("font_stylesheet")
+    if sheet and not sheet.startswith("https://"):
+        raise ValueError(f"portal brand {path}: font_stylesheet must be an https:// address")
+    name = data["name"].strip()
+    return {"name": name, "product": data.get("product", name).strip(),
+            "wordmark": data.get("wordmark", name.upper()).strip(),
+            "wordmark_font": data.get("wordmark_font", "").strip(),
+            "font_stylesheet": (sheet or "").strip()}
+
+
+def render_brand(brand: Mapping[str, str]) -> str:
+    """The brand's mark as the nav's first entry, and the top bar's name set
+    to the product (swapped in beside the nav, out of band). Empty when no
+    brand is declared."""
+    from grove.api.fragments import _esc
+
+    if not brand:
+        return ""
+    font = brand.get("wordmark_font")
+    style = f' style="font-family: {_esc(font)}, var(--font-sans, sans-serif)"' if font else ""
+    sheet = (f'<link rel="stylesheet" href="{_esc(brand["font_stylesheet"])}">'
+             if brand.get("font_stylesheet") else "")
+    return (f'<li class="nav-brand"{style} aria-label="{_esc(brand["name"])}">{sheet}'
+            f'{_esc(brand["wordmark"])}</li>'
+            f'<div class="brand" id="portal-brand" hx-swap-oob="true">{_esc(brand["product"])}'
+            f' <span class="brand-sub">Operator Portal</span></div>')
+
+
 def load_nav(path: Optional[Path] = None) -> Dict[str, Any]:
     """The declared nav. The operator's file wins whole when it exists. A file
     that cannot be read as a nav raises ValueError naming what is wrong — a
@@ -225,7 +291,13 @@ async def handle_main_nav(request: web.Request) -> web.Response:
         demo = bool(_demo_tokenless_approve())
     except Exception:  # noqa: BLE001 — unknown means not in demo mode
         demo = False
-    return _html_fragment(render_nav(
+    try:
+        mark = render_brand(load_brand())
+    except (ValueError, OSError) as exc:
+        logger.error("[portal.nav] brand file unreadable: %r", exc)
+        mark = (f'<li class="nav-entry lvl0"><span class="meta error">Brand file unreadable: '
+                f'{_esc(str(exc))}</span></li>')
+    return _html_fragment(mark + render_nav(
         nav, goals=goals_with_work(), skills=skills, live=counts(), demo=demo))
 
 

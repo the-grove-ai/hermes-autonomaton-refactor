@@ -1652,3 +1652,16 @@ def test_a_goal_may_name_one_of_its_own_runs_as_the_benchmark(tmp_path):
         goal.extra["decision_work"]["benchmark"] = bad
         with pytest.raises(ValueError, match="benchmark"):
             dw.load_config(goal)
+
+
+def test_a_goal_may_say_what_it_calls_its_expert(tmp_path):
+    goal = _goal(tmp_path)
+    assert dw.load_config(goal).operator_called == "operator"
+    goal.extra["decision_work"]["operator_called"] = "controller"
+    cfg = dw.load_config(goal)
+    assert cfg.operator_called == "controller"
+    assert dw.session_rule_digest(cfg) == dw.session_rule_digest(dw.load_config(_goal(tmp_path)))
+    for bad in ("", 7, ["controller"]):
+        goal.extra["decision_work"]["operator_called"] = bad
+        with pytest.raises(ValueError, match="operator_called"):
+            dw.load_config(goal)

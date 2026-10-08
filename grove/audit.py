@@ -748,6 +748,7 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
                 _periods(units, shown), open_items := _open_items(log_path.stem, records))),
             "benchmark": (_against(periods, bench), bench)[1],
             "did_not_complete": _did_not_complete(records, intents),
+            "operator_called": shown.get("operator_called") or "operator",
             # More of the run is still to come: items waiting in the queue, or
             # a declared backlog stage that has not been released yet.
             "in_progress": bool(open_items) or (
@@ -1399,6 +1400,7 @@ def _presentation(goal: str) -> Dict[str, Any]:
         "batch_label": cfg.work_session.batch_label,
         "ticket_model": cfg.ticket_model,
         "benchmark": cfg.benchmark,
+        "operator_called": cfg.operator_called,
         # One label per backlog stage, in release order: the run's later periods.
         "stage_labels": [label for _folder, label in cfg.backlog_stages],
     }
