@@ -297,6 +297,10 @@ class Harness:
                 self.note(action=f"month {months_done} complete", reply=reply[:200])
                 if self.args.checkpoint and months_done == self.args.months and not st["held"]:
                     self.save_checkpoint(self.args.checkpoint)
+                for part in filter(None, self.args.checkpoint_at.split(",")):
+                    month, _, name = part.partition(":")
+                    if int(month) == months_done and not st["held"]:
+                        self.save_checkpoint(name)
                 if months_done >= self.args.months or st["stage"] is None:
                     break
                 code = self.gw.portal(f"/portal/actions/demo/{self.goal}/release")
@@ -358,6 +362,8 @@ def main(argv=None) -> int:
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--months", type=int, default=3, help="stop after this many months")
     parser.add_argument("--checkpoint", default="", help="save this checkpoint when --months is reached")
+    parser.add_argument("--checkpoint-at", default="",
+                        help="save checkpoints on the way, e.g. 2:before-month-3,3:all-done")
     parser.add_argument("--no-earn-phrase", dest="earn_phrase", action="store_false")
     parser.add_argument("--next-phrase", choices=["start", "request"], default="request")
     parser.add_argument("--max-turns", type=int, default=400)
