@@ -1137,7 +1137,7 @@ def test_the_goal_page_shows_a_rule_forming_and_proposes_nothing(env, monkeypatc
         "handback": {"kind": "no_rule", "key": "channel", "value": "social"},
         "call_ms": [9200, 3100]}) == [
         "T1 gave no answer inside the time budget; retried one tier up.",
-        "The keg handed it back: no rule for channel ‘social’.",
+        "Not compiled: nothing in the keg for channel ‘social’.",
         "Model calls: 9.2 s + 3.1 s."]
     # A call stopped at the budget is on the turn's own line, either way it ended.
     over = {"call": 2, "seconds": 30.3, "budget": 30.0}

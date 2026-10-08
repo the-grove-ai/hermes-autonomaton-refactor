@@ -5072,7 +5072,7 @@ def _sc_unit_detail(u, one: str) -> str:
         if u["halted_keg"]:
             verdict += " · andon raised · keg halted"
     elif u.get("accepted"):
-        verdict = "decided by the keg, not reviewed"
+        verdict = "settled from the keg, not reviewed"
     elif u["decision"]:
         verdict = "operator confirmed"
     else:
@@ -5200,7 +5200,7 @@ def _rate_row_html(g) -> str:
         against = (
             f'<div class="sc-rate-against"><span class="sc-eyebrow">AGAINST ALL-MODEL · PER '
             f'{RATE_PER:,} {_esc(many.upper())}</span><span>{_esc(_rate(batch["baseline_rate"]))} '
-            f'if a model decided every one · {_esc(_rate(b))} measured with the keg</span></div>')
+            f'if every one ran on a model · {_esc(_rate(b))} measured with the keg</span></div>')
     against += _benchmark_line(g, batch)
     return (
         f'<section class="sc-panel sc-rate"><div class="sc-eyebrow">MODEL COST · PER '
@@ -5292,11 +5292,11 @@ def _tickets_html(g) -> str:
     for v in sorted(g.get("versions") or [], key=lambda v: v.get("version") or 0):
         if before is not None and (v.get("decides") or 0) - before >= 2:
             grew.append(f"v{v['version']} is one signature though it adds "
-                        f"{(v.get('decides') or 0) - before} rules")
+                        f"{(v.get('decides') or 0) - before} cases")
         before = v.get("decides") or 0
     signed = _tile("CHANGES SIGNED", str(n), _esc(f"{names}. {kinds}."),
                    "Counted from the Kaizen ledger: keg versions the operator signed in the "
-                   "portal in this run, one per signature, not one per rule. "
+                   "portal in this run, one per signature, not one per case. "
                    + ("".join(f"{text}. " for text in grew))
                    + "A phrase alias, a revocation and a draft sent back are not counted.")
     filed = _tile("ENGINEERING TICKETS FILED", "0",
@@ -5304,7 +5304,7 @@ def _tickets_html(g) -> str:
                        "operator. It needed no code change." if n == 1 else
                        f"Each of the {n} changes was proposed by {_proposer()} and signed "
                        f"by the operator. None needed a code change."),
-                  "Measured from the ledger: every change to this goal's standard work in this "
+                  "Measured from the ledger: every change to this goal's keg in this "
                   "run is a signed proposal. No ticket system is connected, so this is the "
                   "count of changes that went to engineering through this system: none.")
     lines = []
@@ -5384,7 +5384,7 @@ def _benchmark_opening(g) -> str:
         return ""
     one, many = g["item_name"]
     ours, theirs = g["totals"], bench["totals"]
-    return (f'<p>The same {bench["units"]} {_esc(many)} with every one decided by a model '
+    return (f'<p>The same {bench["units"]} {_esc(many)} with every one run on a model '
             f'(run {bench["run_number"]}, measured): {_money(theirs["cost"])} in model cost '
             f'and {theirs["model_calls"]:g} model calls. This run: {_money(ours["cost"])} and '
             f'{ours["model_calls"]:g}. '
@@ -5406,8 +5406,8 @@ def _benchmark_foot(g) -> str:
         whole = (f' Whole run: {_money(ours["cost"])} here against {_money(theirs["cost"])} '
                  f'({_less(ours["cost"], theirs["cost"])}); '
                  f'{ours["model_calls"]:g} model calls against {theirs["model_calls"]:g}.')
-    how = ("every one decided by a model" if not bench["keg_units"]
-           else f'{bench["model_units"]} decided by a model, {bench["keg_units"]} by a keg')
+    how = ("every one run on a model" if not bench["keg_units"]
+           else f'{bench["model_units"]} run on a model, {bench["keg_units"]} by a keg')
     return (f' {_esc(bench["label"])}: run {bench["run_number"]} of this goal, '
             f'{bench["units"]} {_esc(many)}, {how}, measured the same way.{_esc(whole)}')
 
@@ -5586,8 +5586,8 @@ def _how_summary(g, branded: bool = False) -> str:
     tickets = g.get("tickets") or {}
     n = tickets.get("count") or 0
     if not n:
-        return "No change to the standard work has been signed in this run yet."
-    text = (f'{n} change{"" if n == 1 else "s"} to the standard work, each proposed by the '
+        return "No change has been signed in this run yet."
+    text = (f'{n} change{"" if n == 1 else "s"} compiled into the keg, each proposed by the '
             f'system and signed by the {g.get("operator_called") or "operator"}: '
             f'{_span(tickets.get("review_seconds"))} of '
             f'expert review')
@@ -5704,10 +5704,10 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
             + _row(f'{many.capitalize()} the {who} reviewed',
                    _sum(lambda p: p["units"] - p["accepted"],
                         lambda b: b["units"] - b["accepted"]), whole,
-                   note=f"the rest were decided by rules the {who} signed")
+                   note=f"the rest settled from changes the {who} signed")
             + _row(f"Proposals the {who} revised",
                    _sum(lambda p: p["revised"], lambda b: b["revised"]), whole,
-                   note=("a revision halts the rule until a fix is signed" if brand else
+                   note=("a revision stops it serving until a fix is signed" if brand else
                          "a revision of a keg's answer halts the keg until a fix is signed"))
             + f'<p class="sc-foot">Both runs worked the same {_esc(many)} with the same '
             f'models. Turns that did not complete: {g.get("did_not_complete") or 0} here, '
@@ -5728,7 +5728,7 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
         cells = "".join(
             f'<i class="{"sc-wf-hit" if u["keg"] else "sc-wf-miss"}" title="'
             + _esc(f'#{u["order"]}' + (f' · {u["label"]}' if u.get("label") else "")
-                   + (f' · settled by rule, v{u["keg_version"]}: no model' if u["keg"]
+                   + (f' · settled from compiled code, v{u["keg_version"]}: no model' if u["keg"]
                       else " · a model was called"))
             + '"></i>' for u in mine)
         grid += (f'<div class="sc-wf-label">{_esc(str(p["label"]).split(" · ")[0])}</div>'
@@ -5817,15 +5817,15 @@ def _chart_title(g) -> str:
     signed = sorted(e["before"] for e in g["events"]
                     if e.get("kind") == "signed" and e.get("before"))
     if not signed or not g["keg_units"]:
-        return f"A model decided every {one}: no rule has been signed yet"
+        return f"A model ran every {one}: nothing has been signed yet"
     after = [u for u in units if u["order"] >= signed[0]]
     back = sum(1 for u in after if not u["keg"])
     key = (g.get("why_model") or {}).get("key")
     why = g.get("why_model") or {}
-    reach = (f"new {key}s and cases the rule hands back"
+    reach = (f"new {key}s and cases kept on a model"
              if key and why.get("other", 1) == 0 and (why.get("new") or why.get("judgment"))
-             else "what the rule does not cover")
-    return (f"A model decided each {one} until the rule was signed at {one} {signed[0]}. "
+             else "what the keg does not serve")
+    return (f"A model ran every {one} until {one} {signed[0]}. "
             f"Then the keg decided {sum(1 for u in after if u['keg'])} of {len(after)}; "
             f"a model returned {back} time{'' if back == 1 else 's'}, for {reach}")
 
@@ -5845,8 +5845,9 @@ def _opening(g, chain, one: str, many: str) -> str:
     if versions:
         key = (g.get("why_model") or {}).get("key")
         parts.append(
-            f"The operator signed keg v{versions[0]['version']}, a rule for known "
-            f"{key + 's' if key else many}; covered {many} stopped calling a model.")
+            f"The {g.get('operator_called') or 'operator'} signed keg v{versions[0]['version']}, "
+            f"compiling the known {key + 's' if key else many}; those {many} stopped "
+            f"calling a model.")
     if chain is not None and chain["result"] == "broken":
         n = len(chain["problems"])
         parts.append(f"The audit check found {n} problem{'' if n == 1 else 's'}; see below.")
@@ -5890,7 +5891,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         loop = (f"The operator confirmed the first decisions. Mylo proposed a keg, the "
                 f"operator signed it, and covered {many} stopped calling a model.")
     else:
-        loop = (f"No keg has been signed in this run yet, so every {one} went to a model.")
+        loop = (f"No keg has been signed in this run yet, so every {one} ran on a model.")
     under = (f" Under keg v{cov['version']}, {cov['covered']} of these {cov['of']} would "
              f"have run with no model at all." if cov["keg"] else "")
     header = (
@@ -5978,8 +5979,8 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         f'</h2><div class="sc-sub">Seconds to decide each {_esc(one)}, in order. Hover or '
         f'tab to a bar for its record.</div></div>'
         f'<div class="sc-legend">'
-        f'<span><i class="sc-swatch sc-model"></i>Decided by a model{_esc(tiers)}</span>'
-        f'<span><i class="sc-swatch sc-keg"></i>Decided by the keg (T0, no model)</span>'
+        f'<span><i class="sc-swatch sc-model"></i>Ran on a model{_esc(tiers)}</span>'
+        f'<span><i class="sc-swatch sc-keg"></i>Settled from the keg (T0, no model)</span>'
         f'<span><i class="sc-dash"></i>Loop event</span></div></div>'
         f'{_scorecard_chart_html(g, key)}</section>')
 
@@ -6020,7 +6021,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     unreviewed = sum(1 for u in units if u.get("accepted"))
     not_reviewed = (
         f' {unreviewed} {_esc(one if unreviewed == 1 else many)} '
-        f'{"was" if unreviewed == 1 else "were"} decided by the keg under its signed '
+        f'{"was" if unreviewed == 1 else "were"} settled from the keg under its signed '
         f'authority and not reviewed; {"it is" if unreviewed == 1 else "they are"} not '
         f'counted as confirmed.' if unreviewed else "")
     on_record = ("Every decision has its turn on record." if g["traceable"] == total
@@ -6035,7 +6036,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         f'<p class="sc-foot">{_esc(on_record)} {chain_line}{not_reviewed}</p></div>')
     cards = ""
     for v in versions:
-        text = [f"Coverage: its rules decide {v['decides']} case"
+        text = [f"Serves {v['decides']} case"
                 f"{'' if v['decides'] == 1 else 's'} directly."]
         if v["reserve"]:
             text.append(f"Reserved for a model: {v['reserve'].rstrip('.')}.")
@@ -6047,7 +6048,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         if v["seconds_to_signature"] is not None:
             text.append(f"Signed by the {v['signed_by'] or 'operator'} "
                         f"{_span(v['seconds_to_signature'])} after proposal.")
-        back = "".join(f'<code class="sc-rule">hands back when {_esc(c)}</code>'
+        back = "".join(f'<code class="sc-rule">kept on a model when {_esc(c)}</code>'
                        for c in v["hands_back"])
         cards += (
             f'<div class="sc-version{" sc-serving" if v["serves"] else ""}">'
@@ -6122,7 +6123,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                 f'{audit_mod._pct(period["model_units"], n)})</span></div>'
                 f'<div><span class="sc-figure">'
                 f'{audit_mod._pct(period["keg_units"], n)}</span>'
-                f'<span class="sc-note">decided by the keg ({period["keg_units"]} of {n}), '
+                f'<span class="sc-note">settled from the keg ({period["keg_units"]} of {n}), '
                 f'no model</span></div><div><span class="sc-figure">'
                 f'{_rate(period["cost_per_unit"])}</span><span class="sc-note">model cost per '
                 f'{RATE_PER:,} {_esc(many)}</span></div></div>'
@@ -6135,7 +6136,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                 + (_line("One-time learning cost", "; ".join(learned) or "none on record",
                          f"not in the rate per {RATE_PER:,}") if index == 0 else "")
                 + f'</div><div class="sc-note">{period["confirmed"]} confirmed by you · '
-                f'{period["accepted"]} decided by the keg, not reviewed · '
+                f'{period["accepted"]} settled from the keg, not reviewed · '
                 f'{period["revised"]} revised'
                 + (f' · {period["awaiting"]} awaiting you' if period["awaiting"] else "")
                 + (f' · {period["of"] - n} still to come' if period["of"] > n else "")
@@ -6154,7 +6155,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                if rate is not None else "")
             + _benchmark_foot(g)
             + '</p></section>')
-    panels = (f'<section class="sc-pair">{who}<div class="sc-panel"><h3>Standard work, '
+    panels = (f'<section class="sc-pair">{who}<div class="sc-panel"><h3>The keg, '
               f'as signed</h3><div class="sc-versions">{cards}</div></div></section>')
 
     # 5. At volume
@@ -6175,7 +6176,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         f'<details class="sc-older"><summary>Show the working</summary><div class="sc-scroll">'
         f'<table class="sc-table sc-wide"><thead><tr><th></th><th>COST</th><th>MODEL CALLS</th>'
         f'<th>TOKENS</th><th>MACHINE TIME</th><th>BASIS</th></tr></thead><tbody>'
-        + _row(f"Every {one} decided by a model", proj["all_model"],
+        + _row(f"Every {one} run on a model", proj["all_model"],
                "scaled from this run's model turns")
         + _row(f"With keg v{cov['version']} serving" if cov["keg"] else "With a keg serving",
                proj["with_keg"], "scaled from this run")
@@ -6185,7 +6186,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
             f'<tr><td colspan="6" class="sc-eyebrow">MEASURED · '
             f'{_esc(g["benchmark"]["label"].upper())} · RUN {g["benchmark"]["run_number"]}'
             f'</td></tr>'
-            + _row(f'Every {one} decided by a model, as run {g["benchmark"]["run_number"]} '
+            + _row(f'Every {one} run on a model, as run {g["benchmark"]["run_number"]} '
                    f'measured it', proj["benchmark"], "scaled from that run")
             + _row("Avoided against that run", proj["avoided_vs_benchmark"], "difference",
                    strong=True))
@@ -6328,9 +6329,9 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     else:
         lead = f'{keg_n} of {total} {many} decided with no model. {traceable}'
     opener = ("So far, " if so_far else "") + (f'with {brand["name"]}, ' if brand else "")
-    took = (f'{opener[:1].upper()}{opener[1:]}{"r" if opener else "R"}ules the {who} signed '
-            f'took {keg_n} of {total} {many} off the model.' if keg_n else
-            f'No rule has been signed yet, so a model decided every {one}.')
+    took = (f'{opener[:1].upper()}{opener[1:]}{keg_n} of {total} {many} settled from compiled '
+            f'code. No model call.' if keg_n else
+            f'Nothing has been signed yet, so every {one} ran on a model.')
     if not figures and not (g.get("headline") and g.get("periods")):
         took = loop + under          # a run with no periods and no return to state
     top = (f'<header class="sc-header"><div class="sc-eyebrow sc-event">{eyebrow}</div>'
@@ -6360,7 +6361,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         f'{_changes_html(g)}{chart}{tiles}{_tickets_html(g)}')
     record = _fold(
         "The record",
-        f'Who decided each {one}, the rules as signed, the working and how it was measured.',
+        f'Who settled each {one}, the keg as signed, the working and how it was measured.',
         f'{story}{_rate_row_html(g)}{periods}{panels}{standalone}{footer}')
     return (f'<div class="sc">{verdict}{proof}<div class="sc-level">HOW IT GOT THERE</div>'
             f'{how}<div class="sc-level">THE RECORD</div>{record}</div>')
@@ -6457,8 +6458,8 @@ def _audit_integrity_html(report) -> str:
             f'<div class="sc-scroll"><div class="sc-chain{" sc-dense" if len(links) > 30 else ""}">'
             f'<span class="sc-chain-line"></span>'
             f'{nodes}</div></div>'
-            f'<div class="sc-legend"><span><i class="sc-dot sc-model"></i>Decided by a model'
-            f'</span><span><i class="sc-dot sc-keg"></i>Decided by the keg</span>'
+            f'<div class="sc-legend"><span><i class="sc-dot sc-model"></i>Ran on a model'
+            f'</span><span><i class="sc-dot sc-keg"></i>Settled from the keg</span>'
             f'<span><i class="sc-dot sc-keg sc-ring"></i>Revised by the operator</span>'
             f'<span class="sc-quiet">Every check mark is a decision linked to the turn that '
             f'produced it.</span></div></section>')
@@ -6559,18 +6560,18 @@ def _trace_turn_notes(step) -> List[str]:
         notes.append(f"{a.get('tier') or 'An earlier tier'} {why}; retried one tier up.")
     back = step.get("handback") or {}
     if back.get("kind") == "no_rule" and back.get("key"):
-        notes.append(f"The keg handed it back: no rule for {back['key']} ‘{back.get('value', '')}’.")
+        notes.append(f"Not compiled: nothing in the keg for {back['key']} ‘{back.get('value', '')}’.")
     elif back.get("kind") == "rule_defers" and back.get("rule"):
         try:
             plain = _keg_plain({"if": back["rule"]}, {})
         except Exception:  # noqa: BLE001 — the rule's own words still say it
             plain = back["rule"]
-        notes.append(f"The keg handed it back: {plain} → model.")
+        notes.append(f"Kept on a model by a signed change: {plain}.")
     elif back.get("kind") == "resembles_corrected" and back.get("item"):
-        notes.append(f"The keg handed it back: it resembles {back['item']}, which you revised "
+        notes.append(f"The keg held it back: it resembles {back['item']}, which you revised "
                      f"({back.get('share')} of their words in common).")
     elif back.get("kind"):
-        notes.append("The keg handed it back: " + str(back["kind"]).replace("_", " ") + ".")
+        notes.append("The keg held it back: " + str(back["kind"]).replace("_", " ") + ".")
     over = step.get("over_budget") or {}
     if over:
         tail = ("The request went one tier up." if step.get("failure_kind") == "call_over_budget"
@@ -6609,7 +6610,7 @@ def _trace_html(report) -> str:
             f'<h1>{len(decided)} decisions on record. <span class="sc-event">Each with its '
             f'inputs, its reasoning and your ruling.</span></h1>'
             f'<p>Read straight from the decision log, the turn records and the ledger; '
-            f'nothing here is summarized by a model. {by_keg} decided by the keg, '
+            f'nothing here is summarized by a model. {by_keg} settled from the keg, '
             f'{len(decided) - by_keg} by a model; {revised} revised, {unreviewed} not '
             f'reviewed, {asked} where the model asked first.</p>'
             f'<div class="sc-check-line"><a class="sc-run sc-download" '
@@ -6664,7 +6665,7 @@ def _trace_html(report) -> str:
                    if it["turn"].get("shared_with") else ""))
             for r in it["rulings"]:
                 if r["decision"] == "accepted":
-                    body = (f'<div>Decided by the keg under its signed authority. '
+                    body = (f'<div>Settled from the keg under its signed authority. '
                             f'<strong>Not reviewed.</strong></div>')
                     label = "ACCEPTED · " + _clock(r["at"])
                 elif r["decision"] == "correct":
@@ -6690,7 +6691,7 @@ def _trace_html(report) -> str:
                                 f"{_keg_value(it['proposed'])} and you revised it")
                     else:
                         said = ("A tier-down pattern: enough confirmed decisions matched "
-                                "the reference table to make this standard work")
+                                "the reference table to compile them into the keg")
                     steps += _step(
                         "JIDOKA FLAGGED · " + _clock(ev["at"]),
                         f'<div>{_esc(said)}.{_esc(halted)}</div>'
@@ -6706,7 +6707,7 @@ def _trace_html(report) -> str:
                     steps += _step(
                         "SIGNED · " + _clock(ev["at"]),
                         f'<div>Keg v{_esc(ev["version"])} signed by the '
-                        f'{_esc(ev["by"] or "operator")}; it is standard work from here.</div>',
+                        f'{_esc(ev["by"] or "operator")}; it serves from the keg from here.</div>',
                         mine=True)
             example = json.dumps(it["example"], ensure_ascii=False, sort_keys=True)
             opened = " open" if (it["revised"] or it["question"]) else ""
@@ -6716,8 +6717,8 @@ def _trace_html(report) -> str:
                 f'<div class="sc-eyebrow">AS ONE TRAINING EXAMPLE</div>'
                 f'<code class="sc-rule">{_esc(example)}</code></details>')
         legend = (
-            '<div class="sc-legend"><span><i class="sc-swatch sc-model"></i>Decided by a model'
-            '</span><span><i class="sc-swatch sc-keg"></i>Decided by the keg</span>'
+            '<div class="sc-legend"><span><i class="sc-swatch sc-model"></i>Ran on a model'
+            '</span><span><i class="sc-swatch sc-keg"></i>Settled from the keg</span>'
             '<span class="sc-quiet">Open a row for its full trace. Revised items and '
             'questions are open already.</span></div>')
         footer = (

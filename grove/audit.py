@@ -1205,8 +1205,8 @@ def _headline(periods: List[Dict[str, Any]], why: Mapping[str, Any],
     still = batch.get("of", batch["units"]) - batch["units"]
     so_far = (f" so far; {still} of {batch['of']} still to come" if still > 0 else "")
     if batch["keg_units"]:
-        lead = (f"{short(batch)}: the signed rule handled {batch['keg_units']} of "
-                f"{batch['units']} {many}{so_far}. No model call.")
+        lead = (f"{short(batch)}: {batch['keg_units']} of {batch['units']} {many} settled "
+                f"from compiled code{so_far}. No model call.")
     else:
         lead = (f"{short(batch)}: all {batch['units']} {many}{so_far} needed a model.")
     a, b = before["model_units"], batch["model_units"]
@@ -1222,13 +1222,13 @@ def _headline(periods: List[Dict[str, Any]], why: Mapping[str, Any],
     all_explained = bool(keys) and b > 0 and explained == b
     if all_explained:
         if why["new"] and why["judgment"]:
-            second += f", all new {keys} or cases the rule handed back."
+            second += f", all new {keys} or cases kept on a model."
         elif why["new"]:
             second += f", all new {keys}."
         else:
-            second += ", all cases the rule handed back."
+            second += ", all cases kept on a model."
     elif keys and b:
-        second += (f": {why['new']} new {keys}, {why['judgment']} the rule handed back, "
+        second += (f": {why['new']} new {keys}, {why['judgment']} kept on a model, "
                    f"{why['other']} neither.")
     else:
         second += "."

@@ -48,7 +48,7 @@ def home(tmp_path, monkeypatch):
     log = DecisionLog(GOAL, directory=tmp_path / "decisions")
     run = log.start_run("fixture")
     prev = None
-    # Two items decided by a model, two by a keg.
+    # Two items run on a model, two by a keg.
     plan = [("m1", "T1", "small", 2, {"input": 1000, "output": 100, "cache_read": 50000}, 8000.0, None),
             ("m2", "T1", "small", 2, {"input": 3000, "output": 300, "cache_read": 50000}, 12000.0, None),
             ("m3", "T0", "pattern_cache", 0, {"input": 0, "output": 0, "cache_read": 0}, 100.0,
@@ -348,7 +348,7 @@ def test_audit_page_shows_the_same_figures_and_its_limits(home):
     eco = fragments._audit_economics_html(audit.economics(home), 1_000_000, chain=chain)
     for text in ("2 of 4 items decided with no model.", "Every one traceable.",
                  "100×", "0.10 s with the keg, 10.0 s with a model",
-                 "If your agents make 1,000,000 model calls a month today", "Every item decided by a model",
+                 "If your agents make 1,000,000 model calls a month today", "Every item run on a model",
                  "Avoided", "ESTIMATE · FRONTIER MODEL",
                  "Audit chain intact: 8 intent records, 1 chained ledger events.",
                  "NOT priced", "Not included:", "confirmation turn is separate"):
@@ -373,7 +373,7 @@ def test_scorecard_reads_the_loop_off_the_records(tmp_path, monkeypatch):
                  "KEG v1</span>", "KEG v2</span>", "↑ 61.0s",
                  "#4 · chan-m4 · keg v1 · no model call · 0.10 s · operator revised "
                  "finance → ops · andon raised · keg halted",
-                 "hands back when channel == &#x27;chan-m4&#x27;", "SERVING", "REPLACED",
+                 "kept on a model when channel == &#x27;chan-m4&#x27;", "SERVING", "REPLACED",
                  "If your agents make 10,000 model calls a month today</h2>",
                  "Scaled from this run. Keg v2 would now answer",
                  "of those calls are never made.",
@@ -483,7 +483,7 @@ def test_a_batch_shares_its_turn_and_splits_the_scorecard_three_ways(tmp_path, m
     assert (before["model_units"], before["model_calls"]) == (1, 2)
     assert (batch["model_units"], batch["model_calls"], batch["calls_per_model_unit"]) == (1, 2, 2.0)
     assert g["headline"]["lead"] == (
-        "Month 2: the signed rule handled 4 of 5 messages. No model call.")
+        "Month 2: 4 of 5 messages settled from compiled code. No model call.")
     assert g["headline"]["first"] == "Month 1 needed a model on 1 of 1 (100%)."
     assert g["headline"]["second"] == "Month 2 needed one on 1 of 5 (20%)."
     # One computation: the table's rows are the period's own breakdown, and
@@ -498,11 +498,11 @@ def test_a_batch_shares_its_turn_and_splits_the_scorecard_three_ways(tmp_path, m
 
     html = fragments._scorecard_html(g, 10_000, "0")
     for text in ("CONFIRMED BY YOU", "NOT REVIEWED", "REVISED", "Month 1 against Month 2",
-                 "80%", "decided by the keg (4 of 5)",
-                 "2 confirmed by you · 3 decided by the keg, not reviewed · 0 revised.",
-                 "3 messages were decided by the keg under its signed authority and not "
+                 "80%", "settled from the keg (4 of 5)",
+                 "2 confirmed by you · 3 settled from the keg, not reviewed · 0 revised.",
+                 "3 messages were settled from the keg under its signed authority and not "
                  "reviewed; they are not counted as confirmed.",
-                 "decided by the keg, not reviewed",
+                 "settled from the keg, not reviewed",
                  "Month 2 · keg, no model", "Month 2 · a model", "AWAITING YOU",
                  "1 of 5</span>", "needed a model (20%)",
                  "Months are counted separately. Keg decisions without review are not "
@@ -592,21 +592,21 @@ def test_the_headline_says_only_what_the_counts_show():
     month2 = _period("Month 2 · production", 40, 9, keg_units=31, cost_per_unit=0.0006, of=40)
     all_explained = {"key": "vendor", "new": 5, "judgment": 4, "other": 0}
     h = audit._headline([month1, month2], all_explained, names)
-    assert h["lead"] == "Month 2: the signed rule handled 31 of 40 invoices. No model call."
+    assert h["lead"] == "Month 2: 31 of 40 invoices settled from compiled code. No model call."
     assert h["first"] == "Month 1 needed a model on 13 of 20 (65%)."
     assert h["second"] == ("Month 2 needed one on 9 of 40 (23%), all new vendors or cases "
-                           "the rule handed back.")
+                           "kept on a model.")
     assert (h["cost_before"], h["cost_batch"], h["complete"]) == (0.004, 0.0006, True)
     # One that is neither a new vendor nor handed back: "all" is not claimed.
     h = audit._headline([month1, month2],
                         {"key": "vendor", "new": 5, "judgment": 3, "other": 1}, names)
-    assert h["second"].endswith(": 5 new vendors, 3 the rule handed back, 1 neither.")
+    assert h["second"].endswith(": 5 new vendors, 3 kept on a model, 1 neither.")
     assert h["all_explained"] is False
     # Read while the batch is under way: the counts are "so far", and say so.
     partial = _period("Month 2 · production", 38, 7, keg_units=31, cost_per_unit=0.0006, of=40)
     h = audit._headline([month1, partial], {"key": "vendor", "new": 4, "judgment": 3,
                                             "other": 0}, names)
-    assert h["lead"] == ("Month 2: the signed rule handled 31 of 38 invoices so far; "
+    assert h["lead"] == ("Month 2: 31 of 38 invoices settled from compiled code so far; "
                          "2 of 40 still to come. No model call.")
     assert h["second"].startswith("Month 2 needed one on 7 of 38 (18%)") and not h["complete"]
     # "About the same" is a claim made only inside the band.
@@ -728,7 +728,7 @@ def test_the_cost_rate_row_is_computed_and_the_arrow_sits_on_the_change():
                  "Measured model cost this run, not the all-model counterfactual. Keg "
                  "decisions are $0 and are already in the month 2 rate.",
                  "AGAINST ALL-MODEL · PER 1,000 INVOICES",
-                 "$5.10 if a model decided every one · $0.61 measured with the keg"):
+                 "$5.10 if every one ran on a model · $0.61 measured with the keg"):
         assert text in html, text
     assert html.count("↓") == 1                       # one arrow, on the change only
     # A rise flips the arrow and the color; a small move has no arrow at all.
@@ -765,8 +765,8 @@ def test_signed_changes_are_counted_as_tickets_avoided_and_the_estimate_is_decla
     assert t["break_even"] == pytest.approx(1000 / (12 * 88.26))      # 0.94 tickets a month
     html = fragments._tickets_html({"tickets": t, "versions": [
         {"version": 1, "decides": 6}, {"version": 2, "decides": 6}, {"version": 3, "decides": 8}]})
-    assert ("one per signature, not one per rule. v3 is one signature though it adds 2 "
-            "rules.") in html
+    assert ("one per signature, not one per case. v3 is one signature though it adds 2 "
+            "cases.") in html
     for text in ("The fixes that usually become engineering tickets",
                  "CHANGES SIGNED · MEASURED", "keg v1, keg v2. v1: an enhancement; v2: an "
                  "exception.", "ENGINEERING TICKETS FILED · MEASURED", "No ticket system is "
@@ -923,7 +923,7 @@ def test_the_scorecard_computes_over_as_many_periods_as_the_run_has():
 
     h = audit._headline(periods, {"key": "vendor", "new": 1, "judgment": 0, "other": 0},
                         ("invoice", "invoices"))
-    assert h["lead"] == "Month 3: the signed rule handled 3 of 4 invoices. No model call."
+    assert h["lead"] == "Month 3: 3 of 4 invoices settled from compiled code. No model call."
     assert h["first"] == ("Month 1 needed a model on 4 of 4 (100%). Month 2 needed one on "
                           "2 of 4 (50%).")
     assert h["second"] == "Month 3 needed one on 1 of 4 (25%), all new vendors."
@@ -1130,7 +1130,7 @@ def test_a_declared_benchmark_run_is_measured_beside_each_period(home, monkeypat
     html = fragments._scorecard_html(g, 10_000, "0")
     for text in ("AGAINST ALL MODEL · MEASURED · PER 1,000 MESSAGES",
                  "All model, measured (run 2)", "Model calls, against that run",
-                 "All model: run 2 of this goal, 3 messages, every one decided by a model, "
+                 "All model: run 2 of this goal, 3 messages, every one run on a model, "
                  "measured the same way."):
         assert text in html, text
 
@@ -1186,7 +1186,7 @@ def test_the_scorecard_sets_the_proof_before_the_record(home, monkeypatch):
     assert "0% · 50% settled without a model, period by period." in html
     # Each level that opens on a click says what is inside while it is closed.
     assert html.count('<details class="sc-fold">') == 2
-    assert "No change to the standard work has been signed in this run yet." in html
+    assert "No change has been signed in this run yet." in html
 
 
 def test_a_run_with_more_to_come_says_so_far(home, monkeypatch):
@@ -1200,7 +1200,7 @@ def test_a_run_with_more_to_come_says_so_far(home, monkeypatch):
     assert g["in_progress"] is True and g["periods_declared"] == 3
     html = fragments._scorecard_html(g, 1_000_000, "0")
     assert "· SO FAR: 2 OF 3 PERIODS" in html and "AGAINST RUN 2 · SO FAR" in html
-    assert "So far, rules the operator signed took 1 of 3 messages off the model." in html
+    assert "So far, 1 of 3 messages settled from compiled code. No model call." in html
 
 
 def test_payback_is_the_first_period_the_signed_changes_cover_the_price():
@@ -1276,11 +1276,11 @@ def test_a_branded_scorecard_speaks_in_the_brand_above_the_mechanism(home, monke
         "wordmark_font": "", "font_stylesheet": ""})
     html = fragments._scorecard_html(g, 1_000_000, "0")
     for text in ("ACME RUNTIME · MESSAGE TAGGING · RUN 3",
-                 "With Acme, rules the reviewer signed took 1 of 3 messages off the model.",
+                 "With Acme, 1 of 3 messages settled from compiled code. No model call.",
                  "The same 3 messages: all model vs. Acme", ">With Acme<",
                  "Messages the reviewer reviewed", "Proposals the reviewer revised"):
         assert text in html, text
     # Above the fold the mechanism's word is gone; below it, it stays.
     top = html[:html.index("HOW IT GOT THERE")]
     assert "keg" not in top.lower()
-    assert "Decided by the keg" in html[html.index("HOW IT GOT THERE"):]
+    assert "Settled from the keg" in html[html.index("HOW IT GOT THERE"):]
