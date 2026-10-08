@@ -348,6 +348,11 @@ class DecisionWorkConfig:
     session_tools: Optional[Tuple[str, ...]] = None
     adaptation: Adaptation = field(default_factory=Adaptation)
     ticket_model: Optional[TicketModel] = None
+    # A run of this goal's own log that the scorecard compares the current run
+    # with, period by period: ``benchmark: {run: 37, label: "..."}``. It is a
+    # run like any other (the same items, worked another way), named here by
+    # its number; nothing about it is stored anywhere else. None: no comparison.
+    benchmark: Optional[Tuple[int, str]] = None
 
     @property
     def isolated(self) -> bool:
@@ -610,8 +615,21 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
                                      str(goal.id)),
         adaptation=adaptation,
         ticket_model=_load_ticket_model(raw.get("ticket_model"), str(goal.id)),
+        benchmark=_load_benchmark(raw.get("benchmark"), str(goal.id)),
     )
     return _with_learned(cfg)
+
+
+def _load_benchmark(raw: Any, goal_id: str) -> Optional[Tuple[int, str]]:
+    if raw is None:
+        return None
+    where = f"goal {goal_id!r}: benchmark"
+    if not isinstance(raw, Mapping):
+        raise ValueError(f"{where} must be a mapping with a run number")
+    run = raw.get("run")
+    if isinstance(run, bool) or not isinstance(run, int) or run < 1:
+        raise ValueError(f"{where}.run must be a run number (an integer of 1 or more)")
+    return run, str(raw.get("label") or "").strip()
 
 
 def _load_backlog(raw: Any, goal_id: str, root: Path,

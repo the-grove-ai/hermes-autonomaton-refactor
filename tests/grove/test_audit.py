@@ -159,9 +159,12 @@ def test_economics_measures_each_tier_from_the_records(home):
     # The deciding turn and the confirming turn are kept apart.
     assert g["units"][0]["confirming"]["model_calls"] == 1
     assert g["totals"]["model_calls"] == 4
-    # Frontier: the same measured fresh tokens at the T3 model's prices — an estimate.
+    # Frontier: the same measured tokens at the T3 model's prices — an estimate.
+    # 2026-10-08: the context re-read is most of every call and was left out,
+    # so a frontier model looked barely dearer than the one that ran. It is
+    # priced now: at the model's cache-read price, else at its input price.
     assert g["frontier"]["model"] == "big"
-    assert g["frontier"]["cost"] == pytest.approx((2000 * 10 + 200 * 20) / 1e6)
+    assert g["frontier"]["cost"] == pytest.approx((2000 * 10 + 200 * 20 + 50000 * 10) / 1e6)
 
 
 def test_cached_tokens_are_priced_only_when_a_price_is_declared(home):
@@ -192,7 +195,8 @@ def test_projection_scales_measured_figures_by_what_the_keg_covers(home):
     assert p["all_model"]["hours"] == pytest.approx(10.0 * 1_000_000 / 3600)
     # The keg's own time is counted, not assumed to be zero.
     assert p["with_keg"]["hours"] == pytest.approx((0.25 * 10.0 + 0.75 * 0.1) * 1_000_000 / 3600)
-    assert p["all_frontier"]["cost"] == pytest.approx(0.024 * 1_000_000)
+    assert p["all_frontier"]["cost"] == pytest.approx(0.524 * 1_000_000)   # re-read priced
+    assert p["benchmark"] is None and p["avoided_vs_benchmark"] is None    # none declared
     # With no keg serving, nothing is avoided.
     none = audit.project({**g, "coverage": {"keg": None, "covered": 0, "of": 4, "share": 0.0}}, 1000)
     assert none["avoided"]["cost"] == 0.0
@@ -371,11 +375,14 @@ def test_scorecard_reads_the_loop_off_the_records(tmp_path, monkeypatch):
                  "finance → ops · andon raised · keg halted",
                  "hands back when channel == &#x27;chan-m4&#x27;", "SERVING", "REPLACED",
                  "If your agents make 10,000 model calls a month today</h2>",
-                 "Scaled from this run. Keg v2 answers", "of those calls are never made.",
+                 "Scaled from this run. Keg v2 would now answer",
+                 "of those calls are never made.",
                  "Per-call basis, measured this run:",
                  "SAVINGS · MEASURED", " down to ", "Show the working",
-                 "No model</div>", "Fewer model calls</div>", "Less time deciding</div>",
-                 "Measured figures use routing-config prices, scaled from this run."):
+                 "No model</div>", "Fewer model calls</div>",
+                 "Less machine time waiting on a model</div>",
+                 "Costs use the prices declared in the routing config. Scaled from this run.",
+                 "The cost cut follows from coverage:"):
         assert text in html, text
     assert html.count('<button type="button" class="sc-bar"') == 6      # each bar focusable
     assert html.count("sc-fill sc-keg") == 3 and html.count("sc-ring") == 1
@@ -1059,3 +1066,91 @@ def test_the_turn_record_carries_the_providers_charge_and_cache_writes():
     agent_src = inspect.getsource(run_agent)
     assert '"cost": canonical_usage.cost,' in agent_src
     assert '"cache_write": canonical_usage.cache_write_tokens})' in agent_src
+
+
+# ── a declared benchmark run: the same items, worked another way ──────
+
+
+def _two_more_runs(home, monkeypatch, benchmark=(2, "All model")):
+    """Run 2: three items, every one by a model. Run 3 (current): the same
+    three, the batch's second one by a keg."""
+    log = DecisionLog(GOAL, directory=home / "decisions")
+    tokens = {"input": 1000, "output": 100, "cache_read": 0}
+    for name, plan in (("r2", [("a", None, "T1", "s2"), ("b", "bb", "T1", "s2"), ("c", "bb", "T1", "s2")]),
+                       ("r3", [("a", None, "T1", "s3"), ("b", "cc", "T1", "s3"), ("c", "cc", "T0", "s3")])):
+        run = log.start_run(name)
+        for item, batch, tier, session in plan:
+            uid = f"{name}-{item}"
+            keg = ({"name": "Message tagging", "version": 1, "pattern_id": "keg:x:v1:a"}
+                   if tier == "T0" else None)
+            _intent(home, uid, tier=tier, model="small" if tier == "T1" else "pattern_cache",
+                    calls=2 if tier == "T1" else 0,
+                    tokens=tokens if tier == "T1" else {"input": 0, "output": 0, "cache_read": 0},
+                    ms=10000.0 if tier == "T1" else 100.0, session=session)
+            proposed = log.append({
+                "kind": "proposed", "run_id": run["run_id"], "item_id": item, "batch": batch,
+                "inputs": {"channel": "billing"}, "output": {"tag": "finance"}, "tier": tier,
+                "keg": keg, "turn_uid": uid, "session_id": session})
+            log.append({"kind": "decided", "run_id": run["run_id"], "ref": proposed["id"],
+                        "item_id": item, "decision": "confirm", "output": {"tag": "finance"},
+                        "session_id": session})
+    # One turn of the all-model run did not complete and was retried.
+    rec = {"session_id": "s2", "turn_uid": "r2-failed", "tier_selected": "T1",
+           "model_used": "small", "outcome": "error", "failure_kind": "reply_without_record",
+           "stages": {"execution": {"model_calls": 1, "tokens": tokens}}}
+    with open(home / "intent_records.jsonl", "a") as fh:
+        fh.write(json.dumps(rec) + "\n")
+    monkeypatch.setattr(audit, "_presentation", lambda goal: {
+        "title": "Message tagging", "item_name": ("message", "messages"), "label_key": None,
+        "before_label": "Month 1", "batch_label": "Month 2", "ticket_model": None,
+        "stage_labels": [], "benchmark": benchmark})
+
+
+def test_a_declared_benchmark_run_is_measured_beside_each_period(home, monkeypatch):
+    _two_more_runs(home, monkeypatch)
+    [g] = audit.economics(home)["goals"]
+    each = (1000 * 1.0 + 100 * 2.0) / 1e6                  # one model-decided message
+    bench = g["benchmark"]
+    assert (bench["run_number"], bench["label"], bench["units"], bench["keg_units"]) == (
+        2, "All model", 3, 0)
+    assert bench["totals"]["cost"] == pytest.approx(3 * each)
+    assert bench["totals"]["model_calls"] == 6 and bench["per_unit"]["model_calls"] == 2.0
+    assert (g["did_not_complete"], bench["did_not_complete"]) == (0, 1)
+    first, batch = g["periods"]
+    assert first["benchmark"]["cost"] == pytest.approx(each) and first["cost"] == pytest.approx(each)
+    assert batch["cost"] == pytest.approx(each)             # one by a model, one by the keg
+    assert batch["benchmark"]["cost"] == pytest.approx(2 * each)
+    assert (batch["benchmark"]["model_calls"], batch["model_calls"]) == (4, 2)
+    # At volume: the benchmark's own measured cost per message, beside the scaling.
+    p = audit.project({**g, "coverage": {"keg": "k", "covered": 1, "of": 3, "share": 0.5}}, 1000)
+    assert p["benchmark"]["cost"] == pytest.approx(1000 * each)
+    assert p["avoided_vs_benchmark"]["cost"] == pytest.approx(1000 * each - p["with_keg"]["cost"])
+    from grove.api import fragments
+
+    html = fragments._scorecard_html(g, 10_000, "0")
+    for text in ("AGAINST ALL MODEL · MEASURED · PER 1,000 MESSAGES",
+                 "All model, measured (run 2)", "Model calls, against that run",
+                 "All model: run 2 of this goal, 3 messages, every one decided by a model, "
+                 "measured the same way."):
+        assert text in html, text
+
+
+def test_a_period_is_only_set_against_a_benchmark_period_of_the_same_size(home, monkeypatch):
+    _two_more_runs(home, monkeypatch, benchmark=(1, ""))    # run 1: four items, no batch
+    [g] = audit.economics(home)["goals"]
+    assert g["benchmark"]["label"] == "run 1" and g["benchmark"]["periods"] == []
+    assert [p["benchmark"] for p in g["periods"]] == [None, None]
+    # A benchmark in which a keg decided something is not an all-model cost.
+    assert audit.project({**g, "coverage": {"keg": "k", "covered": 1, "of": 3, "share": 0.5}},
+                         1000)["benchmark"] is None
+
+
+def test_a_benchmark_that_names_no_run_on_record_is_refused(home, monkeypatch):
+    _two_more_runs(home, monkeypatch, benchmark=(9, "All model"))
+    with pytest.raises(ValueError, match="benchmark names run 9"):
+        audit.economics(home)
+
+
+def test_no_benchmark_declared_changes_nothing(home):
+    [g] = audit.economics(home)["goals"]
+    assert g["benchmark"] is None

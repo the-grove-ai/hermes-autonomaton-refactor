@@ -1637,3 +1637,18 @@ def test_with_no_keg_to_take_a_run_every_backlog_item_reaches_a_model(env, tmp_p
         work.decide(decision="confirm", provenance=env.prov())
         reissue.take("sess")
     assert work.session_action(ask) == {"action": "summary"}
+
+
+def test_a_goal_may_name_one_of_its_own_runs_as_the_benchmark(tmp_path):
+    goal = _goal(tmp_path)
+    assert dw.load_config(goal).benchmark is None
+    goal.extra["decision_work"]["benchmark"] = {"run": 37, "label": "Inference only"}
+    cfg = dw.load_config(goal)
+    assert cfg.benchmark == (37, "Inference only")
+    # A comparison is not part of how a session behaves: no new signature.
+    plain = _goal(tmp_path)
+    assert dw.session_rule_digest(cfg) == dw.session_rule_digest(dw.load_config(plain))
+    for bad in ("37", {"label": "x"}, {"run": 0}, {"run": True}, {"run": "37"}):
+        goal.extra["decision_work"]["benchmark"] = bad
+        with pytest.raises(ValueError, match="benchmark"):
+            dw.load_config(goal)

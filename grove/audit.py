@@ -478,7 +478,7 @@ def _turn(record: Optional[Mapping[str, Any]], prices: Mapping[str, Any]) -> Dic
         return {"on_record": False, "tier": None, "model": None, "model_calls": 0,
                 "seconds": None, "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
                 "cost": None, "priced": False, "cache_read_priced": False,
-                "fully_priced": False, "source": None}
+                "fully_priced": False, "source": None, "classifier": None}
     execution = (record.get("stages") or {}).get("execution") or {}
     model = record.get("model_used")
     cost = _turn_cost(
@@ -494,6 +494,10 @@ def _turn(record: Optional[Mapping[str, Any]], prices: Mapping[str, Any]) -> Dic
         "model": model,
         "model_calls": int(execution.get("model_calls", record.get("api_calls") or 0) or 0),
         "seconds": (record.get("duration_ms") or 0) / 1000.0,
+        # "not called" when a declared routing rule sent the turn to its tier
+        # without the classifier; None when the record does not say.
+        "classifier": (((record.get("stages") or {}).get("compilation") or {})
+                       .get("routed_by") or {}).get("classifier"),
         **cost,
     }
 
@@ -501,6 +505,144 @@ def _turn(record: Optional[Mapping[str, Any]], prices: Mapping[str, Any]) -> Dic
 def _mean(values: List[float]) -> Optional[float]:
     values = [v for v in values if v is not None]
     return sum(values) / len(values) if values else None
+
+
+def _units(records: List[Dict[str, Any]], intents: Mapping[str, Any],
+           prices: Mapping[str, Any], shown: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """One run's units of work, each with its deciding and confirming turns."""
+    from grove.decision_work import (
+        DECISION_ACCEPTED, DECISION_CONFIRM, DECISION_CORRECT, KIND_DECIDED, KIND_PROPOSED,
+    )
+
+    decided = {r["ref"]: r for r in records if r.get("kind") == KIND_DECIDED}
+    deciding_uids = {r.get("turn_uid") for r in records if r.get("kind") == KIND_PROPOSED}
+    # A batch decides many items in ONE turn. Each item's share of that
+    # turn is the turn divided by the items it decided — never the whole
+    # turn counted once per item.
+    shared: Dict[Any, int] = {}
+    for r in records:
+        if r.get("kind") == KIND_PROPOSED and r.get("turn_uid"):
+            shared[r["turn_uid"]] = shared.get(r["turn_uid"], 0) + 1
+    units: List[Dict[str, Any]] = []
+    for order, record in enumerate(
+            [r for r in records if r.get("kind") == KIND_PROPOSED], 1):
+        verdict = decided.get(record["id"])
+        deciding = _turn(intents.get(record.get("turn_uid")), prices)
+        split = shared.get(record.get("turn_uid"), 1)
+        if split > 1:
+            deciding = {
+                **deciding,
+                **{k: (deciding[k] / split if deciding[k] is not None else None)
+                   for k in ("seconds", "cost")},
+                **{k: deciding[k] / split
+                   for k in ("model_calls", "input", "output", "cache_read")},
+                "shared_with": split,
+            }
+        confirm_uid = (verdict or {}).get("turn_uid")
+        # A turn that both recorded a confirmation and decided the next
+        # item is counted once, as that item's deciding turn.
+        confirming = (
+            _turn(intents.get(confirm_uid), prices)
+            if confirm_uid and confirm_uid not in deciding_uids else None
+        )
+        keg = record.get("keg") or None
+        served = dict(record.get("output") or {})
+        final = dict((verdict or {}).get("output") or {})
+        units.append({
+            "order": order,
+            "item_id": record["item_id"],
+            "label": str((record.get("inputs") or {}).get(shown["label_key"], ""))
+                     if shown["label_key"] else "",
+            "keg_version": keg.get("version") if keg else None,
+            "served": served,
+            "final": final,
+            "at": record.get("ts"),
+            "tier": record.get("tier") or deciding["tier"],
+            "by": (f"{keg.get('name')} v{keg.get('version')}" if keg
+                   else deciding["model"] or record.get("model")),
+            "keg": bool(keg),
+            "decision": (verdict or {}).get("decision"),
+            "corrected": (verdict or {}).get("decision") == DECISION_CORRECT,
+            # Decided under the keg's signed authority and not reviewed:
+            # never the operator's confirmation.
+            "accepted": (verdict or {}).get("decision") == DECISION_ACCEPTED,
+            "confirmed": (verdict or {}).get("decision") == DECISION_CONFIRM,
+            "batch": record.get("batch"),
+            "deciding": deciding,
+            "confirming": confirming,
+        })
+    return units
+
+
+def _did_not_complete(records: List[Dict[str, Any]], intents: Mapping[str, Any]) -> int:
+    """Turns in a run's sessions that did not complete and were retried or
+    left: an intent record with a failure kind, in a session the run's
+    decisions were made in. Each one is an interruption someone or something
+    had to recover from."""
+    sessions = {r.get("session_id") for r in records if r.get("session_id")}
+    return sum(1 for row in intents.values()
+               if row.get("session_id") in sessions and row.get("failure_kind"))
+
+
+def _benchmark(log: Any, shown: Mapping[str, Any], intents: Mapping[str, Any],
+               prices: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+    """The run the goal declares as its benchmark, measured the same way as
+    the current run: its periods, its totals, and what one unit and one model
+    call cost in it. None when the goal declares none. A declared run that is
+    not in the log is a defect in the declaration and raises."""
+    from grove.decision_work import KIND_RUN_STARTED
+
+    declared = shown.get("benchmark")
+    if not declared:
+        return None
+    number, label = declared
+    everything = log.records()
+    started = [r for r in everything if r.get("kind") == KIND_RUN_STARTED]
+    run = next((r for r in started if r.get("run_number") == number), None)
+    if run is None:
+        raise ValueError(
+            f"goal {log.goal_id!r}: benchmark names run {number}, which is not in the "
+            f"log ({len(started)} run(s) on record). Correct decision_work.benchmark.run "
+            f"in the Dock.")
+    records = [r for r in everything
+               if r.get("run_id") == run["run_id"] and r.get("kind") != KIND_RUN_STARTED]
+    units = _units(records, intents, prices, shown)
+    n = len(units)
+    model = [u for u in units if not u["keg"]]
+    cost = sum(u["deciding"]["cost"] or 0.0 for u in units)
+    calls = sum(u["deciding"]["model_calls"] for u in model)
+    seconds = sum(u["deciding"]["seconds"] or 0.0 for u in units)
+    tokens = sum(u["deciding"]["input"] + u["deciding"]["output"] + u["deciding"]["cache_read"]
+                 for u in units)
+    return {
+        "run_number": number,
+        "label": label or f"run {number}",
+        "run_label": run.get("label") or "",
+        "units": n, "model_units": len(model), "keg_units": n - len(model),
+        "revised": sum(1 for u in units if u["corrected"]),
+        "periods": _periods(units, shown),
+        "totals": {"cost": cost, "model_calls": calls, "seconds": seconds, "tokens": tokens},
+        "per_unit": {
+            "cost": cost / n if n else None, "seconds": seconds / n if n else None,
+            "model_calls": calls / n if n else None, "tokens": tokens / n if n else None,
+        },
+        "fully_priced": all(u["deciding"].get("fully_priced") for u in model),
+        "did_not_complete": _did_not_complete(records, intents),
+    }
+
+
+def _against(periods: List[Dict[str, Any]], bench: Optional[Mapping[str, Any]]) -> None:
+    """Put the benchmark's figures beside each period they can fairly be set
+    against: the period in the same place, holding the same number of items."""
+    theirs = (bench or {}).get("periods") or []
+    for index, period in enumerate(periods):
+        other = theirs[index] if index < len(theirs) else None
+        if other is None or other["units"] != period["units"] or period["units"] != period["of"]:
+            period["benchmark"] = None
+            continue
+        period["benchmark"] = {k: other[k] for k in (
+            "units", "model_units", "model_calls", "cost", "cost_per_unit",
+            "seconds_per_unit", "cost_source", "fully_priced")}
 
 
 def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dict[str, Any]:
@@ -538,63 +680,7 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
             continue
         records = log.run_records()
         shown = _presentation(log_path.stem)
-        decided = {r["ref"]: r for r in records if r.get("kind") == KIND_DECIDED}
-        deciding_uids = {r.get("turn_uid") for r in records if r.get("kind") == KIND_PROPOSED}
-        # A batch decides many items in ONE turn. Each item's share of that
-        # turn is the turn divided by the items it decided — never the whole
-        # turn counted once per item.
-        shared: Dict[Any, int] = {}
-        for r in records:
-            if r.get("kind") == KIND_PROPOSED and r.get("turn_uid"):
-                shared[r["turn_uid"]] = shared.get(r["turn_uid"], 0) + 1
-        units: List[Dict[str, Any]] = []
-        for order, record in enumerate(
-                [r for r in records if r.get("kind") == KIND_PROPOSED], 1):
-            verdict = decided.get(record["id"])
-            deciding = _turn(intents.get(record.get("turn_uid")), prices)
-            split = shared.get(record.get("turn_uid"), 1)
-            if split > 1:
-                deciding = {
-                    **deciding,
-                    **{k: (deciding[k] / split if deciding[k] is not None else None)
-                       for k in ("seconds", "cost")},
-                    **{k: deciding[k] / split
-                       for k in ("model_calls", "input", "output", "cache_read")},
-                    "shared_with": split,
-                }
-            confirm_uid = (verdict or {}).get("turn_uid")
-            # A turn that both recorded a confirmation and decided the next
-            # item is counted once, as that item's deciding turn.
-            confirming = (
-                _turn(intents.get(confirm_uid), prices)
-                if confirm_uid and confirm_uid not in deciding_uids else None
-            )
-            keg = record.get("keg") or None
-            served = dict(record.get("output") or {})
-            final = dict((verdict or {}).get("output") or {})
-            units.append({
-                "order": order,
-                "item_id": record["item_id"],
-                "label": str((record.get("inputs") or {}).get(shown["label_key"], ""))
-                         if shown["label_key"] else "",
-                "keg_version": keg.get("version") if keg else None,
-                "served": served,
-                "final": final,
-                "at": record.get("ts"),
-                "tier": record.get("tier") or deciding["tier"],
-                "by": (f"{keg.get('name')} v{keg.get('version')}" if keg
-                       else deciding["model"] or record.get("model")),
-                "keg": bool(keg),
-                "decision": (verdict or {}).get("decision"),
-                "corrected": (verdict or {}).get("decision") == DECISION_CORRECT,
-                # Decided under the keg's signed authority and not reviewed:
-                # never the operator's confirmation.
-                "accepted": (verdict or {}).get("decision") == DECISION_ACCEPTED,
-                "confirmed": (verdict or {}).get("decision") == DECISION_CONFIRM,
-                "batch": record.get("batch"),
-                "deciding": deciding,
-                "confirming": confirming,
-            })
+        units = _units(records, intents, prices, shown)
 
         by_tier: Dict[str, Dict[str, Any]] = {}
         for tier in sorted({u["tier"] or "?" for u in units}):
@@ -621,6 +707,7 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
                              + u["deciding"]["cache_read"] for u in model_units]),
             "input": _mean([u["deciding"]["input"] for u in model_units]),
             "output": _mean([u["deciding"]["output"] for u in model_units]),
+            "cache_read": _mean([u["deciding"]["cache_read"] for u in model_units]),
             "model_calls": _mean([u["deciding"]["model_calls"] for u in model_units]),
         }
         keg_avg = {
@@ -629,20 +716,27 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
         }
         # What the same unit of work would cost at the frontier tier: this
         # run's measured average tokens, at the T3 model's declared prices. An
-        # ESTIMATE — no frontier call was made.
+        # ESTIMATE — no frontier call was made. The context re-read on every
+        # call is most of the tokens, so it is priced too: at the model's
+        # cache-read price when one is declared, else at its input price.
         frontier_model = prices["tiers"].get("T3")
         frontier_fact = prices["facts"].get(frontier_model) or {}
         frontier_cost = None
         if (model_avg["input"] is not None
                 and isinstance(frontier_fact.get("cost_per_mtok_input"), (int, float))
                 and isinstance(frontier_fact.get("cost_per_mtok_output"), (int, float))):
+            reread = frontier_fact.get("cost_per_mtok_cache_read")
             frontier_cost = (
                 model_avg["input"] * frontier_fact["cost_per_mtok_input"]
                 + model_avg["output"] * frontier_fact["cost_per_mtok_output"]
+                + (model_avg["cache_read"] or 0.0) * (
+                    reread if isinstance(reread, (int, float))
+                    else frontier_fact["cost_per_mtok_input"])
             ) / 1_000_000
 
         coverage = _coverage(log_path.stem, units, records)
         loop = _loop(base, log_path.stem, run, units)
+        bench = _benchmark(log, shown, intents, prices)
         goals.append({
             "goal": log_path.stem,
             "title": shown["title"] or next(
@@ -651,6 +745,15 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
             "traceable": sum(1 for u in units if u["deciding"]["on_record"]),
             "periods": (periods := _with_open(
                 _periods(units, shown), open_items := _open_items(log_path.stem, records))),
+            "benchmark": (_against(periods, bench), bench)[1],
+            "did_not_complete": _did_not_complete(records, intents),
+            # Of the model-decided units, how many were routed with no
+            # classifier call (their record says so), and how many there are.
+            "classifier_not_called": (
+                sum(1 for u in model_units if u["deciding"].get("classifier") == "not called"),
+                len(model_units)),
+            "source_provider": bool(model_units) and all(
+                u["deciding"].get("source") == COST_FROM_PROVIDER for u in model_units),
             "open": open_items,
             "why_model": (why := _why_model(log_path.stem, units, records, run)
                           if periods else {}),
@@ -1289,6 +1392,7 @@ def _presentation(goal: str) -> Dict[str, Any]:
         "before_label": cfg.work_session.before_label,
         "batch_label": cfg.work_session.batch_label,
         "ticket_model": cfg.ticket_model,
+        "benchmark": cfg.benchmark,
         # One label per backlog stage, in release order: the run's later periods.
         "stage_labels": [label for _folder, label in cfg.backlog_stages],
     }
@@ -1538,9 +1642,20 @@ def project(goal_report: Mapping[str, Any], units_per_month: float) -> Dict[str,
             return None
         return all_model[key] - with_keg[key]
 
+    bench = goal_report.get("benchmark") or None
+    measured = against = None
+    if bench and not bench["keg_units"] and bench["per_unit"]["cost"] is not None:
+        per = bench["per_unit"]
+        measured = _row(per["cost"], per["seconds"], per["model_calls"], per["tokens"])
+        against = {k: (None if measured[k] is None or with_keg[k] is None
+                       else measured[k] - with_keg[k])
+                   for k in ("cost", "hours", "model_calls", "tokens")}
     return {
         "units": n, "share": share,
         "all_model": all_model, "with_keg": with_keg, "all_frontier": frontier,
+        # The declared benchmark run, when every unit in it went to a model:
+        # the same volume at ITS measured cost per unit, and the difference.
+        "benchmark": measured, "avoided_vs_benchmark": against,
         "avoided": {k: _saved(k) for k in ("cost", "hours", "model_calls", "tokens")},
         "frontier_with_keg": (
             None if frontier["cost"] is None else frontier["cost"] * (1.0 - share)),

@@ -4987,6 +4987,52 @@ def _span(seconds) -> str:
     return f"{seconds / 86400:,.0f} days"
 
 
+def _model_hours(hours) -> str:
+    """Machine time as hours, whatever the size: "days" reads as the calendar."""
+    if hours is None:
+        return "—"
+    return f"{hours:,.0f} hours" if hours >= 10 else f"{hours:.1f} hours"
+
+
+def _classifier_note(g, not_included: str) -> str:
+    """What the figures leave out for the classifier, from the records: a
+    turn a declared routing rule sent straight to its tier made no classifier
+    call, so nothing is missing for it."""
+    skipped, of = g.get("classifier_not_called") or (0, 0)
+    if of and skipped == of:
+        return ("The classifier was not called on any model-decided turn: a declared routing "
+                "rule sends the goal's own request straight to its tier. ")
+    if skipped:
+        return (f"The classifier was not called on {skipped} of {of} model-decided turns (a "
+                f"declared routing rule sends the goal's own request straight to its tier). "
+                f"On the other {of - skipped}: {_esc(not_included)}. ")
+    return f"Not included: {_esc(not_included)}. "
+
+
+def _price_basis(g) -> str:
+    """Where this run's cost figures come from, in one sentence."""
+    if g.get("source_provider"):
+        return "Cost is what the provider charged for each model call."
+    return "Costs use the prices declared in the routing config."
+
+
+def _understated(g, proj) -> str:
+    """Why the scaled saving is, if anything, too small: said with a figure
+    when the goal's benchmark run supplies one, and never with a reason that
+    no longer holds."""
+    every, measured = proj["all_model"], proj.get("benchmark")
+    if measured and measured["cost"] and every["cost"] and measured["cost"] > every["cost"]:
+        more = int((measured["cost"] / every["cost"] - 1) * 100 + 0.5)
+        bench = g["benchmark"]
+        return (f'Understated: with every item on a model, run {bench["run_number"]} '
+                f'measured {more}% more per item than this scaling assumes, because a '
+                f'model turn costs more as its session grows. Against that run: '
+                f'${measured["cost"]:,.0f} down to ${proj["with_keg"]["cost"]:,.0f}.')
+    if not g.get("source_provider") and not g["cache_read_priced"]:
+        return "Understated: cached context re-read is not priced."
+    return "Scaled from what this run's own model turns cost."
+
+
 def _model_time(hours) -> str:
     if hours is None:
         return "—"
@@ -5155,6 +5201,7 @@ def _rate_row_html(g) -> str:
             f'<div class="sc-rate-against"><span class="sc-eyebrow">AGAINST ALL-MODEL · PER '
             f'{RATE_PER:,} {_esc(many.upper())}</span><span>{_esc(_rate(batch["baseline_rate"]))} '
             f'if a model decided every one · {_esc(_rate(b))} measured with the keg</span></div>')
+    against += _benchmark_line(g, batch)
     return (
         f'<section class="sc-panel sc-rate"><div class="sc-eyebrow">MODEL COST · PER '
         f'{RATE_PER:,} {_esc(many.upper())}</div><div class="sc-rate-row">'
@@ -5167,6 +5214,34 @@ def _rate_row_html(g) -> str:
         f'Measured model cost this run, not the all-model counterfactual. '
         f'Keg decisions are $0 and are already in the {_esc(str(batch["label"]).split(" · ")[0].lower())} '
         f'rate.</p>{against}</section>')
+
+
+def _less(now, then) -> str:
+    """"↓ 84%" for a figure that fell, "↑ 12%" for one that rose; "" when
+    either is missing."""
+    if now is None or not then:
+        return ""
+    change = (then - now) / then
+    return f'{"↓" if change >= 0 else "↑"} {int(abs(change) * 100 + 0.5)}%'
+
+
+def _benchmark_line(g, period) -> str:
+    """One period against the same period of the goal's declared benchmark
+    run: both MEASURED, the same items worked two ways. Empty when the goal
+    declares no benchmark or the periods cannot fairly be compared."""
+    bench, theirs = g.get("benchmark"), period.get("benchmark")
+    if not bench or not theirs or theirs.get("cost_per_unit") is None:
+        return ""
+    many = g["item_name"][1]
+    ours = period["cost_per_unit"]
+    return (
+        f'<div class="sc-rate-against"><span class="sc-eyebrow">AGAINST '
+        f'{_esc(bench["label"].upper())} · MEASURED · PER {RATE_PER:,} {_esc(many.upper())}'
+        f'</span><span>{_esc(_rate(theirs["cost_per_unit"]))} in run {bench["run_number"]}, '
+        f'the same {period["units"]} {_esc(many)} · {_esc(_rate(ours))} here · '
+        f'<span class="sc-down">{_esc(_less(ours, theirs["cost_per_unit"]))}</span> cost · '
+        f'{_sc_seconds(theirs["seconds_per_unit"])} down to '
+        f'{_sc_seconds(period["seconds_per_unit"])} each</span></div>')
 
 
 def _cost_basis(period) -> str:
@@ -5274,7 +5349,8 @@ def _tickets_html(g) -> str:
         foot = (f'<p class="sc-lead">{_esc(line)}</p><p class="sc-foot">Hours and rate from '
                 f'the {_esc(label)}'
                 + (f'; a dock is ${price:,.0f} a month' if price else "")
-                + '. Inference savings are counted separately below.</p>')
+                + '. Inference savings are counted separately below.</p>'
+                + _interruptions_html(g))
     else:
         avoided = _tile("ENGINEERING TIME AVOIDED", "—", "No ticket model is declared for "
                         "this goal, so no estimate is made.", estimate=True)
@@ -5282,6 +5358,58 @@ def _tickets_html(g) -> str:
         f'<section class="sc-panel sc-tickets"><h2>The fixes that usually become engineering '
         f'tickets</h2><div class="sc-tiles">{signed}{filed}{review}{avoided}</div>{foot}'
         f'</section>')
+
+
+def _interruptions_html(g) -> str:
+    """Turns that did not complete, this run against the benchmark run. Each
+    is an interruption something had to recover from; in a system with no
+    ladder and no keg it is a person's problem. Counted from the records,
+    never estimated."""
+    bench = g.get("benchmark")
+    if not bench:
+        return ""
+    ours, theirs = g.get("did_not_complete") or 0, bench.get("did_not_complete") or 0
+    return (f'<p class="sc-foot">Turns that did not complete: {ours} in this run, '
+            f'{theirs} in {_esc(bench["label"].lower())} (run {bench["run_number"]}). '
+            f'Counted from the turn records of each run\'s sessions. A stalled session '
+            f'that had to be reopened is not on record and is not counted.</p>')
+
+
+def _benchmark_opening(g) -> str:
+    """The whole run against the goal's declared benchmark run, in a sentence
+    under the opening: the same items, both measured."""
+    bench = g.get("benchmark")
+    if (not bench or bench["units"] != len(g["units"]) or not bench["totals"]["cost"]
+            or bench["keg_units"]):
+        return ""
+    one, many = g["item_name"]
+    ours, theirs = g["totals"], bench["totals"]
+    return (f'<p>The same {bench["units"]} {_esc(many)} with every one decided by a model '
+            f'(run {bench["run_number"]}, measured): {_money(theirs["cost"])} in model cost '
+            f'and {theirs["model_calls"]:g} model calls. This run: {_money(ours["cost"])} and '
+            f'{ours["model_calls"]:g}. '
+            f'<span class="sc-down">{_esc(_less(ours["cost"], theirs["cost"]))}</span> cost, '
+            f'<span class="sc-down">{_esc(_less(ours["model_calls"], theirs["model_calls"]))}'
+            f'</span> calls.</p>')
+
+
+def _benchmark_foot(g) -> str:
+    """What the declared benchmark run is, in one or two sentences, with its
+    whole-run totals against this run's."""
+    bench = g.get("benchmark")
+    if not bench:
+        return ""
+    one, many = g["item_name"]
+    ours, theirs = g["totals"], bench["totals"]
+    whole = ""
+    if bench["units"] == len(g["units"]) and theirs["cost"]:
+        whole = (f' Whole run: {_money(ours["cost"])} here against {_money(theirs["cost"])} '
+                 f'({_less(ours["cost"], theirs["cost"])}); '
+                 f'{ours["model_calls"]:g} model calls against {theirs["model_calls"]:g}.')
+    how = ("every one decided by a model" if not bench["keg_units"]
+           else f'{bench["model_units"]} decided by a model, {bench["keg_units"]} by a keg')
+    return (f' {_esc(bench["label"])}: run {bench["run_number"]} of this goal, '
+            f'{bench["units"]} {_esc(many)}, {how}, measured the same way.{_esc(whole)}')
 
 
 def _returns_html(g, proj, scale: int, toggle: str) -> str:
@@ -5300,7 +5428,7 @@ def _returns_html(g, proj, scale: int, toggle: str) -> str:
     total = per_month + saved
     times = total / price
     pace = tickets["per_month"]
-    pace_text = f"{pace:g} signed change{'' if pace == 1 else 's'} a month"
+    pace_text = f"{round(pace, 2):g} signed change{'' if pace == 1 else 's'} a month"
     volume = f"{scale:,} model calls a month"
     if per_month >= price:
         verdict = "It pays for itself on avoided tickets alone; volume is upside."
@@ -5317,6 +5445,14 @@ def _returns_html(g, proj, scale: int, toggle: str) -> str:
             f'<p class="sc-foot">If you run frontier models today: model cost saved would be '
             f'${on_frontier:,.0f}, not ${saved:,.0f}. That is ${on_frontier - saved:,.0f} more, '
             f'<span class="sc-event">estimate</span>, and not in the total.</p>')
+    measured = (proj.get("avoided_vs_benchmark") or {}).get("cost")
+    if measured is not None and g.get("benchmark"):
+        bench = g["benchmark"]
+        frontier += (
+            f'<p class="sc-foot">Against {_esc(bench["label"].lower())} (run '
+            f'{bench["run_number"]}, the same {_esc(many)} with every one on a model, '
+            f'measured): model cost saved would be ${measured:,.0f}, not ${saved:,.0f}. The '
+            f'total uses the lower figure.</p>')
     n, months = tickets["count"], tickets["months"]
     return (
         f'<section class="sc-panel sc-returns"><div class="sc-panel-head"><div>'
@@ -5434,7 +5570,8 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         f'{_esc(str(g["title"]).upper())} · RUN {_esc(g["run_number"])} · {total} '
         f'{_esc(many.upper())}</div>'
         + (f'<h1>{_esc(g["headline"]["lead"])}</h1>'
-           f'<p>{_esc(_opening(g, chain, one, many))}</p>{_audit_chip(chain, g, total)}'
+           f'<p>{_esc(_opening(g, chain, one, many))}</p>{_benchmark_opening(g)}'
+           f'{_audit_chip(chain, g, total)}'
            if g.get("headline") and g.get("periods") else
            f'<h1>{keg_n} of {total} {_esc(many)} decided with no model. '
            f'<span class="sc-event">{_esc(traceable)}</span></h1>'
@@ -5493,8 +5630,18 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     else:
         text = "No keg decision was revised."
     brake_tile = _tile("THE BRAKE", f"{misses} miss" + ("" if misses == 1 else "es"), text)
+    against_tile = ""
+    bench = g.get("benchmark")
+    if bench and bench["units"] == total and bench["totals"]["cost"] and not bench["keg_units"]:
+        ours, theirs = g["totals"], bench["totals"]
+        against_tile = _tile(
+            f'AGAINST {bench["label"].upper()} · MEASURED', _less(ours["cost"], theirs["cost"]),
+            f'model cost for the same {total} {many}: {_money(ours["cost"])} here, '
+            f'{_money(theirs["cost"])} in run {bench["run_number"]}. '
+            f'{ours["model_calls"]:g} model calls against {theirs["model_calls"]:g}; '
+            f'{_span(ours["seconds"])} of machine time against {_span(theirs["seconds"])}.')
     tiles = (f'<section class="sc-tiles" aria-label="Headline numbers">'
-             f'{speed}{cost}{signed}{brake_tile}</section>')
+             f'{against_tile}{speed}{cost}{signed}{brake_tile}</section>')
 
     # 3. Chart
     chart = (
@@ -5605,6 +5752,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
             n = learning["backtests"]
             learned.append(f'{n} backtest{"" if n == 1 else "s"}, $0: replays with no model')
         cols = ""
+        bench = g.get("benchmark")
         for index, period in enumerate(g["periods"]):
             n = period["units"]
 
@@ -5622,6 +5770,19 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
             else:
                 against = _line(f"Model cost per {RATE_PER:,}",
                                 _rate(period["cost_per_unit"]), "no priced baseline")
+            theirs = period.get("benchmark")
+            if bench and theirs:
+                against += (
+                    _line(f'{bench["label"]}, measured (run {bench["run_number"]})',
+                          f'{_money(period["cost"])} vs {_money(theirs["cost"])}',
+                          f'{_less(period["cost"], theirs["cost"])} cost for the same {n}')
+                    + _line("Machine time each, against that run",
+                            f'{_sc_seconds(period["seconds_per_unit"])} vs '
+                            f'{_sc_seconds(theirs["seconds_per_unit"])}',
+                            _less(period["seconds_per_unit"], theirs["seconds_per_unit"]))
+                    + _line("Model calls, against that run",
+                            f'{period["model_calls"]:g} vs {theirs["model_calls"]:g}',
+                            _less(period["model_calls"], theirs["model_calls"])))
             cols += (
                 f'<div class="sc-version"><div class="sc-version-head"><strong>'
                 f'{_esc(period["label"])}</strong><span class="sc-eyebrow">'
@@ -5663,6 +5824,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
             + (f'All-model rate: {_rate(rate)} per {RATE_PER:,}, what model-decided '
                f'{_esc(many)} cost in {_esc(g["periods"][0]["label"])}.'
                if rate is not None else "")
+            + _benchmark_foot(g)
             + '</p></section>')
     panels = (f'<section class="sc-pair">{who}<div class="sc-panel"><h3>Standard work, '
               f'as signed</h3><div class="sc-versions">{cards}</div></div></section>')
@@ -5678,17 +5840,27 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     def _row(label, row, basis, strong=False):
         return (f'<tr class="{"sc-strong" if strong else ""}"><td>{_esc(label)}</td>'
                 f'<td>{_money(row["cost"])}</td><td>{_compact(row["model_calls"])}</td>'
-                f'<td>{_compact(row["tokens"])}</td><td>{_model_time(row["hours"])}</td>'
+                f'<td>{_compact(row["tokens"])}</td><td>{_model_hours(row["hours"])}</td>'
                 f'<td class="sc-basis">{_esc(basis)}</td></tr>')
 
     table = (
         f'<details class="sc-older"><summary>Show the working</summary><div class="sc-scroll">'
         f'<table class="sc-table sc-wide"><thead><tr><th></th><th>COST</th><th>MODEL CALLS</th>'
-        f'<th>TOKENS</th><th>TIME DECIDING</th><th>BASIS</th></tr></thead><tbody>'
-        + _row(f"Every {one} decided by a model", proj["all_model"], "measured")
+        f'<th>TOKENS</th><th>MACHINE TIME</th><th>BASIS</th></tr></thead><tbody>'
+        + _row(f"Every {one} decided by a model", proj["all_model"],
+               "scaled from this run's model turns")
         + _row(f"With keg v{cov['version']} serving" if cov["keg"] else "With a keg serving",
-               proj["with_keg"], "measured")
+               proj["with_keg"], "scaled from this run")
         + _row("Avoided", proj["avoided"], "difference", strong=True))
+    if proj.get("benchmark"):
+        table += (
+            f'<tr><td colspan="6" class="sc-eyebrow">MEASURED · '
+            f'{_esc(g["benchmark"]["label"].upper())} · RUN {g["benchmark"]["run_number"]}'
+            f'</td></tr>'
+            + _row(f'Every {one} decided by a model, as run {g["benchmark"]["run_number"]} '
+                   f'measured it', proj["benchmark"], "scaled from that run")
+            + _row("Avoided against that run", proj["avoided_vs_benchmark"], "difference",
+                   strong=True))
     if proj["all_frontier"]["cost"] is not None:
         def _est(label, cost):
             return (f'<tr><td>{_esc(label)}</td><td>{_money(cost)}</td><td>—</td><td>—</td>'
@@ -5707,12 +5879,14 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     if cov["keg"]:
         avoided, every, kept = proj["avoided"], proj["all_model"], proj["with_keg"]
         rest = cov["of"] - cov["covered"]
-        lede = (f'Scaled from this run. Keg v{_esc(cov["version"])} answers {cov["covered"]} of '
-                f'{cov["of"]} {_esc(many)} with no model, so '
+        basis = proj["per_call"]
+        lede = (f'Scaled from this run. Keg v{_esc(cov["version"])} would now answer '
+                f'{cov["covered"]} of this run\'s {cov["of"]} {_esc(many)} with no model, so '
                 f'{audit_mod._pct(cov["covered"], cov["of"])} of those calls are never made. '
                 + (f'The other {rest} still call{"s" if rest == 1 else ""} one.' if rest else
-                   "None still calls one."))
-        basis = proj["per_call"]
+                   "None still calls one.")
+                + (f' A model-decided {_esc(one)} took {basis["calls_per_unit"]:.1f} calls in '
+                   f'this run.' if basis["calls_per_unit"] else ""))
         basis_text = (
             "Per-call basis, measured this run: "
             + (f"${basis['cost'] * 1000:,.2f} per 1,000 model calls; "
@@ -5736,10 +5910,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
             f'<div class="sc-save-figure sc-down">{_whole(avoided["cost"])}'
             f'<span class="sc-unit"> / month</span></div>'
             f'<div class="sc-note">{measured_sub}</div>'
-            f'<div class="sc-quiet">Understated: '
-            + ("cached context re-read is priced; " if g["cache_read_priced"]
-               else "cached context re-read is not priced, and ")
-            + 'the classifier\'s own call is not counted.</div></div>')
+            f'<div class="sc-quiet">{_esc(_understated(g, proj))}</div></div>')
         if proj["all_frontier"]["cost"] is not None:
             saved = proj["all_frontier"]["cost"] - proj["frontier_with_keg"]
             cards += (
@@ -5762,16 +5933,17 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
             _chip("No model", f'{cov["covered"]} of {cov["of"]}', f'{cover_pct} of {many}')
             + _chip("Fewer model calls", _compact(avoided["model_calls"]),
                     f'{_compact(every["model_calls"])} down to {_compact(kept["model_calls"])}')
-            + _chip("Less time deciding", _model_time(avoided["hours"]),
-                    f'{_model_time(every["hours"])} down to {_model_time(kept["hours"])}'))
-        same = (f' Coverage and cost cut are both {cover_pct} here; they are not the same '
-                f'figure.' if cut_pct is not None and cover_pct == f"{cut_pct}%" else "")
+            + _chip("Less machine time waiting on a model", _model_hours(avoided["hours"]),
+                    f'{_model_hours(every["hours"])} down to {_model_hours(kept["hours"])}'))
+        same = (' The cost cut follows from coverage: an item the keg answers makes no '
+                'model call.')
         body = (
             f'<p class="sc-lead" title="{_esc(basis_text)}">{lede}</p>'
             f'<div class="sc-saves">{cards}</div>'
             f'<div class="sc-facts">{chips}</div>'
-            f'<p class="sc-foot">Measured figures use routing-config prices, scaled from this '
-            f'run. Frontier figures price the same mix at that model\'s rates.{same}</p>')
+            f'<p class="sc-foot">{_esc(_price_basis(g))} Scaled from this run. Frontier '
+            f'figures price the same tokens, fresh and re-read, at that model\'s declared '
+            f'rates.{same}</p>')
     else:
         body = (f'<p class="sc-lead">No keg is serving, so nothing is avoided yet.</p>')
     # The economics section: what one dock returns (when the goal declares its
@@ -5791,15 +5963,17 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     # 6. Footer — the methodology caveats, unchanged in substance.
     footer = (
         '<footer class="sc-footer"><details class="sc-older"><summary>How these figures were '
-        'measured</summary>Costs use the prices declared in the routing config. '
-        + ("Cached context re-read is priced. " if g["cache_read_priced"] else
+        f'measured</summary>{_esc(_price_basis(g))} '
+        + ("" if g.get("source_provider") or g["cache_read_priced"] else
            "Cached context re-read is counted in tokens but NOT priced (no price is "
            "declared for it), so model cost is understated. ")
-        + f'Not included: {_esc(not_included)}. Both make the keg\'s saving larger than '
-        f'shown. Each {_esc(one)}\'s confirmation turn is separate and not counted here. '
+        + _classifier_note(g, not_included)
+        + f'Each {_esc(one)}\'s confirmation turn is separate and not counted here. '
         f'Volume rows scale this run\'s measured per-{_esc(one)} figures. The frontier '
-        f'estimate prices this run\'s fresh tokens at that model\'s declared rates.'
-        f'</details></footer>')
+        f'estimate prices this run\'s tokens, fresh and re-read, at that model\'s declared '
+        f'rates; no frontier call was made.'
+        + _benchmark_foot(g)
+        + '</details></footer>')
     return (f'<div class="sc">{header}{_rate_row_html(g)}{periods}{tiles}{chart}{panels}'
             f'{volume}{footer}</div>')
 
