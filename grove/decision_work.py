@@ -1908,8 +1908,8 @@ class DecisionWork:
                         and record.get("dock_goal") == self.config.goal_id
                         and record.get("lineage") == run.get("run_id")):
                     lines.append(
-                        f"Keg v{record.get('version')} halted: covered {many} go back to "
-                        f"the model until you rule on the fix.")
+                        f"Keg v{record.get('version')} halted: the {many} it served run on "
+                        f"a model until you sign the fix.")
             from grove import reissue
             from grove.eval.proposal_queue import read_all
             carded = {h["proposal_id"] for h in reissue.holds()}
@@ -2685,8 +2685,8 @@ class DecisionWork:
             if event.get("halted"):
                 keg = (event.get("details") or {}).get("keg") or {}
                 lines.append(
-                    f"Keg v{keg.get('version')} halted: covered {many} go back to the "
-                    f"model until you rule on the fix.")
+                    f"Keg v{keg.get('version')} halted: the {many} it served run on a "
+                    f"model until you sign the fix.")
             answer = event.get("answer") or {}
             if answer.get("kind") == "standard_work" and getattr(self, "cards_offered", 0):
                 pass      # on its own card, with its own buttons
@@ -2814,13 +2814,13 @@ class DecisionWork:
         elif self.config.batch_order == BATCH_ITEM_ORDER and left:
             done = self.config.work_session.done_word.capitalize()
             ahead = len(result.get("for_model") or [])
-            lead = ((f"Signed: v{result['keg']['version']} is in force.\n" if fresh else "")
+            lead = ((f"Signed. Keg v{result['keg']['version']} is serving.\n" if fresh else "")
                     + (f"{done} {coded} by the keg v{result['keg']['version']} · 0 model "
                        f"calls · {left} to go.\n" if coded else "")
                     + self._next_for_model_line(serving[0], inputs_for, ahead))
         else:
             done = self.config.work_session.done_word.capitalize()
-            signed = (f"Signed: v{result['keg']['version']} is in force.\n"
+            signed = (f"Signed. Keg v{result['keg']['version']} is serving.\n"
                       if fresh and coded and self.config.batch_order == BATCH_ITEM_ORDER else "")
             lead = (f"{signed}{done} {coded} of {total} · {coded} by the keg "
                     f"v{result['keg']['version']} · 0 model calls.")
@@ -2840,8 +2840,8 @@ class DecisionWork:
     def _next_for_model_line(self, spec: Mapping[str, Any], inputs_for: Any,
                              ahead: int) -> str:
         """One line on the item the keg just stopped at: what it is (its
-        reference key, when the goal has one) and why it goes to a model — no
-        rule covers it, or a rule sends it there."""
+        reference key, when the goal has one) and why it runs on a model: the
+        keg has nothing compiled for it yet, or a signed change keeps it there."""
         from grove import keg as keg_mod
 
         one, many = self.config.item_name
@@ -2852,13 +2852,13 @@ class DecisionWork:
             key = self.config.reference.key_input if self.config.reference else None
             label = str(inputs.get(key) or label) if key else label
             rule = keg_mod.match(spec, inputs)
-            why = ("a rule sends it to a model" if rule is not None and rule.get("defer")
-                   else "not covered by any rule, so it goes to a model")
+            why = ("A signed change keeps it on a model" if rule is not None and rule.get("defer")
+                   else "Not compiled yet, so it runs on a model")
         except (ValueError, OSError, TypeError):
-            why = "it could not be read by the keg, so it goes to a model"
-        more = (f" Then {ahead - 1} more for a model before the keg's next run."
+            why = "The keg could not read it, so it runs on a model"
+        more = (f" Then {ahead - 1} more run on a model before the keg serves again."
                 if ahead > 1 else "")
-        return f"Next: {label}, {why}.{more}"
+        return f"Next: {label}. {why}.{more}"
 
     def tally(self, batch: Optional[str] = None) -> Dict[str, int]:
         """How this run's decided items stand — or one batch's, when given.

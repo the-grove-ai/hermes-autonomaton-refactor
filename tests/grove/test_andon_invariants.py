@@ -777,8 +777,8 @@ def test_confirmed_decisions_for_an_unlisted_key_become_a_proposed_rule(env, mon
     assert len(proposal.evidence) == 3
     # The card states the count and the threshold the goal's rule asks for.
     assert proposal.semantic_justification == (
-        "Adds one rule: channel 'social' is answered comms, as you "
-        "confirmed it 3 times (the goal's rule asks for 3).")
+        "Compiles one change: social settles as comms, as you "
+        "confirmed it 3 times (the goal asks for 3).")
     detail = event["answer"]["detail"]
     assert (detail["would_change"], detail["rules_added"]) == (0, 1)
     assert "You confirmed 'social' the same way 3 times" in event["answer"]["summary"]
@@ -863,7 +863,7 @@ def test_two_keys_earned_before_signing_ride_one_card(env, monkeypatch):
         {"if": "channel == 'social'", "then": {"tag": "comms"}}]
     assert event["answer"]["detail"]["rules_added"] == 2
     assert event["answer"]["detail"]["replaced"] == [first.proposal_id]
-    assert "one card, 2 rules" in event["answer"]["summary"]
+    assert "one card, 2 changes" in event["answer"]["summary"]
     withdrawn = [e for e in env.events() if e.get("disposition") == "withdrawn"]
     assert [e["proposal_id"] for e in withdrawn] == [first.proposal_id]
     # One signature brings both rules into force.

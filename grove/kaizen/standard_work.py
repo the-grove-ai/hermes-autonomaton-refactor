@@ -475,18 +475,18 @@ def propose_direct_rule(
                                       c["inputs"]) is not None
                   and c["confirmed"] == dict(condition["then"])]
         matching += behind
-        named = condition["if"].split("==", 1)[-1].strip()
+        named = condition["if"].split("==", 1)[-1].strip().strip("'\"")
         if because and condition.get("if") == rule["if"]:
-            # A rule with its own stated ground (an alias of an existing key).
-            added.append(f"{ref.key_input} {named} is answered "
+            # A change with its own stated ground (an alias of an existing key).
+            added.append(f"{named} settles as "
                          f"{work.value_text(dict(condition['then']))}: {because}")
             continue
         asked = (cfg.evidence.confirmed_key_threshold
                  if how == "confirmed" and cfg.evidence is not None else None)
-        added.append(f"{ref.key_input} {named} is answered "
+        added.append(f"{named} settles as "
                      f"{work.value_text(dict(condition['then']))}, as you {how} it "
                      f"{len(behind)} times"
-                     + (f" (the goal's rule asks for {asked})" if asked else ""))
+                     + (f" (the goal asks for {asked})" if asked else ""))
     run = work.log.current_run() or {}
     result = propose_keg(
         store,
@@ -499,12 +499,13 @@ def propose_direct_rule(
         inputs=cfg.inputs, outputs=cfg.outputs,
         conditions=conditions,
         scope_text=(
-            ("Adds one rule: " if len(added) == 1 else f"Adds {len(added)} rules: ")
+            ("Compiles one change: " if len(added) == 1
+             else f"Compiles {len(added)} changes: ")
             + "; ".join(added) + "."
         ),
         reserve=(
             f"Any {ref.key_input} with more than one value in {ref.path.name}; "
-            f"any {ref.key_input} not covered by a rule."
+            f"any {ref.key_input} the keg does not serve."
         ),
         dock_goal=cfg.goal_id, scope=cfg.keg.scope,
         authority_level=cfg.keg.authority_level,

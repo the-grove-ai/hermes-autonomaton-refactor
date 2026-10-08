@@ -1440,10 +1440,10 @@ def test_a_backlog_in_item_order_interleaves_the_keg_and_the_model(env, tmp_path
     # 2026-10-07: the first pass of a version says it is in force; the line on
     # what comes next names the item and why it goes to a model.
     assert first["reply"] == (
-        "Signed: v2 is in force.\n"
+        "Signed. Keg v2 is serving.\n"
         "Tagged 1 by the keg v2 · 0 model calls · 4 to go.\n"
-        "Next: legal, not covered by any rule, so it goes to a model. "
-        "Then 1 more for a model before the keg's next run.")
+        "Next: legal. Not compiled yet, so it runs on a model. "
+        "Then 1 more run on a model before the keg serves again.")
     assert first["batch"]["for_model"] == ["m22", "m23"] and first["next_armed"] is True
     reissue.take("sess")
     # Those two go straight to a model, in order: the request is routed as usual.
@@ -1467,7 +1467,7 @@ def test_a_backlog_in_item_order_interleaves_the_keg_and_the_model(env, tmp_path
     dw.release_backlog(cfg)
     assert work.session_action(ask) == {"action": "batch"}
     opened = work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
-    assert opened["reply"] == "Next: social, not covered by any rule, so it goes to a model."
+    assert opened["reply"] == "Next: social. Not compiled yet, so it runs on a model."
     assert opened["batch"]["coded"] == 0
     reissue.take("sess")
     assert work.session_action(ask) is None and by_model() == "m31"
@@ -1497,14 +1497,14 @@ def test_a_new_keg_version_looks_again_at_what_the_last_one_left(env, tmp_path):
     # yet: the reply still moves the story on.
     after = work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
     assert after["reply"] == (
-        "Signed: v3 is in force.\n"
-        "Next: legal, not covered by any rule, so it goes to a model. "
-        "Then 1 more for a model before the keg's next run.")
+        "Signed. Keg v3 is serving.\n"
+        "Next: legal. Not compiled yet, so it runs on a model. "
+        "Then 1 more run on a model before the keg serves again.")
     # A rule that sends the item to a model says so.
     spec = {"inputs": {"channel": {"data_type": "string"}},
             "conditions": [{"if": "channel == 'legal'", "defer": True}]}
     assert work._next_for_model_line(spec, _read, 1) == (
-        "Next: legal, a rule sends it to a model.")
+        "Next: legal. A signed change keeps it on a model.")
 
 
 def test_the_batch_block_is_declared_and_the_hold_can_be_switched_off(env, tmp_path):

@@ -339,8 +339,8 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
     if halted:
         parts.append(
             f"That revision halted the keg {keg.get('name')} v{keg.get('version')}: "
-            "it no longer codes invoices, and covered invoices go back to the "
-            "model until the operator rules on a fix."
+            "it no longer codes invoices, and the invoices it served run on a "
+            "model until the operator signs a fix."
         )
     for p in proposals:
         if p["kind"] == "standard_work":
@@ -473,7 +473,7 @@ def _apply_keg(work: DecisionWork, args: Dict[str, Any]) -> str:
                             "resembles_corrected", item=str(alike["item_id"]),
                             share=str(alike["share"]))
         if rule is not None and rule.get("defer"):
-            return _decline("a rule of the keg sends this invoice to the model",
+            return _decline("a signed change keeps this invoice on a model",
                             "rule_defers", rule=str(rule.get("if") or ""))
         key = work.config.reference.key_input if work.config.reference else ""
         return _decline("the keg does not cover this invoice", "no_rule", key=str(key),

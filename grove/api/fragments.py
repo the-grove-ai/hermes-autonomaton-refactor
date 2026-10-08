@@ -1577,7 +1577,7 @@ def _keg_card_html(p: dict, view: "_RenderView", pid: str, short_id: str) -> str
         why = (f"You revised one {one} the keg decided. The keg stopped itself, and this "
                f"is the smallest change that would have gotten it right, tested against "
                f"every {one} it has seen.")
-    elif str(view.semantic_justification or "").startswith("Adds "):
+    elif str(view.semantic_justification or "").startswith(("Compiles ", "Adds ")):
         # A rule earned from the operator's own decisions (confirmations, or an
         # existing key under another name): the proposal states its own ground,
         # and the reference table has nothing to do with it.
@@ -5618,7 +5618,7 @@ def _changes_html(g) -> str:
             what, why = f'{tkey} is {same} under another name.', times
         elif tkey:
             value = _keg_value(trigger.get("output")) if trigger.get("output") else ""
-            what = f'{tkey} is answered {value}.' if value else f'{tkey} has a rule.'
+            what = f'{tkey} settles as {value}.' if value else f'{tkey} is compiled.'
             why = f'{times}, none revised' if times else ""
         else:
             what = (f'{v.get("decides")} case{"" if v.get("decides") == 1 else "s"} answered '

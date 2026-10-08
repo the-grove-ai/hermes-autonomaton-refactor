@@ -329,8 +329,8 @@ def _correction(andon: Mapping[str, Any], context: Any) -> Answer:
             kind=KIND_STANDARD_WORK,
             summary=(
                 f"You corrected {key!r} to {details.get('corrected')} "
-                f"{record['seen']} times. Proposed v{out.get('version')} with "
-                f"that as a rule, for your signature. " + replay_summary(out)
+                f"{record['seen']} times. Proposed keg v{out.get('version')} with "
+                f"that change, for your signature. " + replay_summary(out)
             ),
             artifact=out.get("proposal_id"), detail=out,
         )
@@ -339,7 +339,7 @@ def _correction(andon: Mapping[str, Any], context: Any) -> Answer:
         andon, signature=signature,
         description=(
             f"the operator correcting {key!r} to {details.get('corrected')}; "
-            f"{needed} matching corrections promote it to a proposed rule"
+            f"{needed} matching corrections promote it to a proposed change"
         ),
         promote_after=needed,
         promote=_promote if work is not None and work.config.keg is not None else None,
@@ -502,8 +502,8 @@ def _confirmed_key(andon: Mapping[str, Any], context: Any) -> Answer:
             kind=KIND_STANDARD_WORK,
             summary=(
                 f"You confirmed {key!r} the same way {details.get('confirmations')} times, "
-                f"with no revision. Proposed v{out.get('version')} with that as a rule"
-                + (f" (one card, {out['rules_added']} rules)" if more else "")
+                f"with no revision. Proposed keg v{out.get('version')} with that change"
+                + (f" (one card, {out['rules_added']} changes)" if more else "")
                 + ", for your signature. " + replay_summary(out)
             ),
             artifact=out.get("proposal_id"), detail=out,
