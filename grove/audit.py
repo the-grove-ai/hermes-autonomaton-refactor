@@ -53,7 +53,7 @@ NOT_INCLUDED = {
 # Scales the Audit page can project a run to: MODEL CALLS a month, as the
 # reader's agents make them today. Calls, not units of work: a reader knows
 # their call volume, and it is the same unit whatever the work is.
-SCALES = (100_000, 1_000_000, 10_000_000)
+SCALES = (1_000_000, 10_000_000, 50_000_000)
 
 
 def _home(home: Optional[Path]) -> Path:

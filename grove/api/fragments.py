@@ -5412,11 +5412,14 @@ def _benchmark_foot(g) -> str:
             f'{bench["units"]} {_esc(many)}, {how}, measured the same way.{_esc(whole)}')
 
 
-def _returns_html(g, proj, scale: int, toggle: str) -> str:
-    """What one dock returns in a month, at the selected volume: tickets
-    avoided at this run's pace (modeled, so the total is an ESTIMATE) plus the
-    model cost saved (measured), against the dock's declared price. Frontier
-    pricing is never in the total. Empty unless the goal declares a ticket
+def _returns_html(g, proj, scale: int, toggle: str, detail: str = "") -> str:
+    """What one dock returns in a month, at the selected volume, said once:
+    the return and the ROI, then the three things behind them in a row each
+    (engineering avoided, model cost, the speed of settled work), then the
+    sum. Tickets avoided are modeled, so the return is an ESTIMATE; model cost
+    saved is measured. Frontier pricing is never in the return, and neither is
+    time. How every figure is built, and ``detail`` (the panels that show the
+    working), sit folded at the foot. Empty unless the goal declares a ticket
     model with a dock price and a keg is serving."""
     tickets = g.get("tickets") or {}
     model = tickets.get("model") or {}
@@ -5454,98 +5457,94 @@ def _returns_html(g, proj, scale: int, toggle: str) -> str:
             f'measured): model cost saved would be ${measured:,.0f}, not ${saved:,.0f}. The '
             f'total uses the lower figure.</p>')
     n, months = tickets["count"], tickets["months"]
+    net = total - price
+    roi = net / price
+    built = (
+        f'<details class="sc-older sc-roi-built"><summary>How this is built</summary>'
+        f'<p class="sc-foot"><strong>{times:,.1f}×</strong> the dock\'s price at '
+        f'{_esc(volume)}. {_esc(verdict)} The return is ${total:,.0f} a month '
+        f'against a dock price of ${price:,.0f} a month. ROI is the return less the price, '
+        f'over the price.</p>'
+        f'<p class="sc-foot">Tickets avoided, an <span class="sc-event">estimate</span>: '
+        f'{_esc(pace_text)} × {model["hours_per_ticket"]:g} hours × '
+        f'${model["loaded_rate"]:,.2f}. Measured: {n} change{"" if n == 1 else "s"} signed '
+        f'in {months} month{"" if months == 1 else "s"}. Model cost saved, measured: at '
+        f'{_esc(volume)}, scaled from this run.</p>{frontier}{detail}</details>')
     return (
-        f'<section class="sc-panel sc-returns"><div class="sc-panel-head"><div>'
-        f'<div class="sc-eyebrow"><span class="sc-event">ESTIMATE</span> · ONE DOCK, ONE MONTH'
-        f'</div><h2>What one dock returns in a month</h2></div>'
+        f'<section class="sc-panel sc-returns" aria-label="What one dock returns in a month">'
+        f'<div class="sc-panel-head"><div class="sc-eyebrow"><span class="sc-event">ESTIMATE'
+        f'</span> · ONE DOCK, ONE MONTH</div>'
         f'<div class="sc-toggle" role="group" aria-label="{_esc(many.capitalize())} per month">'
         f'{toggle}</div></div>'
-        f'<p class="sc-returns-head"><strong>{times:,.1f}×</strong> the dock\'s price at '
-        f'{_esc(volume)}. {_esc(verdict)}</p>'
-        f'{_case_html(g, proj, scale)}'
+        f'<div class="sc-roi-hero"><div><div class="sc-eyebrow">RETURN</div>'
+        f'<div class="sc-roi-figure">${total:,.0f}<span class="sc-unit"> / month</span></div>'
+        f'<div class="sc-note">at {_esc(volume)}</div></div>'
+        f'<div><div class="sc-eyebrow">ROI</div>'
+        f'<div class="sc-roi-figure {"sc-down" if net > 0 else "sc-up"}">{roi:,.1f}×</div>'
+        f'<div class="sc-note">net ${net:,.0f} on a ${price:,.0f} dock</div></div></div>'
+        f'{_roi_rows_html(g, proj, scale)}'
         f'<div class="sc-returns-sum">'
         f'<div title="At this run\'s pace of {_esc(pace_text)}."><div class="sc-eyebrow">'
         f'TICKETS AVOIDED · <span class="sc-event">ESTIMATE</span></div>'
-        f'<div class="sc-fact-figure">${per_month:,.0f}</div><div class="sc-quiet">'
-        f'{_esc(pace_text)} × {model["hours_per_ticket"]:g} hours × '
-        f'${model["loaded_rate"]:,.2f}. Measured: {n} change{"" if n == 1 else "s"} signed '
-        f'in {months} month{"" if months == 1 else "s"}.</div></div>'
+        f'<div class="sc-fact-figure">${per_month:,.0f}</div></div>'
         f'<div class="sc-op">+</div>'
         f'<div><div class="sc-eyebrow">MODEL COST SAVED · MEASURED</div>'
-        f'<div class="sc-fact-figure">${saved:,.0f}</div><div class="sc-quiet">at '
-        f'{_esc(volume)}, scaled from this run.</div></div>'
+        f'<div class="sc-fact-figure">${saved:,.0f}</div></div>'
         f'<div class="sc-op">=</div>'
-        f'<div><div class="sc-eyebrow">TOTAL · <span class="sc-event">ESTIMATE</span></div>'
-        f'<div class="sc-save-figure">${total:,.0f}<span class="sc-unit"> / month</span></div>'
-        f'<div class="sc-quiet">against a dock price of ${price:,.0f} a month.'
-        + (f' Net ${total - price:,.0f} a month.' if total > price else "")
-        + f'</div></div></div>{frontier}</section>')
+        f'<div><div class="sc-eyebrow">RETURN · <span class="sc-event">ESTIMATE</span></div>'
+        f'<div class="sc-fact-figure">${total:,.0f}<span class="sc-unit"> / month</span></div>'
+        f'</div></div>{built}</section>')
 
 
-def _case_html(g, proj, scale: int) -> str:
-    """The case for the dock in three figures, side by side: engineering time
-    that was never spent (an estimate, from the goal's ticket model), model
-    cost that was never paid (measured) and the speed of settled work
-    (measured). Each says what it rests on. Speed carries no dollar figure and
-    is not in the total."""
+def _roi_rows_html(g, proj, scale: int) -> str:
+    """The three things behind the return, a row each: what it is, the figure
+    that matters in green, and what it rests on. Engineering avoided is the
+    run's own total (the sum below turns it into a month at the run's pace).
+    Model cost is set against the goal's benchmark run when one is declared
+    and covers the same items; otherwise against the scaled all-model figure.
+    Settled work's speed carries no dollar figure and is not in the return."""
     tickets = g.get("tickets") or {}
     one, many = g["item_name"]
 
-    def _card(eyebrow, figure, unit, lead, text):
-        return (f'<div class="sc-tile"><div class="sc-eyebrow">{eyebrow}</div>'
-                f'<div class="sc-figure">{_esc(figure)}'
-                + (f'<span class="sc-unit"> {_esc(unit)}</span>' if unit else "")
-                + f'</div><div class="sc-roi-lead">{_esc(lead)}</div>'
-                f'<div class="sc-note">{_esc(text)}</div></div>')
+    def _row(label, strong, *cells, bar=None, under=""):
+        return (
+            f'<div class="sc-roi-row"><div class="sc-roi-label">{_esc(label)}</div>'
+            f'<div class="sc-roi-cells"><span class="sc-down">{_esc(strong)}</span>'
+            + "".join(f'<span>{_esc(c)}</span>' for c in cells)
+            + (f'<div class="sc-roi-bar" role="img" aria-label="{_esc(under)}">'
+               f'<i style="width:{max(2.0, min(100.0, bar * 100)):.0f}%"></i></div>'
+               if bar is not None else
+               f'<div class="sc-quiet sc-roi-under">{_esc(under)}</div>' if under else "")
+            + '</div></div>')
 
-    cards = ""
+    rows = ""
     n, months = tickets.get("count") or 0, tickets.get("months") or 1
     if tickets.get("dollars") is not None and n:
-        review = _span(tickets.get("review_seconds"))
-        cards += _card(
-            'ENGINEERING NEVER SPENT · <span class="sc-event">ESTIMATE</span>',
-            f'${tickets["dollars"]:,.0f}', f'in {months} month{"" if months == 1 else "s"}',
-            f'{tickets["hours"]:g} engineering hours replaced by {review} of expert review.',
-            f'{n} change{"" if n == 1 else "s"} to the standard work, each proposed by the '
-            f'system and signed by the operator. Engineering tickets filed: 0. '
-            f'${tickets["dollars_per_month"]:,.0f} a month at this pace.')
+        rows += _row("Engineering avoided", f'${tickets["dollars"]:,.0f}',
+                     f'{tickets["hours"]:g} hours', f'{months} month{"" if months == 1 else "s"}')
     saved = (proj.get("avoided") or {}).get("cost")
     bench = g.get("benchmark")
     ours = (g.get("totals") or {}).get("cost")
     whole = bool(bench and not bench["keg_units"] and bench["totals"]["cost"]
                  and bench["units"] == len(g.get("units") or ()))
+    every = (proj.get("all_model") or {}).get("cost")
     if whole and ours is not None:
-        theirs = bench["totals"]
-        cards += _card(
-            "MODEL COST NEVER PAID · MEASURED", _less(ours, theirs["cost"]), "model cost",
-            f'{_money(ours)} against {_money(theirs["cost"])} for the same {bench["units"]} '
-            f'{many}.',
-            f'Against run {bench["run_number"]}, where a model decided every one. '
-            f'{g["totals"]["model_calls"]:g} model calls against {theirs["model_calls"]:g}. '
-            + (f'At {scale:,} model calls a month: ${saved:,.0f} a month.'
-               if saved is not None else ""))
-    elif saved is not None and (proj.get("all_model") or {}).get("cost"):
-        every = proj["all_model"]["cost"]
-        cards += _card(
-            "MODEL COST NEVER PAID · MEASURED", f'${saved:,.0f}', "/ month",
-            f'{_less(every - saved, every)} model cost at {scale:,} model calls a month.',
-            f'Scaled from what this run\'s own model turns cost. A {one} the keg answers '
-            f'makes no model call.')
+        theirs = bench["totals"]["cost"]
+        rows += _row("Model cost", f'{int((1 - ours / theirs) * 100 + 0.5)}% lower',
+                     f'{_money(ours)} vs {_money(theirs)}', bar=ours / theirs,
+                     under=f'This run against run {bench["run_number"]}, the same '
+                           f'{bench["units"]} {many} with a model deciding every one')
+    elif saved is not None and every:
+        rows += _row("Model cost", f'{int(saved / every * 100 + 0.5)}% lower',
+                     f'${every - saved:,.0f} vs ${every:,.0f} a month',
+                     bar=(every - saved) / every,
+                     under=f'Scaled from this run to {scale:,} model calls a month')
     model, keg = g.get("model_avg") or {}, g.get("keg_avg") or {}
     if model.get("seconds") and keg.get("seconds"):
-        machine = ""
-        if whole and bench["totals"].get("seconds"):
-            a, b = g["totals"]["seconds"], bench["totals"]["seconds"]
-            machine = (f' The same {bench["units"]} {many} took {_span(a)} of machine time '
-                       f'against {_span(b)} ({_less(a, b)}).')
-        cards += _card(
-            "SETTLED WORK IS FASTER · MEASURED", f'{model["seconds"] / keg["seconds"]:,.0f}×',
-            "faster",
-            f'{_sc_seconds(keg["seconds"])} for a settled {one}, '
-            f'{_sc_seconds(model["seconds"])} when a model decides.',
-            f'The expert meets only what is new.{machine} Time is not priced and is not in '
-            f'the total.')
-    return f'<div class="sc-tiles sc-roi">{cards}</div>' if cards else ""
+        rows += _row("Settled work", f'{model["seconds"] / keg["seconds"]:,.0f}×',
+                     f'{_sc_seconds(keg["seconds"])} vs {_sc_seconds(model["seconds"])}',
+                     under="not in the return")
+    return f'<div class="sc-roi-rows">{rows}</div>' if rows else ""
 
 
 def _chart_title(g) -> str:
@@ -5903,7 +5902,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         f'<button type="button" aria-pressed="{"true" if n == scale else "false"}" '
         f'hx-get="/portal/fragments/audit/economics?scale={n}" '
         f'hx-target="#sc-volume-{key}" hx-select="#sc-volume-{key}" hx-swap="outerHTML">'
-        f'{_compact(n)} / mo</button>' for n in audit_mod.SCALES)
+        f'{_compact(n)}</button>' for n in audit_mod.SCALES)
 
     def _row(label, row, basis, strong=False):
         return (f'<tr class="{"sc-strong" if strong else ""}"><td>{_esc(label)}</td>'
@@ -6015,23 +6014,21 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     else:
         body = (f'<p class="sc-lead">No keg is serving, so nothing is avoided yet.</p>')
     # The economics section: what one dock returns (when the goal declares its
-    # ticket model and price), then its two components — the tickets panel and
-    # the volume panel. One toggle for the section, at its top; switching it
-    # redraws the whole section.
-    returns = _returns_html(g, proj, scale, toggles)
-    own_toggle = ("" if returns else
-                  f'<div class="sc-toggle" role="group" aria-label="{_esc(many.capitalize())} '
-                  f'per month">{toggles}</div>')
+    # ticket model and price), with the two panels that show the working (the
+    # changes signed, and the model cost at volume) folded at its foot. With
+    # no ticket model there is no return to state, and the panels stand alone.
     detail = (
         f'{_tickets_html(g)}'
         f'<section class="sc-panel" aria-labelledby="sc-vol-{key}">'
         f'<div class="sc-panel-head"><h2 id="sc-vol-{key}">If your agents make {scale:,} '
-        f'model calls a month today</h2>{own_toggle}</div>{body}{table}</section>')
+        f'model calls a month today</h2>OWN_TOGGLE</div>{body}{table}</section>')
+    returns = _returns_html(g, proj, scale, toggles, detail.replace("OWN_TOGGLE", ""))
     if returns:
-        # The case is made above; how each figure is built is one click away.
-        detail = (f'<details class="sc-older sc-roi-working"><summary>How each figure is '
-                  f'built: the changes signed, and the model cost at volume</summary>'
-                  f'{detail}</details>')
+        detail = ""
+    else:
+        detail = detail.replace("OWN_TOGGLE", (
+            f'<div class="sc-toggle" role="group" aria-label="{_esc(many.capitalize())} '
+            f'per month">{toggles}</div>'))
     volume = f'<div class="sc-econ" id="sc-volume-{key}">{returns}{detail}</div>'
 
     # 6. Footer — the methodology caveats, unchanged in substance.

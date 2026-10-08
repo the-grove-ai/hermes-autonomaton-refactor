@@ -354,7 +354,7 @@ def test_audit_page_shows_the_same_figures_and_its_limits(home):
                  "NOT priced", "Not included:", "confirmation turn is separate"):
         assert text in eco, text
     assert eco.count("/portal/fragments/audit/economics?scale=") == len(audit.SCALES) == 3
-    assert eco.count('aria-pressed="true"') == 1 and "1M / mo" in eco
+    assert eco.count('aria-pressed="true"') == 1 and ">1M</button>" in eco
     assert "Audit</a>" in (REPO / "gateway" / "assets" / "portal" / "index.html").read_text()
 
 
@@ -885,7 +885,7 @@ def test_volume_is_stated_in_model_calls_and_scaled_from_the_measured_per_call_b
                              "seconds": pytest.approx(5.0), "share_avoided": 0.75}
     assert p["avoided"]["cost"] == pytest.approx(1_000_000 * 0.75 * 0.002)
     assert p["all_frontier"]["cost"] == pytest.approx(1_000_000 / 3 * 0.06)
-    assert audit.SCALES == (100_000, 1_000_000, 10_000_000)
+    assert audit.SCALES == (1_000_000, 10_000_000, 50_000_000)
     # No model call measured: nothing can be scaled, and nothing is invented.
     empty = audit.project_calls({**g, "model_avg": {"cost": None, "seconds": None,
                                                     "model_calls": None, "tokens": None}}, 1000)
