@@ -1284,6 +1284,52 @@ ul.listing li { padding: 0.7rem 0; }
 #main-nav .nav-brand .brand-sub { margin-left: 0; }
 .sc-roi-title { font-size: 26px; font-weight: 700; margin: 0 0 8px; }
 .sc-roi-unit { font-size: 17px; line-height: 1.5; color: var(--sc-text-2); margin: 16px 0 4px; }
+.sc-gp-status { display: flex; justify-content: space-between; align-items: center; gap: 20px;
+  border: 1px solid var(--sc-line); border-radius: 14px; padding: 16px 20px; background: var(--sc-panel); }
+.sc-gp-status.sc-gp-wait { border-color: var(--sc-event); }
+.sc-gp-status p { margin: 0; font-size: 19px; color: var(--sc-text); }
+.sc-gp-status p span { color: var(--sc-text-2); }
+.sc-gp-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.sc-gp-btn { border: 1px solid var(--sc-line); border-radius: 10px; padding: 10px 16px; font-size: 15px;
+  font-weight: 600; color: var(--sc-text); text-decoration: none; white-space: nowrap; }
+.sc-gp-btn.sc-gp-primary { background: #e9ebef; color: #16181d; border-color: #e9ebef; }
+.sc-gp-btn.sc-gp-sign { background: var(--sc-event); color: #16181d; border-color: var(--sc-event); }
+.sc-gp-top { display: grid; grid-template-columns: 1fr 300px; gap: 16px; }
+.sc-gp-figs { display: grid; grid-template-columns: repeat(3, 1fr); border: 1px solid var(--sc-line);
+  border-radius: 14px; background: var(--sc-panel); }
+.sc-gp-figs > div { padding: 24px 26px; display: flex; flex-direction: column; gap: 10px; }
+.sc-gp-figs > div + div { border-left: 1px solid var(--sc-line); }
+.sc-gp-big { font-size: clamp(44px, 5vw, 72px); font-weight: 500; line-height: 1; white-space: nowrap; }
+.sc-gp-big small { font-size: 0.38em; color: var(--sc-text-2); font-weight: 400; margin-left: 0.2em; }
+.sc-gp-g { color: #9fe3c4; } .sc-gp-w { color: var(--sc-event); }
+.sc-gp-grid { border: 1px solid var(--sc-line); border-radius: 14px; background: var(--sc-panel);
+  padding: 20px; }
+.sc-gp-grid .sc-wf-cells { gap: 5px; margin: 12px 0; }
+.sc-gp-grid .sc-wf-cells i { border-radius: 4px; }
+.sc-gp-r { background: var(--sc-event); } .sc-gp-todo { border: 1px dashed #3a4150; }
+.sc-gp-doc { font-size: 13px; color: var(--sc-text-2); line-height: 1.5; margin: 10px 0 0; }
+.sc-gp-two { display: grid; grid-template-columns: 1.25fr 1fr; gap: 16px; align-items: start; }
+.sc-gp-two h3 { font-size: 22px; margin: 8px 0 6px; }
+.sc-gp-rule { display: grid; grid-template-columns: 1fr auto; gap: 16px; padding: 12px 0;
+  border-bottom: 1px solid var(--sc-line); font-size: 16px; align-items: baseline; }
+.sc-gp-rule b { font-weight: 600; color: var(--sc-text); }
+.sc-gp-rule > span { color: var(--sc-text-2); text-align: right; }
+.sc-gp-ver { font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: 0.08em;
+  color: var(--sc-text-2); border: 1px solid var(--sc-line); border-radius: 5px; padding: 4px 6px;
+  margin-right: 12px; vertical-align: 2px; white-space: nowrap; }
+.sc-gp-form { display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center;
+  padding: 14px 0; border-bottom: 1px solid var(--sc-line); font-size: 16px; }
+.sc-gp-form b { color: var(--sc-text); font-weight: 600; }
+.sc-gp-meter { display: flex; gap: 5px; align-items: center; font-size: 14px; color: var(--sc-text-2); }
+.sc-gp-meter i { width: 22px; height: 8px; border-radius: 4px; background: #3a4150; display: block; }
+.sc-gp-meter i.on { background: #4ED39A; } .sc-gp-meter span { margin-left: 8px; }
+.sc-gp-ready { border: 1px solid var(--sc-event); border-radius: 12px; padding: 14px 16px; margin: 4px 0 6px;
+  display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center; }
+.sc-gp-ready b { color: var(--sc-text); font-size: 17px; font-weight: 600; }
+.sc-gp-gap { margin-top: 18px; }
+@media (max-width: 900px) { .sc-gp-top, .sc-gp-two, .sc-gp-figs { grid-template-columns: 1fr; }
+  .sc-gp-figs > div + div { border-left: 0; border-top: 1px solid var(--sc-line); }
+  .sc-gp-status { flex-direction: column; align-items: flex-start; } }
 .sc-level { align-self: flex-start; font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.14em; color: var(--sc-text-2); border: 1px solid var(--sc-line);
   border-radius: 6px; padding: 6px 9px; margin-top: 14px; }

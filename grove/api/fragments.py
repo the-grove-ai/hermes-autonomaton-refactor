@@ -669,7 +669,7 @@ def _version_ground(trigger, cfg) -> str:
     one, many = cfg.item_name
     table = cfg.reference.path.name if cfg.reference is not None else "the reference table"
     n, need = trigger.get("confirmations"), trigger.get("threshold")
-    asks = f" (the rule asks for {need})" if need else ""
+    asks = f" (the goal asks for {need})" if need else ""
     times = lambda k: "once" if k == 1 else f"{k} times"
     value = _keg_value(trigger.get("output")) if trigger.get("output") else ""
     item, key, same = trigger.get("item"), trigger.get("key"), trigger.get("same_as")
@@ -720,6 +720,7 @@ def _goal_standard_work_html(goal) -> str:
     if cfg is None:
         return ""
     one, many = cfg.item_name
+    who = cfg.operator_called
     work = dw.DecisionWork(cfg)
     run = work.log.current_run() or {}
     tally = work.tally()
@@ -735,38 +736,6 @@ def _goal_standard_work_html(goal) -> str:
     serving = next((v for v in versions if v["serves"]), None)
     coverage = (report or {}).get("coverage") or {}
 
-    def _tile(label, figure, text, event=False):
-        return (f'<div class="sc-tile"><div class="sc-eyebrow">{_esc(label)}</div>'
-                f'<div class="sc-figure{" sc-event" if event else ""}">{_esc(figure)}</div>'
-                f'<div class="sc-note">{_esc(text)}</div></div>')
-
-    tiles = (
-        '<section class="sc-tiles" aria-label="Where this goal stands">'
-        + _tile("THIS RUN", f"{tally['decided']} / {queued}",
-                f"{many} decided in run {run.get('run_number', '—')}. "
-                f"{tally['by_keg']} by the keg, {tally['decided'] - tally['by_keg']} by a model.")
-        + (_tile("STANDARD WORK", f"v{serving['version']}",
-                 "serving: it answers what it covers with no model call.")
-           if serving else
-           _tile("STANDARD WORK", "none",
-                 "No keg is serving. Every " + one + " goes to a model until one is signed."))
-        # The same items, two readings: what the keg decided while it was
-        # still being learned, and what the keg as it now stands would decide.
-        + (_tile(f"THE SAME {coverage['of']}, RUN AGAIN", f"{coverage['share']:.0%}",
-                 f"Keg v{coverage['version']} would decide {coverage['covered']} of these "
-                 f"{coverage['of']} {many} with no model. "
-                 + (f"The keg decided {tally['by_keg']} the first time, while its "
-                    f"rules were still being learned."
-                    if coverage["covered"] > tally["by_keg"] else
-                    f"The keg decided {tally['by_keg']} the first time."))
-           if coverage.get("keg") else "")
-        + _tile("SESSION RULE", "signed" if grant is not None else "not signed",
-                ("In force. It decides what runs with no model."
-                 if grant is not None else
-                 "Not in force until you sign it; no work session will open."),
-                event=grant is None)
-        + '</section>')
-
     # Version by version: what each one changed from the one before.
     store = PatternCacheStore()
     cards, previous = "", None
@@ -778,14 +747,14 @@ def _goal_standard_work_html(goal) -> str:
         diff = keg_mod.diff_rules(previous, rules)
         if previous is None:
             direct = sum(1 for r in rules if not r.get("defer"))
-            changed = [f"First version: {direct} rule{'' if direct == 1 else 's'} that "
-                       f"answer directly."]
+            changed = [f"First version: {direct} case{'' if direct == 1 else 's'} "
+                       f"compiled."]
         else:
             changed = [f"Added: {_keg_sentence(r, inputs)}" for r in diff["added"]]
             changed += [f"Removed: {_keg_sentence(r, inputs)}" for r in diff["removed"]]
             changed += [f"Changed: {_keg_sentence(new, inputs)}" for _, new in diff["changed"]]
             if not changed:
-                changed = ["No rule changed."]
+                changed = ["Nothing changed."]
         facts = []
         ground = _version_ground(v.get("trigger"), cfg)
         if ground:
@@ -796,7 +765,7 @@ def _goal_standard_work_html(goal) -> str:
         if v["feedback"]:
             facts.append("Your feedback: " + "; ".join(f"“{f}”" for f in v["feedback"]) + ".")
         if v["seconds_to_signature"] is not None:
-            facts.append(f"Signed by the {v['signed_by'] or 'operator'} "
+            facts.append(f"Signed by the {who} "
                          f"{_span(v['seconds_to_signature'])} after it was proposed.")
         cards += (
             f'<div class="sc-version{" sc-serving" if v["serves"] else ""}">'
@@ -809,26 +778,8 @@ def _goal_standard_work_html(goal) -> str:
     if not cards:
         cards = ('<div class="sc-note">No keg version has been signed in this run. Kaizen '
                  'proposes one when enough confirmed decisions match the reference table.</div>')
-    history = (f'<div class="sc-panel"><h3>Standard work, version by version</h3>'
+    history = (f'<div class="sc-panel"><h3>The keg, version by version</h3>'
                f'<div class="sc-versions">{cards}</div></div>')
-
-    # The rules in force now.
-    in_force = ""
-    if serving is not None:
-        entry = store.get(serving["pattern_id"])
-        spec = keg_mod.keg_of(entry) if entry is not None else {}
-        inputs = (spec or {}).get("inputs") or {}
-        rows = "".join(
-            f'<div class="sc-row"><span>{_esc(_keg_plain(r, inputs))}</span>'
-            f'<span class="sc-mono">'
-            + ("→ model" if r.get("defer") else _esc(_keg_value(r.get("then"))))
-            + '</span></div>' for r in (spec or {}).get("conditions") or [])
-        reserve = str((spec or {}).get("reserve") or "").strip()
-        in_force = (
-            f'<div class="sc-panel"><h3>The rules in force (keg v{_esc(serving["version"])})'
-            f'</h3><div class="sc-rows">{rows}</div>'
-            + (f'<p class="sc-foot">Always sent to a model: {_esc(reserve)}</p>' if reserve else "")
-            + '</div>')
 
     # How the work runs: the signed session rule, and its phrases.
     ws = cfg.work_session
@@ -850,13 +801,13 @@ def _goal_standard_work_html(goal) -> str:
         f'</div><div class="sc-note" title="{_esc(rule_text)}">'
         + ("These phrases are acted on with no model; everything else goes to one."
            if ws.enabled else
-           f"Each {_esc(one)} is asked for by the operator and goes to a model or the keg.")
+           f"Each {_esc(one)} is asked for by the {_esc(who)} and runs on a model or the keg.")
         + '</div>'
         + (f'<div class="sc-eyebrow">ACTED ON WITH NO MODEL</div><div class="sc-rows">'
            f'{phrases}</div><p class="sc-foot">A message that is exactly a valid value '
-           f'revises the {_esc(one)} waiting. Anything else goes to a model. After each '
+           f'revises the {_esc(one)} waiting. Anything else runs on a model. After each '
            f'decision the next {_esc(one)} is presented.</p>' if ws.enabled else
-           '<p class="sc-foot">The work session is off: the operator asks for each '
+           f'<p class="sc-foot">The work session is off: the {_esc(who)} asks for each '
            + _esc(one) + '.</p>')
         + '</div>')
 
@@ -894,84 +845,219 @@ def _goal_standard_work_html(goal) -> str:
            if cfg.isolated else "These turns may also draw on recalled knowledge.")
         + '</p></div>')
 
-    # What Mylo is watching: rules that are forming from the operator's own
-    # confirmations, and each declared pattern with its count against its
-    # threshold. Read from the records; nothing here proposes anything. The
-    # panel refreshes itself, so the counts move while a batch is worked.
-    watching = ""
-    forming = ""
+    # ── The page, in the order the expert asks ─────────────────────────
+    # 1. Is anything waiting for me?  2. Where does it stand?  3. What does
+    # the keg serve, and what is not compiled yet?  4. How did it get here,
+    # and how is it set up?  The objects are named for what they are: a
+    # change is signed, compiles into the keg, and serves.
+    from grove.eval.proposal_queue import read_all as _read_proposals
+
     try:
-        forming = "".join(
-            f'<div class="sc-row"><span>{_esc(r["key"])} <span class="sc-quiet">· '
-            + (f'same {_esc(r["key_name"])} as {_esc(r["same_as"])}' if r.get("same_as") else
-               f'same {_esc(r["word"])}, none revised')
-            + '</span></span><span class="sc-mono">'
-            + ("" if r.get("same_as") else
-               f'{_esc(r["count"])} of {_esc(r["threshold"])} confirmations ')
-            + f'<span class="sc-eyebrow{" sc-on" if r["state"] == "in the keg" else ""}">'
-            f'{_esc(r["state"].upper())}</span></span></div>'
-            for r in _forming_rules(work, serving, store, versions))
+        to_sign = [q for q in _read_proposals()
+                   if ((q.payload or {}).get("keg") or {}).get("dock_goal") == cfg.goal_id]
     except Exception as exc:  # noqa: BLE001 — the goal page never fails for a panel
-        logger.warning("[fragments] forming rules unavailable for %s: %r", goal.id, exc)
+        logger.warning("[portal] goal page: proposals unavailable for %s: %r", cfg.goal_id, exc)
+        to_sign = []
+    pending = work.pending()
+    decided, by_keg = tally["decided"], tally["by_keg"]
+    unsigned = grant is None          # the session rule itself is waiting for a signature
+    waiting = len(to_sign) + (1 if pending is not None else 0) + (1 if unsigned else 0)
+    left = max(queued - decided, 0)
+
+    # 1. The status line, with the actions on it.
+    if unsigned:
+        lead = "This goal's session rule is not signed."
+        rest = "No work session will open until you sign it."
+    elif to_sign:
+        n = len(to_sign)
+        lead = (f'{"One change is" if n == 1 else f"{n} changes are"} waiting for your '
+                f'signature.')
+        rest = f'{decided} of {queued} {many} decided in run {run.get("run_number", "—")}.'
+    elif pending is not None:
+        lead = f'One {one} is waiting for your decision.'
+        rest = f'{decided} of {queued} {many} decided in run {run.get("run_number", "—")}.'
+    elif left:
+        lead = f'Run {run.get("run_number", "—")}: {decided} of {queued} {many} decided.'
+        rest = "Nothing is waiting for you."
+    else:
+        lead = (f'Run {run.get("run_number", "—")} is complete: {decided} of {queued} {many} '
+                f'decided.')
+        rest = "Nothing is waiting for you."
+    sign_link = "/portal#fragments/proposals/pending?type=signature"
+    actions = (
+        (f'<a class="sc-gp-btn sc-gp-sign" href="{sign_link}">Review and sign · '
+         f'{len(to_sign) + (1 if unsigned else 0)}</a>' if to_sign or unsigned else "")
+        + f'<a class="sc-gp-btn{"" if to_sign or unsigned else " sc-gp-primary"}" '
+          f'href="/portal#fragments/audit/">Open the scorecard</a>'
+          f'<a class="sc-gp-btn" href="/portal#fragments/trace/">Decision trace</a>'
+        + ("" if to_sign or unsigned
+           else f'<a class="sc-gp-btn" href="{sign_link}">To sign · 0</a>'))
+    status = (f'<div class="sc-gp-status{" sc-gp-wait" if waiting else ""}"><p>{_esc(lead)} '
+              f'<span>{_esc(rest)}</span></p><div class="sc-gp-actions">{actions}</div></div>')
+
+    # 2. Where it stands: three figures, and this run square by square.
+    def _fig(tag, figure, of, what, detail, cls="sc-gp-g"):
+        return (f'<div><div class="sc-roi-tag">{_esc(tag)}</div><div class="sc-gp-big {cls}">'
+                f'{_esc(figure)}' + (f'<small>of {of}</small>' if of is not None else "")
+                + f'</div><div class="sc-roi-what">{_esc(what)}</div>'
+                f'<div class="sc-roi-detail">{_esc(detail)}</div></div>')
+
+    figures = _fig("THIS RUN" + (" · SO FAR" if left else ""), by_keg, decided,
+                   "Settled with no model",
+                   f'{decided - by_keg} ran on a model. You revised {tally["revised"]}.')
+    if coverage.get("keg"):
+        figures += _fig(
+            f'SERVING FROM KEG V{coverage["version"]}', coverage["covered"], coverage["of"],
+            f'Would settle from keg v{coverage["version"]}, no model',
+            f'The same {coverage["of"]} {one if coverage["of"] == 1 else many}, replayed. '
+            f'Replay, not a second score.')
+    else:
+        figures += _fig("NO KEG IS SERVING", "—", None, "Nothing is compiled yet",
+                        f'Every {one} runs on a model until a change is signed.', cls="")
+    figures += _fig("YOUR QUEUE", waiting, None, "Waiting for you",
+                    ("Nothing to sign." if not waiting else
+                     "; ".join(x for x in (
+                         f'{len(to_sign)} change{"" if len(to_sign) == 1 else "s"} to sign'
+                         if to_sign else "",
+                         f'1 {one} to decide' if pending is not None else "",
+                         "the session rule to sign" if unsigned else "") if x) + "."),
+                    cls="sc-gp-w" if waiting else "")
+    units = (report or {}).get("units") or []
+    cells = "".join(
+        f'<i class="{"sc-gp-r" if u["corrected"] else "sc-wf-hit" if u["keg"] else "sc-wf-miss"}" '
+        f'title="{_esc("#" + str(u["order"]) + (" · " + u["label"] if u.get("label") else ""))}">'
+        f'</i>' for u in units) + '<i class="sc-gp-todo"></i>' * left
+    per_row = 10 if len(units) + left <= 200 else 25
+    grid = (
+        f'<div class="sc-gp-grid"><div class="sc-roi-tag">RUN {_esc(run.get("run_number", "—"))} '
+        f'· EACH {_esc(one.upper())}, IN ORDER</div>'
+        f'<div class="sc-wf-cells" style="grid-template-columns:repeat({per_row},1fr)">{cells}'
+        f'</div><p class="sc-gp-doc">Green settled from compiled code. Gray called a model. '
+        f'Orange you revised, and the keg waited.'
+        + (" Outlined are still to come." if left else "") + '</p></div>') if units or left else ""
+    standing = f'<div class="sc-gp-top"><div class="sc-gp-figs">{figures}</div>{grid}</div>'
+
+    # 3a. Compiled, serving: what the keg serves, each row with the keg
+    # version that compiled it. A commit log, newest first.
+    compiled = ""
+    now = work.serving_keg()          # what serves now, whichever run signed it
+    if now is not None:
+        spec = now[0]
+        inputs = (spec or {}).get("inputs") or {}
+        since: Dict[str, Any] = {}
+        earlier = None
+        for v in versions:                       # oldest first: who compiled each case
+            got = store.get(v["pattern_id"])
+            theirs = (keg_mod.keg_of(got) or {}).get("conditions") or [] if got else []
+            for r in keg_mod.diff_rules(earlier, theirs)["added"]:
+                since.setdefault(str(r.get("if")), v["version"])
+            for _old, r in keg_mod.diff_rules(earlier, theirs)["changed"]:
+                since[str(r.get("if"))] = v["version"]
+            earlier = theirs
+        key = cfg.reference.key_input if cfg.reference is not None else None
+
+        def _what(r):
+            text = str(r.get("if") or "")
+            if key and text.startswith(f"{key} == ") and " AND " not in text and " OR " not in text:
+                return text.split("==", 1)[1].strip().strip("'\"")      # the key's own value
+            return _keg_plain(r, inputs)
+
+        conditions = sorted((spec or {}).get("conditions") or [],
+                            key=lambda r: -(since.get(str(r.get("if"))) or 0))
+        rows = "".join(
+            f'<div class="sc-gp-rule"><b><span class="sc-gp-ver">'
+            f'keg v{_esc(since.get(str(r.get("if")), spec.get("version", "?")))}</span>'
+            f'{_esc(_what(r))}</b><span>'
+            + ("Kept on a model" if r.get("defer") else _esc(work.value_text(dict(r.get("then") or {}))))
+            + '</span></div>' for r in conditions)
+        reserve = str((spec or {}).get("reserve") or "").strip()
+        n_v = len(versions)
+        compiled = (
+            f'<section class="sc-panel"><div class="sc-roi-tag">'
+            + (f'{n_v} CHANGE{"" if n_v == 1 else "S"} COMPILED · ' if n_v else "")
+            + f'{len(conditions)} CASE'
+            f'{"" if len(conditions) == 1 else "S"} SERVING</div><h3>Compiled. Serving.</h3>'
+            f'{rows}'
+            + (f'<p class="sc-foot">Not compiled. Still goes to a model: {_esc(reserve)}</p>'
+               if reserve else "")
+            + '</section>')
+    else:
+        compiled = ('<section class="sc-panel"><div class="sc-roi-tag">NOTHING COMPILED</div>'
+                    '<h3>Compiled. Serving.</h3><p class="sc-note">No keg is serving. A change '
+                    'is proposed when enough confirmed decisions agree, and compiles when you '
+                    'sign it.</p></section>')
+
+    # 3b. Not compiled yet: a change waiting for a signature, then what is
+    # still counting. What the keg already serves is not repeated here.
+    ready = "".join(
+        f'<div class="sc-gp-ready"><div><b>{_esc(str(q.semantic_justification or "").split(HANDS_BACK)[0].strip())}</b>'
+        f'<div class="sc-roi-detail">Proposed as keg v'
+        f'{_esc(((q.payload or {}).get("keg") or {}).get("version", "?"))}.</div></div>'
+        f'<a class="sc-gp-btn sc-gp-sign" href="{sign_link}">Sign</a></div>' for q in to_sign)
+    counting = []
+    try:
+        counting = [r for r in _forming_rules(work, serving, store, versions)
+                    if r["state"] != "in the keg"]
+    except Exception as exc:  # noqa: BLE001 — the goal page never fails for a panel
+        logger.warning("[fragments] forming counts unavailable for %s: %r", goal.id, exc)
+    forming = "".join(
+        f'<div class="sc-gp-form"><div><b>{_esc(r["key"])}</b><div class="sc-roi-detail">same '
+        f'{_esc(r["word"])} each time, none revised</div></div><div class="sc-gp-meter">'
+        + "".join(f'<i class="{"on" if k < r["count"] else ""}"></i>'
+                  for k in range(int(r["threshold"])))
+        + f'<span>{_esc(r["count"])} of {_esc(r["threshold"])}</span></div></div>'
+        for r in counting)
     patterns = ""
     if cfg.adaptation.enabled:
         try:
             from grove import adaptation as lane
-            becomes = {"alias": "a phrase you approve in conversation",
-                       "routing_keg": "a routing rule you sign"}
             patterns = "".join(
-                f'<div class="sc-row"><span>{_esc(r["what"])} <span class="sc-quiet">· becomes '
-                f'{_esc(becomes.get(r["becomes"], r["becomes"]))}'
-                + ("" if r["proposes"] else " · counting only for now")
-                + f'</span></span><span class="sc-mono">{_esc(r["count"])} of '
-                f'{_esc(r["threshold"])} <span class="sc-eyebrow'
-                f'{" sc-on" if r["state"] == "live" else ""}">'
-                f'{_esc(str(r["state"]).upper())}</span></span></div>'
-                for r in lane.status(dw.DecisionWork(cfg)))
+                f'<div class="sc-gp-form"><div><b>{_esc(r["what"])}</b></div>'
+                f'<div class="sc-gp-meter"><span>'
+                + ("in use" if r["state"] == "live" else
+                   f'{_esc(r["count"])} of {_esc(r["threshold"])}')
+                + '</span></div></div>'
+                for r in lane.status(dw.DecisionWork(cfg))
+                if r["state"] == "live" or r["proposes"])
         except Exception as exc:  # noqa: BLE001 — the goal page never fails for a panel
-            logger.warning("[fragments] watching panel unavailable for %s: %r", goal.id, exc)
-    if forming or patterns:
-        watching = (
-            f'<section class="sc-pair" id="goal-watching" '
-            f'hx-get="/portal/fragments/goal/{_esc(goal.id)}" hx-trigger="every 5s" '
-            f'hx-select="#goal-watching" hx-target="this" hx-swap="outerHTML">'
-            '<div class="sc-panel"><h3>What Mylo is watching</h3>'
-            + (f'<div class="sc-eyebrow">RULES FORMING FROM YOUR CONFIRMATIONS</div>'
-               f'<div class="sc-rows">{forming}</div>' if forming else "")
-            + (f'<div class="sc-eyebrow">PATTERNS</div>' if forming and patterns else "")
-            + (f'<div class="sc-rows">{patterns}</div>' if patterns else "")
-            + '<p class="sc-foot">Counted from the records. '
-            + ("A rule forms when a model decides a case the reference table does not "
-               "list and you confirm the same answer each time; one revision ends the "
-               "count. At the threshold it becomes a proposal for you to sign. "
-               if forming else "")
-            + ("A phrase is counted only when a model read it and you did not revise the "
-               "result; a revision starts the count again. Take a phrase back by saying "
-               f"“{_esc(cfg.adaptation.forget[0])}” and the phrase."
-               if patterns and cfg.adaptation.forget else "")
-            + '</p></div></section>')
+            logger.warning("[fragments] phrases unavailable for %s: %r", goal.id, exc)
+    asked = cfg.evidence.confirmed_key_threshold if cfg.evidence is not None else None
+    tag = " · ".join(x for x in (
+        f'{len(to_sign)} READY TO SIGN' if to_sign else "",
+        f'{len(counting)} STILL COUNTING' if counting else "") if x) or "NOTHING COUNTING"
+    # The counts refresh themselves while work goes on. A link inside an
+    # element that makes its own request is dead in the browser, so the
+    # change waiting for a signature sits above the refreshing part.
+    not_yet = (
+        f'<section class="sc-panel"><div class="sc-roi-tag">{tag}</div>'
+        f'<h3>Not compiled yet</h3>{ready}<div id="goal-watching" '
+        f'hx-get="/portal/fragments/goal/{_esc(goal.id)}" hx-trigger="every 5s" '
+        f'hx-select="#goal-watching" hx-target="this" hx-swap="outerHTML">{forming}'
+        + ('<p class="sc-note">Nothing is counting toward a change right now.</p>'
+           if not (ready or forming) else "")
+        + (f'<p class="sc-foot">A change compiles when the same {_esc(counting[0]["word"] if counting else "answer")} '
+           f'is confirmed {_esc(asked)} times and you sign it. One revision stops it. At '
+           f'{_esc(asked)} it is yours to sign.</p>' if asked else "")
+        + (f'<div class="sc-roi-tag sc-gp-gap">PHRASES</div>{patterns}' if patterns else "")
+        + '</div></section>')
+    learned = f'<section class="sc-gp-two">{compiled}{not_yet}</section>'
 
-    links = (
-        '<div class="sc-check-line"><a class="sc-run sc-download" '
-        'href="/portal#fragments/audit/">Open the scorecard</a>'
-        '<a class="sc-back-btn sc-download" href="/portal#fragments/trace/">Decision trace</a>'
-        '<a class="sc-back-btn sc-download" '
-        'href="/portal#fragments/proposals/pending?type=signature">To sign</a></div>')
-    # The headline: how many versions, and how fast the operator signed them.
-    waits = sorted(v["seconds_to_signature"] for v in versions
-                   if v["seconds_to_signature"] is not None)
-    headline = ""
-    if waits:
-        mid = len(waits) // 2
-        median = waits[mid] if len(waits) % 2 else (waits[mid - 1] + waits[mid]) / 2
-        took = f"{median:.0f} seconds" if median < 90 else _span(median)
-        headline = (
-            f'<p class="sc-lead"><strong>{len(versions)} version'
-            + ("s, each" if len(versions) != 1 else ",")
-            + f'</strong> signed by the operator in about {_esc(took)}.</p>')
-    return (f'{headline}{tiles}<section class="sc-pair">{history}{in_force or how}</section>'
-            f'{links}<section class="sc-pair">{how if in_force else ""}{reads_html}</section>'
-            f'{watching}')
+    # 4. How it got here, and how it is set up: closed until asked for.
+    review = sum(v["seconds_to_signature"] or 0 for v in versions)
+    got_here = _fold(
+        "How it got here",
+        (f'{len(versions)} change{"" if len(versions) == 1 else "s"}, each proposed by the '
+         f'system and signed by the {who}: {_span(review)} of review in all.'
+         + (f' Keg v{serving["version"]} is serving.' if serving else "")
+         if versions else "No change has been signed in this run yet."),
+        history)
+    pill_word = "SIGNED · IN FORCE" if grant is not None else "NOT SIGNED · NOT IN FORCE"
+    set_up = _fold(
+        "How this work is set up",
+        f'{pill_word.capitalize()}. The phrases acted on with no model, what the work reads '
+        f'from, and the evidence a change needs.',
+        f'<section class="sc-pair">{how}{reads_html}</section>')
+    return f'{status}{standing}{learned}{got_here}{set_up}'
 
 
 def render_goal_detail(app, goal) -> str:

@@ -962,7 +962,7 @@ def test_a_version_says_what_led_to_it_from_the_detector_that_fired():
     # Confirmations that agree with the reference table.
     assert said({"detector": "reference_agreement", "details": {
         "confirmations": 5, "rule": {"threshold": 5}}}) == (
-        "5 confirmations matched channels.csv (the rule asks for 5).")
+        "5 confirmations matched channels.csv (the goal asks for 5).")
     # The operator's correction of a keg decision, with the replay.
     assert said(
         {"detector": "correction", "details": {
@@ -974,7 +974,7 @@ def test_a_version_says_what_led_to_it_from_the_detector_that_fired():
     assert said({"detector": "confirmed_key", "details": {
         "confirmations": 4, "threshold": 4, "key": "press", "output": {"tag": "comms"}}}) == (
         "press is not in channels.csv. You confirmed it 4 times as comms, none revised "
-        "(the rule asks for 4).")
+        "(the goal asks for 4).")
     # An existing key under another name: what identified it, then the answer.
     assert said({"detector": "key_alias", "details": {
         "confirmations": 1, "key": "media", "same_as": "press", "output": {"tag": "comms"},

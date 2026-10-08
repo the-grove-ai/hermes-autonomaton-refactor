@@ -945,17 +945,24 @@ def test_the_goal_page_shows_the_goals_standard_work_from_its_own_records(env, m
     html = fragments.render_goal_detail(None, goal)
     order = [html.index(s) for s in (
         '<div id="goal-detail">', "all goals", "GOAL · ACTIVE",
-        "Tag every message", "THIS RUN", "1 / 2", "STANDARD WORK", "SESSION RULE",
-        "Standard work, version by version",
-        "How this work runs", "SIGNED · IN FORCE",
+        # 2026-10-08: the page answers in the order the expert asks. Is
+        # anything waiting; where it stands; what the keg serves and what is
+        # not compiled yet; then how it got here and how it is set up.
+        "Tag every message", "1 of 2 messages decided.", "Nothing is waiting for you.",
+        "Open the scorecard", "THIS RUN · SO FAR", "Settled with no model",
+        "SERVING FROM KEG V2", "YOUR QUEUE", "Waiting for you",
+        "2 CASES SERVING", "Compiled. Serving.", "keg v2</span>billing",
+        "Not compiled yet",
+        "How it got here", "The keg, version by version",
+        "How this work is set up", "How this work runs", "SIGNED · IN FORCE",
         "These phrases are acted on with no model; everything else goes to one.",
         "ACTED ON WITH NO MODEL",
         "Confirms", "Lets the keg decide a backlog at once",
-        # The version history sits directly under the tiles; the buttons follow
-        # the first pair of panels.
-        "Open the scorecard",
         "What it works from", "Reference table", "channels.csv",
     )]
+    # The objects are a compiler's, not a rules table's.
+    for gone in ("STANDARD WORK", "rules in force", "A rule forms", "Mylo"):
+        assert gone not in html, gone
     assert order == sorted(order)
     # 2026-10-07: nothing on the page that reads as unfinished or internal:
     # no empty attachments section, no keyword tags, no Dock status words;
@@ -992,7 +999,7 @@ def test_the_goal_page_shows_the_goals_standard_work_from_its_own_records(env, m
     links = Links()
     links.feed(html)
     assert links.seen >= 4 and links.dead == []
-    assert 'href="/portal#fragments/proposals/pending?type=signature">To sign<' in html
+    assert 'href="/portal#fragments/proposals/pending?type=signature">To sign · 0<' in html
     # Unsigned: the page says the rule is not in force, in the event color.
     grants_mod.get_grant_store().signed.clear()
     unsigned = fragments.render_goal_detail(None, goal)
