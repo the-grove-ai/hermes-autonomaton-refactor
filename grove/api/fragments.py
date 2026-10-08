@@ -6739,7 +6739,7 @@ async def handle_trace_export(request: web.Request) -> web.Response:
                  f'attachment; filename="{(goal or "decisions")}-trace.jsonl"'})
 
 
-SCALES_DEFAULT = 1_000_000      # the volume the page opens on
+SCALES_DEFAULT = 10_000_000     # the volume the page opens on: the low end of a real deployment
 
 
 def _audit_scale(request: web.Request) -> int:

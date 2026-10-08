@@ -1240,10 +1240,13 @@ def test_a_brand_is_declared_in_a_file_and_never_guessed(tmp_path):
     brand = portal_nav.load_brand(path)
     assert (brand["product"], brand["wordmark_font"]) == ("Acme Runtime", "Some Face")
     mark = portal_nav.render_brand(brand)
-    assert '<li class="nav-brand" style="font-family: Some Face,' in mark and ">ACME</li>" in mark
+    # The mark goes in the top bar, upper left (swapped in beside the nav)...
+    assert ('<div class="brand brand-mark" id="portal-brand" hx-swap-oob="true" '
+            'style="font-family: Some Face,') in mark and ">ACME</div>" in mark
     assert '<link rel="stylesheet" href="https://fonts.example/x.css">' in mark
-    # The top bar's name is swapped to the product, beside the nav.
-    assert 'id="portal-brand" hx-swap-oob="true">Acme Runtime <span' in mark
+    # ...and the product heads the nav column, with "Operator Portal" beneath it.
+    assert ('<li class="nav-brand"><span class="nav-brand-name">Acme Runtime</span>'
+            '<span class="brand-sub">Operator Portal</span></li>') in mark
     for bad in ("product: Acme Runtime\n", "name: Acme\ncolour: red\n", "name: 7\n",
                 "name: Acme\nfont_stylesheet: http://fonts.example/x.css\n", "- Acme\n"):
         path.write_text(bad)

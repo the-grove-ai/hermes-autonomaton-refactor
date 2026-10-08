@@ -1275,8 +1275,13 @@ ul.listing li { padding: 0.7rem 0; }
 
 /* Scorecard: the economics section — what one dock returns, then its two parts */
 .sc-econ { display: flex; flex-direction: column; gap: 16px; }
-#main-nav .nav-brand { list-style: none; font-weight: 700; font-size: 1.5rem; line-height: 1;
-  letter-spacing: -0.035em; text-transform: uppercase; color: #f4f4f5; padding: 0.35rem 0.75rem 1.1rem; }
+.brand.brand-mark { font-weight: 700; font-size: 1.5rem; line-height: 1; letter-spacing: -0.035em;
+  text-transform: uppercase; color: #f4f4f5; }
+#main-nav .nav-brand { list-style: none; display: flex; flex-direction: column; gap: 0.3rem;
+  padding: 0.35rem 0.75rem 1.1rem; }
+#main-nav .nav-brand-name { font-weight: 800; font-size: 1.05rem; letter-spacing: -0.01em;
+  color: var(--text); }
+#main-nav .nav-brand .brand-sub { margin-left: 0; }
 .sc-roi-title { font-size: 26px; font-weight: 700; margin: 0 0 8px; }
 .sc-level { align-self: flex-start; font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
   letter-spacing: 0.14em; color: var(--sc-text-2); border: 1px solid var(--sc-line);

@@ -114,9 +114,9 @@ def load_brand(path: Optional[Path] = None) -> Dict[str, str]:
 
 
 def render_brand(brand: Mapping[str, str]) -> str:
-    """The brand's mark as the nav's first entry, and the top bar's name set
-    to the product (swapped in beside the nav, out of band). Empty when no
-    brand is declared."""
+    """The brand's mark in the top bar, upper left (swapped in beside the
+    nav, out of band), and the product's name as the nav column's first entry
+    with "Operator Portal" beneath it. Empty when no brand is declared."""
     from grove.api.fragments import _esc
 
     if not brand:
@@ -125,10 +125,10 @@ def render_brand(brand: Mapping[str, str]) -> str:
     style = f' style="font-family: {_esc(font)}, var(--font-sans, sans-serif)"' if font else ""
     sheet = (f'<link rel="stylesheet" href="{_esc(brand["font_stylesheet"])}">'
              if brand.get("font_stylesheet") else "")
-    return (f'<li class="nav-brand"{style} aria-label="{_esc(brand["name"])}">{sheet}'
-            f'{_esc(brand["wordmark"])}</li>'
-            f'<div class="brand" id="portal-brand" hx-swap-oob="true">{_esc(brand["product"])}'
-            f' <span class="brand-sub">Operator Portal</span></div>')
+    return (f'<li class="nav-brand"><span class="nav-brand-name">{_esc(brand["product"])}'
+            f'</span><span class="brand-sub">Operator Portal</span></li>'
+            f'<div class="brand brand-mark" id="portal-brand" hx-swap-oob="true"{style} '
+            f'aria-label="{_esc(brand["name"])}">{sheet}{_esc(brand["wordmark"])}</div>')
 
 
 def load_nav(path: Optional[Path] = None) -> Dict[str, Any]:
