@@ -5751,63 +5751,61 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
 
 
 def _roi_rows_html(g, proj, scale: int) -> str:
-    """The three things behind the return, a row each: what it is, the figure
-    that matters in green, and what it rests on. Engineering avoided is the
-    run's own total (the sum below turns it into a month at the run's pace).
-    Model cost is a month at the selected volume, the same figures the sum
-    uses; the measured comparison with the goal's benchmark run is in "How
-    this is built". Settled work's speed carries no dollar figure and is not
-    in the return."""
+    """The three things behind the return, side by side, each led by its
+    figure at the size of the ROI and one step paler, with an arrow for the
+    way the cost went: engineering expense avoided (the run's own total; the
+    sum below turns it into a month at the run's pace), inference expense and
+    time waiting on a model (a month at the selected volume, the same figures
+    the sum uses). Each says whether it is measured or an estimate. Waiting
+    carries no dollar figure and is not in the return."""
     tickets = g.get("tickets") or {}
     one, many = g["item_name"]
 
-    def _row(label, strong, *cells, bar=None, under="", note=False):
+    def _col(tag, figure, what, detail, bar=None, arrow=True):
         return (
-            f'<div class="sc-roi-row"><div class="sc-roi-label">{_esc(label)}</div>'
-            f'<div class="sc-roi-cells"><span class="sc-down">{_esc(strong)}</span>'
-            + "".join(f'<span>{_esc(c)}</span>' for c in cells)
-            + (f'<div class="sc-roi-bar" role="img" aria-label="{_esc(under)}">'
+            f'<div><div class="sc-roi-tag">{tag}</div><div class="sc-roi-big">'
+            + ('<b aria-hidden="true">↓</b>' if arrow else "")
+            + f'{_esc(figure)}</div><div class="sc-roi-what">{_esc(what)}</div>'
+            + (f'<div class="sc-roi-bar" role="img" aria-label="{_esc(detail)}">'
                f'<i style="width:{max(2.0, min(100.0, bar * 100)):.0f}%"></i></div>'
                if bar is not None else "")
-            + (f'<div class="sc-quiet sc-roi-under">{_esc(under)}</div>'
-               if under and (bar is None or note) else "")
-            + '</div></div>')
+            + f'<div class="sc-roi-detail">{_esc(detail)}</div></div>')
 
-    rows = ""
+    cols = ""
     n, months = tickets.get("count") or 0, tickets.get("months") or 1
     if tickets.get("dollars") is not None and n:
-        rows += _row("Engineering expense avoided", f'${tickets["dollars"]:,.0f}',
-                     f'{tickets["hours"]:g} hours', f'{months} month{"" if months == 1 else "s"}')
+        cols += _col(
+            f'<span class="sc-event">ESTIMATE</span> · {months} MONTH{"" if months == 1 else "S"}',
+            f'${tickets["dollars"]:,.0f}', "Engineering expense avoided",
+            f'{tickets["hours"]:g} engineering hours never spent')
     # At the selected volume, in the same dollars as the sum below: what a
     # month of these calls costs with every one on a model, and with the keg
     # serving. (The run's own cost is cents; cents make no case at a glance.)
     saved = (proj.get("avoided") or {}).get("cost")
     every = (proj.get("all_model") or {}).get("cost")
     if saved is not None and every:
-        rows += _row("Reduced inference expense", f'{int(saved / every * 100 + 0.5)}% lower',
+        cols += _col("MEASURED", f'{int(saved / every * 100 + 0.5)}%',
+                     "Reduced inference expense",
                      f'${every - saved:,.0f} vs ${every:,.0f} a month',
-                     bar=(every - saved) / every,
-                     under=f'With the keg serving against every {one} on a model, scaled '
-                           f'from this run to {scale:,} model calls a month')
+                     bar=(every - saved) / every)
     # Waiting on a model, at the same volume: the hours a month of these calls
-    # spends waiting with every one on a model, and with the keg serving. A
-    # second or two a decision says nothing; a month of them does.
+    # spends waiting. A second or two a decision says nothing; a month does.
     wait_all = (proj.get("all_model") or {}).get("hours")
     wait_kept = (proj.get("with_keg") or {}).get("hours")
     model, keg = g.get("model_avg") or {}, g.get("keg_avg") or {}
+    faster = (f'{model["seconds"] / keg["seconds"]:,.0f}×'
+              if model.get("seconds") and keg.get("seconds") else "")
     if wait_all and wait_kept is not None:
-        faster = (f'Settled work is {model["seconds"] / keg["seconds"]:,.0f}× faster. '
-                  if model.get("seconds") and keg.get("seconds") else "")
-        rows += _row("Reduced wait on models",
-                     f'{int((1 - wait_kept / wait_all) * 100 + 0.5)}% lower',
-                     f'{wait_kept:,.0f} vs {wait_all:,.0f} hours a month',
-                     bar=wait_kept / wait_all, note=True,
-                     under=f'{faster}Not priced; not in the return.')
-    elif model.get("seconds") and keg.get("seconds"):
-        rows += _row("Settled work", f'{model["seconds"] / keg["seconds"]:,.0f}×',
-                     f'{_sc_seconds(keg["seconds"])} vs {_sc_seconds(model["seconds"])}',
-                     under="not in the return")
-    return f'<div class="sc-roi-rows">{rows}</div>' if rows else ""
+        cols += _col("MEASURED · NOT IN THE RETURN",
+                     f'{int((1 - wait_kept / wait_all) * 100 + 0.5)}%', "Reduced wait on models",
+                     f'{wait_kept:,.0f} vs {wait_all:,.0f} hours a month'
+                     + (f' · settled work is {faster} faster' if faster else ""),
+                     bar=wait_kept / wait_all)
+    elif faster:
+        cols += _col("MEASURED · NOT IN THE RETURN", faster, "Settled work is faster",
+                     f'{_sc_seconds(keg["seconds"])} vs {_sc_seconds(model["seconds"])} each',
+                     arrow=False)
+    return f'<div class="sc-roi-three">{cols}</div>' if cols else ""
 
 
 def _chart_title(g) -> str:
