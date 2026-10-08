@@ -5507,15 +5507,16 @@ def _roi_rows_html(g, proj, scale: int) -> str:
     tickets = g.get("tickets") or {}
     one, many = g["item_name"]
 
-    def _row(label, strong, *cells, bar=None, under=""):
+    def _row(label, strong, *cells, bar=None, under="", note=False):
         return (
             f'<div class="sc-roi-row"><div class="sc-roi-label">{_esc(label)}</div>'
             f'<div class="sc-roi-cells"><span class="sc-down">{_esc(strong)}</span>'
             + "".join(f'<span>{_esc(c)}</span>' for c in cells)
             + (f'<div class="sc-roi-bar" role="img" aria-label="{_esc(under)}">'
                f'<i style="width:{max(2.0, min(100.0, bar * 100)):.0f}%"></i></div>'
-               if bar is not None else
-               f'<div class="sc-quiet sc-roi-under">{_esc(under)}</div>' if under else "")
+               if bar is not None else "")
+            + (f'<div class="sc-quiet sc-roi-under">{_esc(under)}</div>'
+               if under and (bar is None or note) else "")
             + '</div></div>')
 
     rows = ""
@@ -5534,8 +5535,21 @@ def _roi_rows_html(g, proj, scale: int) -> str:
                      bar=(every - saved) / every,
                      under=f'With the keg serving against every {one} on a model, scaled '
                            f'from this run to {scale:,} model calls a month')
+    # Waiting on a model, at the same volume: the hours a month of these calls
+    # spends waiting with every one on a model, and with the keg serving. A
+    # second or two a decision says nothing; a month of them does.
+    wait_all = (proj.get("all_model") or {}).get("hours")
+    wait_kept = (proj.get("with_keg") or {}).get("hours")
     model, keg = g.get("model_avg") or {}, g.get("keg_avg") or {}
-    if model.get("seconds") and keg.get("seconds"):
+    if wait_all and wait_kept is not None:
+        faster = (f'Settled work is {model["seconds"] / keg["seconds"]:,.0f}× faster. '
+                  if model.get("seconds") and keg.get("seconds") else "")
+        rows += _row("Time waiting on a model",
+                     f'{int((1 - wait_kept / wait_all) * 100 + 0.5)}% lower',
+                     f'{wait_kept:,.0f} vs {wait_all:,.0f} hours a month',
+                     bar=wait_kept / wait_all, note=True,
+                     under=f'{faster}Not priced; not in the return.')
+    elif model.get("seconds") and keg.get("seconds"):
         rows += _row("Settled work", f'{model["seconds"] / keg["seconds"]:,.0f}×',
                      f'{_sc_seconds(keg["seconds"])} vs {_sc_seconds(model["seconds"])}',
                      under="not in the return")
