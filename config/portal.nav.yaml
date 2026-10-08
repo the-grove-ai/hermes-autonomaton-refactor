@@ -7,8 +7,8 @@
 # entry changes what a page shows, and every target is an existing page.
 #
 # The order tells the story: do the work, sign what it learned, see the
-# result and check the record. What the system knows and how it is set up
-# come after.
+# result and check the record. How the node is set up comes after. Every goal
+# is still reachable from the goal page's own link to the list of goals.
 #
 # An item is one of:
 #   {label, target}                    a link to an existing page
@@ -34,39 +34,33 @@ flags:
 hidden_skills: [forge-jobsearch, scout-jobsearch]
 
 groups:
-  - label: Work
+  # The dock: one shared context. Its work, what is waiting for a signature,
+  # what the work returned, and the record behind it, in the order the story
+  # is told. The trace is the proof; the audit check is the check on the proof.
+  - label: Dock
     items:
       - goals_with_work: true
-      - {label: All goals, target: fragments/dock/goals}
-
-  # What changes the system's authority, and so needs your signature: keg
-  # versions, session rules, Kaizen's requests. The badge counts only these.
-  - label: To sign
-    target: fragments/proposals/pending?type=signature
-    badge: to_sign
-
-  - label: Results
-    items:
+      # What changes the system's authority, and so needs your signature: keg
+      # versions, session rules, Kaizen's requests. The badge counts only these.
+      - {label: To sign, target: "fragments/proposals/pending?type=signature", badge: to_sign}
       - {label: Scorecard, target: fragments/audit/}
+      - {label: Reasoning trace, target: fragments/trace/}
       - {label: Audit check, target: "fragments/audit/?at=audit-integrity"}
-      - {label: Decision trace, target: fragments/trace/}
+      # Save the node's records at one moment and put them back. Demo mode only.
+      - {label: Checkpoints, target: fragments/checkpoints/, demo_only: true}
 
-  - label: What it knows
+  - label: Admin
     items:
+      - {label: Models, target: fragments/binding/panel}
+      - {label: Connected tools, target: fragments/composition/panel}
+      - {label: Skills, target: fragments/skills/}
+      - {label: On a schedule, flag: scheduled_skills, indent: true, items: [{scheduled_skills: true}]}
       - {label: Knowledge, target: fragments/cellar/pages}
       - {label: Memory, target: fragments/memory/records}
       # Approved in conversation or here; no signature. Counted on their own.
       - {label: Suggestions, target: "fragments/proposals/pending?type=memory", badge: suggestions, indent: true}
 
-  - label: Setup
+  - label: Advanced
     items:
-      - {label: Models, target: fragments/binding/panel}
-      - {label: Skills, target: fragments/skills/}
-      - {label: On a schedule, flag: scheduled_skills, indent: true, items: [{scheduled_skills: true}]}
-      - {label: Connected tools, target: fragments/composition/panel}
-      - label: Advanced
-        items:
-          - {label: Tool permissions, target: fragments/capabilities/admission}
-          - {label: System overview, target: fragments/dashboard/overview}
-          # Save the node's records at one moment and put them back. Demo mode only.
-          - {label: Checkpoints, target: fragments/checkpoints/, demo_only: true}
+      - {label: Tool permissions, target: fragments/capabilities/admission}
+      - {label: System, target: fragments/dashboard/overview}

@@ -44,7 +44,7 @@ def checkpoints_page_html(note: str = "", confirm: Optional[str] = None,
                           error: str = "") -> str:
     from grove.api.fragments import _esc
 
-    head = ('<header class="sc-header"><div class="sc-eyebrow sc-event">SETUP · ADVANCED</div>'
+    head = ('<header class="sc-header"><div class="sc-eyebrow sc-event">DOCK</div>'
             '<h1>Checkpoints</h1><p>Save the node\'s records at one moment, and put that '
             'moment back to rehearse from it. Nothing is ever deleted: a restore first moves '
             'the current records to a dated archive folder. No record is altered, and every '

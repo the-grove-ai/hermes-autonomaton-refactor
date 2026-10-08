@@ -27,12 +27,13 @@ def test_the_shipped_nav_reads_as_the_story_in_plain_words():
     nav = nav_mod.load_nav(REPO / "config" / "portal.nav.yaml")
     html = nav_mod.render_nav(nav, goals=GOALS, skills=[], live=LIVE)
     assert _text(html) == [
-        "Work", "Invoice GL coding", "All goals",
-        "To sign2",
-        "Results", "Scorecard", "Audit check", "Decision trace",
-        "What it knows", "Knowledge", "Memory", "Suggestions15",
-        "Setup", "Models", "Skills", "Connected tools",
-        "Advanced", "Tool permissions", "System overview",
+        # 2026-10-08: the dock first (its work, what to sign, what it returned
+        # and the record behind it), then how the node is set up.
+        "Dock", "Invoice GL coding", "To sign2",
+        "Scorecard", "Reasoning trace", "Audit check",
+        "Admin", "Models", "Connected tools", "Skills", "Knowledge", "Memory",
+        "Suggestions15",
+        "Advanced", "Tool permissions", "System",
     ]
     # None of the internal words a first-time reader would trip on.
     for word in ("Fleet", "Observers", "Admission", "Composition", "substrate", "Dashboard",

@@ -543,7 +543,7 @@ def test_the_trace_reads_each_decision_step_by_step_from_records(tmp_path, monke
     assert len(lines) == 6 and json.loads(lines[3]) == m4["example"]
 
     html = fragments._trace_html(audit.trace(home))
-    for text in ("DECISION TRACE · MESSAGE TAGGING · RUN 3 · 6 MESSAGES",
+    for text in ("REASONING TRACE · MESSAGE TAGGING · RUN 3 · 6 MESSAGES",
                  "6 decisions on record.", "Download as JSONL (6 lines)",
                  f"/portal/fragments/trace/export?goal={GOAL}",
                  "revised · was finance", "YOU REVISED", "THE KEG WAITED",

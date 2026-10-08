@@ -889,7 +889,7 @@ def _goal_standard_work_html(goal) -> str:
          f'{len(to_sign) + (1 if unsigned else 0)}</a>' if to_sign or unsigned else "")
         + f'<a class="sc-gp-btn{"" if to_sign or unsigned else " sc-gp-primary"}" '
           f'href="/portal#fragments/audit/">Open the scorecard</a>'
-          f'<a class="sc-gp-btn" href="/portal#fragments/trace/">Decision trace</a>'
+          f'<a class="sc-gp-btn" href="/portal#fragments/trace/">Reasoning trace</a>'
         + ("" if to_sign or unsigned
            else f'<a class="sc-gp-btn" href="{sign_link}">To sign · 0</a>'))
     status = (f'<div class="sc-gp-status{" sc-gp-wait" if waiting else ""}"><p>{_esc(lead)} '
@@ -6680,7 +6680,7 @@ def _trace_html(report) -> str:
     that settled from the keg is quiet. The counts above the list filter it.
     A revised item and one the model asked about open on their own."""
     if not report["goals"]:
-        return ('<div id="trace-page"><div class="card"><h4>Decision trace</h4>'
+        return ('<div id="trace-page"><div class="card"><h4>Reasoning trace</h4>'
                 '<p>No decision work has run yet.</p></div></div>')
     blocks = []
     for g in report["goals"]:
@@ -6694,7 +6694,7 @@ def _trace_html(report) -> str:
         who = g.get("operator_called") or "operator"
         on_model = len(decided) - by_keg
         header = (
-            f'<header class="sc-header"><div class="sc-eyebrow sc-event">DECISION TRACE · '
+            f'<header class="sc-header"><div class="sc-eyebrow sc-event">REASONING TRACE · '
             f'{_esc(str(g["title"]).upper())} · RUN {_esc(g["run_number"])} · {len(items)} '
             f'{_esc(many.upper())}</div>'
             f'<h1>{len(decided)} decisions on record. <span class="sc-event">Each with its '
