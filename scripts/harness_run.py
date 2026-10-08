@@ -26,6 +26,20 @@ What varies between runs (``--seed``): how a confirmation is given (the
 button's message, the word, or "ship it" once it has been earned) and short
 pauses. The rulings never vary: a random correction would teach a wrong rule.
 
+The order of the items is the order of the files on the node; this script does
+not change it. (Measured 2026-10-08 on a stubbed copy of the set: shuffling
+items WITHIN a month never changes how many go to a model, because a rule
+forms after a fixed number of confirmations; which month an item is in does.)
+An item that was renumbered for a new arrangement keeps its past ruling: the
+ruling is found by the part of the item's id after its number.
+
+``--new-session-each-month`` opens a new session when a month is released, as
+an operator starting a new month's work would. ``--late-correction ITEM:N``
+plays one operator slip: the operator confirms ITEM although the past ruling
+differs, and N decisions later says in plain words that it should be revised.
+The standing decision is then checked against the ruling; the run stops if the
+system did not apply it.
+
 How a run is marked: its run record is labelled "harness-driven" with the
 seed, and its turns carry surface ``api_server``. Records made by this script
 must never be presented as a person's session.
@@ -145,6 +159,10 @@ class Harness:
 
         self.dw, self.args, self.goal = dw, args, policy["goal"]
         self.policy = policy["items"]
+        self.by_tail = {k.split("_", 1)[-1]: v for k, v in self.policy.items()}
+        slip, _, after = (args.late_correction or "").partition(":")
+        self.slip = {"item": slip, "after": int(after or 3), "made": None, "since": 0,
+                     "done": not slip}
         self.rng = random.Random(args.seed)
         env = Path(os.environ.get("GROVE_HOME", str(Path.home() / ".grove"))) / ".env"
         key = next((ln.split("=", 1)[1].strip().strip("\"'") for ln in env.read_text().splitlines()
@@ -231,7 +249,7 @@ class Harness:
         return reply
 
     def ruling(self, item_id: str) -> dict:
-        entry = self.policy.get(item_id)
+        entry = self.policy.get(item_id) or self.by_tail.get(item_id.split("_", 1)[-1])
         if entry is None:
             raise SystemExit(f"stopped: no past ruling for {item_id}; nothing is guessed")
         if entry["from"] != "ruled" and item_id not in self.inferred:
@@ -283,10 +301,21 @@ class Harness:
                         raise SystemExit(f"stopped: signing v{version} returned http {code}")
                 continue
             pending = st["pending"]
+            if pending is None and self.slip["made"] and self.slip["since"] >= self.slip["after"]:
+                reply = self.correct_late()
+                continue
             if pending is not None:
                 want = self.ruling(pending["item_id"])
                 got = {k: str(v) for k, v in (pending.get("output") or {}).items()}
-                if got == {k: str(v) for k, v in want.items()}:
+                if self.slip["made"]:
+                    self.slip["since"] += 1
+                if (not self.slip["done"] and not self.slip["made"]
+                        and self.slip["item"] in pending["item_id"]
+                        and got != {k: str(v) for k, v in want.items()}):
+                    self.slip["made"] = pending["item_id"]
+                    reply = self.say(self.confirm_words(st, pending),
+                                     "the operator's slip: confirms what the ruling would revise")
+                elif got == {k: str(v) for k, v in want.items()}:
                     reply = self.say(self.confirm_words(st, pending), "matches the past ruling")
                 else:
                     value = next(iter(want.values()))
@@ -303,6 +332,9 @@ class Harness:
                         self.save_checkpoint(name)
                 if months_done >= self.args.months or st["stage"] is None:
                     break
+                if self.args.new_session_each_month:
+                    self.session = f"harness-s{self.args.seed}-{int(time.time())}"
+                    self.note(action="new session for the month", reply=self.session)
                 code = self.gw.portal(f"/portal/actions/demo/{self.goal}/release")
                 self.note(action=f"release {st['stage']['label']}", reply=f"portal http {code}")
                 reply = self.say(ws.batch[0] if ws.batch else work.config.keg.request,
@@ -318,6 +350,25 @@ class Harness:
             else:
                 reply = self.say(self.next_phrase(work), "ask for the next item")
         return self.summary()
+
+    def correct_late(self) -> str:
+        """The operator catches the slip a few items on and says so in plain
+        words. What the system then holds for the item is read from the
+        record: anything but the past ruling stops the run."""
+        item = self.slip["made"]
+        want = self.ruling(item)
+        value = next(iter(want.values()))
+        tail = item.split("_")[-1]
+        self.slip.update(made=None, done=True)
+        reply = self.say(f"I need to correct {tail}. It should have been {value}.",
+                         "the operator catches the slip")
+        proposed, decided = self.work()._state()
+        standing = (decided.get(proposed[item]["id"]) or {}).get("output") or {}
+        if {k: str(v) for k, v in standing.items()} != {k: str(v) for k, v in want.items()}:
+            raise SystemExit(f"stopped: the late correction of {item} was not applied "
+                             f"(standing {standing}; the reply was {reply[:200]!r})")
+        self.note(action=f"late correction applied to {item}", reply=str(standing))
+        return reply
 
     def next_phrase(self, work) -> str:
         """How the scripted operator asks for the next item: the goal's own
@@ -364,6 +415,9 @@ def main(argv=None) -> int:
     parser.add_argument("--checkpoint", default="", help="save this checkpoint when --months is reached")
     parser.add_argument("--checkpoint-at", default="",
                         help="save checkpoints on the way, e.g. 2:before-month-3,3:all-done")
+    parser.add_argument("--new-session-each-month", action="store_true")
+    parser.add_argument("--late-correction", default="",
+                        help="ITEM:N, e.g. BL-260912:3 (see the module docstring)")
     parser.add_argument("--no-earn-phrase", dest="earn_phrase", action="store_false")
     parser.add_argument("--next-phrase", choices=["start", "request"], default="request")
     parser.add_argument("--max-turns", type=int, default=400)

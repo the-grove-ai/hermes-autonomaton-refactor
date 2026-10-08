@@ -263,6 +263,23 @@ def _record(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _named_item(named: str, decided: Any) -> str:
+    """The id of the decided invoice the operator named. An id is matched as
+    given; otherwise the name is read as the invoice's number ("BL-260912") or
+    its place in the queue ("12"), and counts only when exactly one decided
+    invoice answers to it. No match, or more than one: the name is returned
+    unchanged and the ruling is refused as naming nothing decided."""
+    if named in decided:
+        return named
+    said = named.strip().lstrip("#").lower()
+    found = [
+        item for item in decided
+        if said and said in (item.lower(), item.split("_")[-1].lower(),
+                             item.split("_")[0].lstrip("0"))
+    ]
+    return found[0] if len(found) == 1 else named
+
+
 def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
     decision = str(args.get("decision") or "").strip().lower()
     corrected = str(args.get("corrected_gl_code") or "").strip()
@@ -274,6 +291,7 @@ def _decide(work: DecisionWork, args: Dict[str, Any]) -> Dict[str, Any]:
         # they confirmed earlier, or one the keg coded in a batch. They can
         # always change a call; a revision of a keg's answer is a miss.
         proposed, _ = work._state()
+        named = _named_item(named, proposed)
         waiting = proposed.get(named)
         record = work.rule_on(
             named, decision=decision, corrected_output=revised_to,

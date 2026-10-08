@@ -433,3 +433,19 @@ def test_the_goals_own_request_cannot_pause_the_session(work):
     turn_provenance.set_current({**prov, "request": "what's the weather in Tulsa?",
                                  "turn_uid": "p2", "turn_id": "s#p2"})
     assert json.loads(gl.gl_coding({"verb": "pause"})).get("status") != "not_paused"
+
+
+def test_an_earlier_invoice_is_revised_by_the_name_the_operator_gave_it(work):
+    # "I need to correct invoice 1, it should have been 6300": the operator
+    # names an invoice by its place or its number, not by the queue's file id.
+    _call(verb="next")
+    _call(verb="record", gl_code="6110", reasoning="hosting")
+    _call(verb="decide", decision="confirm")
+    for said, code in (("1", "6300"), ("AC", "6110"), ("#01_ac", "6300")):
+        out = _call(verb="decide", decision="correct", corrected_gl_code=code, item_id=said)
+        assert out.get("status") == "revised", (said, out)
+        proposed, decided = work._state()
+        assert decided[proposed["01_AC"]["id"]]["output"] == {"gl_code": code}
+    # A name no decided invoice answers to is refused, and nothing changes.
+    refused = _call(verb="decide", decision="correct", corrected_gl_code="6110", item_id="77")
+    assert refused["refused"] == "not_decided"
