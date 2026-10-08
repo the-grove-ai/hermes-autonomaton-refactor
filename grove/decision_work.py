@@ -1464,6 +1464,17 @@ def call_budget_for(budget: Any, tier: Any) -> Optional[float]:
     return budget
 
 
+_LEADING_NUMBER = re.compile(r"\d+")
+
+
+def _numbered(path: Path) -> Tuple[int, int, str]:
+    """A queue file's place: by the number its name begins with, then by its
+    name; a name with no leading number keeps its spelled order, after those
+    that have one."""
+    found = _LEADING_NUMBER.match(path.name)
+    return (0, int(found.group()), path.name) if found else (1, 0, path.name)
+
+
 _WORDS = re.compile(r"[a-z][a-z'-]{2,}")
 
 
@@ -1579,7 +1590,11 @@ class DecisionWork:
     def queue_items(self) -> List[Path]:
         if not self.config.queue.is_dir():
             raise ValueError(f"work queue {self.config.queue} is not a directory")
-        return sorted(p for p in self.config.queue.iterdir() if p.is_file() and not p.name.startswith("."))
+        # In the order the items are numbered, not the order their names
+        # spell: "021" comes after "20", though it sorts before "02_" letter
+        # by letter. (Seen 2026-10-08: the 64th item's card read "49 of 100".)
+        return sorted((p for p in self.config.queue.iterdir()
+                       if p.is_file() and not p.name.startswith(".")), key=_numbered)
 
     def _state(self) -> Tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
         """``(proposed by item id, decided by proposed-record id)`` for the run."""

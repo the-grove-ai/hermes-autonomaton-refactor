@@ -1665,3 +1665,15 @@ def test_a_goal_may_say_what_it_calls_its_expert(tmp_path):
         goal.extra["decision_work"]["operator_called"] = bad
         with pytest.raises(ValueError, match="operator_called"):
             dw.load_config(goal)
+
+
+def test_the_queue_is_worked_in_the_order_its_items_are_numbered(env, tmp_path):
+    # Live 2026-10-08: later items were numbered with three digits ("021") and
+    # earlier ones with two ("20"). Spelled order put "021" before "02_", so the
+    # 64th item's card read "49 of 100".
+    work = env.work()
+    for name in ("01_a", "02_b", "20_c", "021_d", "064_e", "100_f", "notes"):
+        (tmp_path / "queue" / f"{name}.txt").write_text("billing")
+    assert [p.stem for p in work.queue_items()] == [
+        "01_a", "02_b", "20_c", "021_d", "064_e", "100_f", "notes"]
+    assert work.progress("064_e") == (5, 7) and work.next_item().stem == "01_a"
