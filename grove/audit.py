@@ -707,6 +707,7 @@ def trace(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dict[st
             # duration, and the earlier attempts when this turn is a re-issue
             # one tier up: all read off the turn's own record.
             "handback": compilation.get("t0_handback_why"),
+            "routed_by": compilation.get("routed_by"),
             "call_ms": list(execution.get("call_ms") or []),
             "over_budget": execution.get("call_over_budget"),
             "failure_kind": row.get("failure_kind"),

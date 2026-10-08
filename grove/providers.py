@@ -92,7 +92,22 @@ def route_for_agent(
     # (intent/confidence None → default tier) with no classifier call.
     from grove.classify import classify_for_routing  # local: avoid circular
 
-    classification = classify_for_routing(message) if classify else None
+    # A rule that decides on what the turn is, and declares it needs nothing
+    # from the classifier, routes the turn with no classifier call at all.
+    without = (router.rule_without_classifier(request=request, goal=goal)
+               if classify and (request or goal) else None)
+    global _last_route_note
+    _last_route_note = None
+    if without is not None:
+        classification = None
+        _last_route_note = {
+            "deterministic": True, "rule": without.name, "classifier": "not called",
+            "declared_in": f"{router.config_name()} › routing_rules › {without.name}",
+        }
+    elif classify:
+        classification = _classify_within(router.classifier_budget(), message)
+    else:
+        classification = None
     decision = router.route(
         operator_tier=_resolve_operator_tier(explicit_tier),
         operator_model=_resolve_operator_model(explicit_model),
@@ -133,6 +148,46 @@ def route_for_agent(
         _last_pre_route_decision = None
     _log_routing(decision, classification)
     return decision
+
+
+_last_route_note: Optional[dict] = None
+
+
+def current_route_note() -> Optional[dict]:
+    """How the most recent route_for_agent() call was decided when no
+    classifier was called: the rule, and where it is declared. None when the
+    classifier was consulted."""
+    return _last_route_note
+
+
+def _classify_within(budget: Optional[float], message: Optional[str]):
+    """Classify the request, waiting at most ``budget`` seconds (None: as
+    long as it takes). Past the budget the turn goes on unclassified, exactly
+    as when the classifier fails, and the reason is kept for the turn's
+    record. The abandoned call is left to finish on its own."""
+    from grove import classify as _classify
+
+    if not budget:
+        return _classify.classify_for_routing(message)
+    import threading
+
+    box: dict = {}
+
+    def run() -> None:
+        box["value"] = _classify.classify_for_routing(message)
+        box["failure"] = _classify.last_classification_failure()
+
+    worker = threading.Thread(target=run, daemon=True, name="classifier")
+    worker.start()
+    worker.join(float(budget))
+    if worker.is_alive():
+        logger.warning("[providers] classifier over its time budget (%gs); routing "
+                       "this turn without it", budget)
+        _classify._FAILURE.value = (
+            "classifier_over_budget", f"no answer in {float(budget):g} s")
+        return None
+    _classify._FAILURE.value = box.get("failure")
+    return box.get("value")
 
 
 def current_tier() -> Optional[str]:

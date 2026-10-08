@@ -2202,6 +2202,7 @@ class Dispatcher:
             pass
         self._current_turn_t0_handback = None
         self._current_turn_t0_handback_why = None
+        self._current_turn_route_note = None
         self._current_turn_escalation = None
         self._current_turn_withheld = None
         self._current_turn_session_step = None
@@ -3072,6 +3073,10 @@ class Dispatcher:
                                      or tier == "T0",
                 # A T0 pattern that was consulted and handed this turn back as
                 # outside its scope (standard work, not a fault). None otherwise.
+                # Routed with no classifier call, by a declared rule: which
+                # rule, and where in the routing file it is. Absent otherwise.
+                **({"routed_by": self._current_turn_route_note}
+                   if getattr(self, "_current_turn_route_note", None) else {}),
                 "t0_handback": getattr(self, "_current_turn_t0_handback", None),
                 # ...and why, when its tool said (no rule covers it, or a rule
                 # sends it to the model). Absent otherwise.
@@ -3955,6 +3960,11 @@ class Dispatcher:
             explicit_tier=self._take_reissue_tier(agent),
             request=_request, goal=_goal,
         )
+        try:
+            from grove.providers import current_route_note
+            self._current_turn_route_note = current_route_note()
+        except Exception:  # noqa: BLE001 — a note is never worth a turn
+            self._current_turn_route_note = None
         if decision is None:
             # Vanilla install (no routing config) OR caller pre-set the
             # classification via the module global. Still snapshot the

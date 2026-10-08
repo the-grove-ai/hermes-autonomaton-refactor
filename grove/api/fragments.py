@@ -5968,6 +5968,10 @@ def _trace_turn_notes(step) -> List[str]:
     it is a re-issue one tier up, why a keg handed the item back, and how
     long each model call took. Empty for a turn that records none of them."""
     notes = []
+    routed = step.get("routed_by") or {}
+    if routed.get("rule"):
+        notes.append(f"Deterministic routing: rule {routed['rule']} "
+                     f"({routed.get('declared_in')}). No classifier call.")
     for a in step.get("attempts") or []:
         why = _ATTEMPT_WORDS.get(str(a.get("reason")), str(a.get("reason") or "").replace("_", " "))
         notes.append(f"{a.get('tier') or 'An earlier tier'} {why}; retried one tier up.")

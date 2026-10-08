@@ -245,6 +245,15 @@ class RoutingRule:
     # goal it belongs to. Matched like any other criterion; empty: not tested.
     request: frozenset = frozenset()
     goals: frozenset = frozenset()
+    # False: the rule needs nothing from the classifier, so a turn it decides
+    # is routed without the classifier being called at all. Only a rule that
+    # matches on what the turn is, and on nothing the classifier supplies, may
+    # say so.
+    classify: bool = True
+
+    def needs_classifier(self) -> bool:
+        return bool(self.complexity or self.intents or self.min_confidence is not None
+                    or self.max_confidence is not None or self.action == "step_up")
 
 
 # The kinds of request a rule may match on. These are facts the Dispatcher
@@ -277,6 +286,7 @@ class CognitiveRouter:
         self._default_tier: str = ""
         self._escalation_threshold: float = 0.0
         self._telemetry_tier: str = ""
+        self._classifier_budget: Optional[float] = None
         # Sprint 30.1 (post-completion patch): classifier-driven pre-routing.
         # Default disabled — vanilla installs see the legacy step_up path
         # only. Parsed from routing.escalation_policy in _load_into_self.
@@ -509,6 +519,35 @@ class CognitiveRouter:
             pattern_cache_hit=False,
         )
 
+    def rule_without_classifier(self, *, request: Optional[str],
+                                goal: Optional[str]) -> Optional[RoutingRule]:
+        """The rule that decides this turn with no classifier call, or None.
+
+        Rules are read in their declared order, as :meth:`route` reads them.
+        The first enabled rule that needs the classifier ends the search: it
+        might match, so the classifier has to be asked. Before that, the
+        first enabled rule that matches on what the turn is and declares
+        ``classify: false`` decides. Deterministic: the same turn facts and
+        the same file give the same answer."""
+        for rule in self._routing_rules:
+            if not rule.enabled:
+                continue
+            if rule.needs_classifier():
+                return None
+            if not _rule_matches(rule, intent=None, confidence=None, complexity=None,
+                                 request=request, goal=goal):
+                continue
+            return None if rule.classify else rule
+        return None
+
+    def classifier_budget(self) -> Optional[float]:
+        """Seconds the classifier may take before the turn goes on without
+        it (``telemetry.budget_seconds``), or None for no budget."""
+        return self._classifier_budget
+
+    def config_name(self) -> str:
+        return self._config_path.name
+
     def reload(self) -> None:
         """Reload config from disk; on failure, keep last known good and log loudly."""
         snapshot = (
@@ -702,6 +741,13 @@ class CognitiveRouter:
         self._default_tier = default_tier
         self._escalation_threshold = float(threshold)
         self._telemetry_tier = telemetry_tier
+        budget = telemetry.get("budget_seconds")
+        if budget is not None and (isinstance(budget, bool)
+                                   or not isinstance(budget, (int, float)) or budget < 0):
+            raise ValueError(
+                f"operational routing config at {self._config_path}: "
+                f"telemetry.budget_seconds must be a number of seconds (0: no budget)")
+        self._classifier_budget = float(budget) if budget else None
         self._escalation_policy = escalation_policy
         self._provider_routing = provider_routing
         self._model_facts = model_facts
@@ -779,6 +825,24 @@ def _as_frozenset(value) -> frozenset:
     raise ValueError(f"expected a string or list of strings, got {value!r}")
 
 
+def _rule_classify(spec: dict, match: dict, name: str) -> bool:
+    """A rule's ``classify``: true unless it says false. ``false`` is accepted
+    only on a rule that matches on what the turn is (``request`` / ``goals``)
+    and on nothing the classifier supplies: otherwise the rule could never be
+    evaluated without the call it says to skip."""
+    value = spec.get("classify", True)
+    if not isinstance(value, bool):
+        raise ValueError(f"routing_rules.{name}.classify must be true or false")
+    if value:
+        return True
+    needs = sorted(set(match) & {"complexity", "intents", "min_confidence", "max_confidence"})
+    if needs or not (set(match) & {"request", "goals"}):
+        raise ValueError(
+            f"routing_rules.{name}: classify: false needs a match on request or goals and "
+            f"none on what the classifier supplies" + (f" (it has {needs})" if needs else ""))
+    return False
+
+
 def _request_kinds(value, name: str) -> frozenset:
     """A rule's ``match.request``: one or more of REQUEST_KINDS. Anything
     else is refused at load, so a typo never silently matches nothing."""
@@ -804,7 +868,7 @@ def _as_float(value, label: str) -> Optional[float]:
 # per rule kind. A key outside these sets is a malformed rule: raise loud
 # naming the offender rather than silently ignore it. The rule NAME is NOT
 # locked here — any name parses; only the SHAPE is constrained.
-_SET_TIER_RULE_KEYS = frozenset({"enabled", "target_tier", "match"})
+_SET_TIER_RULE_KEYS = frozenset({"enabled", "target_tier", "match", "classify"})
 _SET_TIER_MATCH_KEYS = frozenset(
     {"complexity", "intents", "min_confidence", "max_confidence", "request", "goals"}
 )
@@ -941,6 +1005,7 @@ def _parse_routing_rules(routing: dict, default_threshold: float) -> list:
                 ),
                 request=_request_kinds(match.get("request"), name),
                 goals=_as_frozenset(match.get("goals")),
+                classify=_rule_classify(spec, match, name),
             )
         )
 

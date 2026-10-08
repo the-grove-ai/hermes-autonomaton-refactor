@@ -482,6 +482,7 @@ routing_rules:
     match:
       request: goal
     target_tier: T1
+    classify: false        # decided by what the turn is: the classifier is not called
 
     # Coding — Premium (T2) through complex; Apex (T3) reserved for novel.
   premium_coding:
@@ -530,6 +531,9 @@ routing_rules:
 
 telemetry:
   tier: Telemetry
+  # Seconds the classifier may take. Past it the turn goes on unclassified, on
+  # the default tier, as it does when the classifier fails. 0: no budget.
+  budget_seconds: 5
   description: |
     Which tier scores incoming requests — judging what kind of work
     each one is, and how confident that judgment is. T1 is the natural
