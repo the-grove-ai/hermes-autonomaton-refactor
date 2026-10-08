@@ -1612,3 +1612,28 @@ def test_a_resemblance_declaration_that_cannot_be_read_is_refused(tmp_path, bad)
     goal.extra["decision_work"]["evidence"]["resembles_corrected"] = bad
     with pytest.raises(ValueError, match="resembles_corrected"):
         dw.load_config(goal)
+
+
+@pytest.mark.parametrize("authority", [None, "yellow"])
+def test_with_no_keg_to_take_a_run_every_backlog_item_reaches_a_model(env, tmp_path, authority):
+    # Live 2026-10-08, a run in which no keg ever formed: after the release,
+    # every request for the next item was answered "nothing is decided in
+    # bulk" and no item was ever reached.
+    work, cfg = _in_order(env, tmp_path)
+    if authority:
+        _serve_keg(authority=authority)
+    ask = "tag the next message"
+    dw.release_backlog(cfg)
+    assert work.session_action(ask) == {"action": "batch"}        # the release: said once
+    said = work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    assert "nothing is decided in bulk" in said["reply"]
+    reissue.take("sess")
+    for expected in ("m21", "m22", "m23", "m24", "m25"):
+        assert work.session_action(ask) is None                   # a model's turn
+        item = work.next_item()
+        assert item.stem == expected
+        work.record(item_id=item.stem, inputs={"channel": item.read_text()},
+                    output={"tag": "other"}, reasoning="r", provenance=env.prov())
+        work.decide(decision="confirm", provenance=env.prov())
+        reissue.take("sess")
+    assert work.session_action(ask) == {"action": "summary"}

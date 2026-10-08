@@ -2524,6 +2524,12 @@ class DecisionWork:
                 # answer goes to a model (None: the turn is routed as usual).
                 if upcoming.stem in self._for_model():
                     return None
+                serving = self.serving_keg()
+                if serving is None or serving[0].get("authority_level") != "green":
+                    # No keg can take a run of items: every request would be
+                    # answered "nothing is decided in bulk" and no item would
+                    # ever be reached (seen live 2026-10-08, a run with no keg).
+                    return None
                 return {"action": "batch"}
             if reissue.goal_note(self.config.goal_id) == "backlog_released":
                 # The backlog just arrived. The first request for the work
