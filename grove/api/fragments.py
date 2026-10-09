@@ -863,6 +863,8 @@ def _goal_standard_work_html(goal) -> str:
     unsigned = grant is None          # the session rule itself is waiting for a signature
     waiting = len(to_sign) + (1 if pending is not None else 0) + (1 if unsigned else 0)
     left = max(queued - decided, 0)
+    # A backlog stage still to be released: more of the run is to come.
+    ahead = dw.next_backlog_stage(cfg) if dw.backlog_state(cfg)["declared"] else None
 
     # 1. The status line, with the actions on it.
     if unsigned:
@@ -880,9 +882,17 @@ def _goal_standard_work_html(goal) -> str:
         lead = f'Run {run.get("run_number", "—")}: {decided} of {queued} {many} decided.'
         rest = "Nothing is waiting for you."
     else:
-        lead = (f'Run {run.get("run_number", "—")} is complete: {decided} of {queued} {many} '
-                f'decided.')
-        rest = "Nothing is waiting for you."
+        # Everything in the queue is decided. The run is only complete when no
+        # backlog stage is still to be released.
+        if ahead is not None:
+            lead = (f'Run {run.get("run_number", "—")}: {decided} of {queued} {many} decided '
+                    f'so far.')
+            rest = (f'Nothing is waiting for you. {ahead["label"].split(" · ")[0]} has not '
+                    f'been released yet.')
+        else:
+            lead = (f'Run {run.get("run_number", "—")} is complete: {decided} of {queued} '
+                    f'{many} decided.')
+            rest = "Nothing is waiting for you."
     sign_link = "/portal#fragments/proposals/pending?type=signature"
     actions = (
         (f'<a class="sc-gp-btn sc-gp-sign" href="{sign_link}">Review and sign · '
@@ -902,7 +912,7 @@ def _goal_standard_work_html(goal) -> str:
                 + f'</div><div class="sc-roi-what">{_esc(what)}</div>'
                 f'<div class="sc-roi-detail">{_esc(detail)}</div></div>')
 
-    figures = _fig("THIS RUN" + (" · SO FAR" if left else ""), by_keg, decided,
+    figures = _fig("THIS RUN" + (" · SO FAR" if left or ahead else ""), by_keg, decided,
                    "Settled with no model",
                    f'{decided - by_keg} ran on a model. You revised {tally["revised"]}.')
     if coverage.get("keg"):

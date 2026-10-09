@@ -1684,3 +1684,22 @@ def test_the_queue_is_worked_in_the_order_its_items_are_numbered(env, tmp_path):
     assert [p.stem for p in work.queue_items()] == [
         "01_a", "02_b", "20_c", "021_d", "064_e", "100_f", "notes"]
     assert work.progress("064_e") == (5, 7) and work.next_item().stem == "01_a"
+
+
+def test_the_goal_page_does_not_call_a_run_complete_with_a_stage_still_to_release(
+        env, tmp_path, monkeypatch):
+    # Live 2026-10-08: with two months decided and the third not released, the
+    # page read "Run 41 is complete: 60 of 60 decided."
+    from grove.api import fragments
+    import grove.dock.attachment_store as attachments
+
+    monkeypatch.setattr(attachments, "attachments_for_goal", lambda goal_id: [])
+    work, cfg = _in_order(env, tmp_path)
+    monkeypatch.setattr(dw, "load_config", lambda g: cfg)
+    goal = SimpleNamespace(
+        id=GOAL, name="Tag every message", vector="operational", status="accelerating",
+        definition_of_done="d", keywords=(), root=cfg.queue.parent, extra={},
+        resolved_sources=lambda: [])
+    html = fragments.render_goal_detail(None, goal)          # nothing queued, two stages ahead
+    assert "is complete" not in html
+    assert "Month 2 has not been released yet." in html and "THIS RUN · SO FAR" in html
