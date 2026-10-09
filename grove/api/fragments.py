@@ -5816,7 +5816,10 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
     # the signal that the shared context is still paying back.
     units = g.get("units") or []
     batches = [p.get("batch") for p in periods]
-    per_row = 10 if len(units) <= 200 else 25 if len(units) <= 1000 else 50
+    # Eight across for a run a person can count; wider only when the run is
+    # too long for that. Each period is its own block under its own label, so
+    # the finished panel fills its column evenly.
+    per_row = 8 if len(units) <= 240 else 16 if len(units) <= 800 else 32
     grid = ""
     for index, p in enumerate(periods):
         mine = [u for u in units
@@ -5827,9 +5830,10 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
                    + (f' · settled from compiled code, v{u["keg_version"]}: no model' if u["keg"]
                       else " · a model was called"))
             + '"></i>' for u in mine)
-        grid += (f'<div class="sc-wf-label">{_esc(str(p["label"]).split(" · ")[0])}</div>'
-                 f'<div class="sc-wf-cells" style="grid-template-columns:repeat({per_row},1fr)">'
-                 f'{cells}</div>')
+        grid += (f'<div class="sc-wf-block"><div class="sc-wf-label">'
+                 f'{_esc(str(p["label"]).split(" · ")[0])}<span>{p["keg_units"]} of '
+                 f'{p["units"]}</span></div><div class="sc-wf-cells" '
+                 f'style="grid-template-columns:repeat({per_row},var(--wf))">{cells}</div></div>')
     settled = sum(p["keg_units"] for p in periods)
     total = sum(p["units"] for p in periods)
     rates = " · ".join(f'{(p["keg_units"] / p["units"] if p["units"] else 0) * 100:.0f}%'
