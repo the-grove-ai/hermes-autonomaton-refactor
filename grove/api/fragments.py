@@ -5084,7 +5084,7 @@ def _span(seconds) -> str:
 
 
 def _model_hours(hours) -> str:
-    """Machine time as hours, whatever the size: "days" reads as the calendar."""
+    """Wait time as hours, whatever the size: "days" reads as the calendar."""
     if hours is None:
         return "—"
     return f"{hours:,.0f} hours" if hours >= 10 else f"{hours:.1f} hours"
@@ -5799,7 +5799,7 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
                         lambda b: (b["seconds_per_unit"] or 0) * b["units"]), _span)
             + _row(f'{many.capitalize()} the {who} reviewed',
                    _sum(lambda p: p["units"] - p["accepted"],
-                        lambda b: b["units"] - b["accepted"]), whole,
+                        lambda b: b["units"] - b["accepted"]), whole, word="fewer",
                    note=f"the rest settled from changes signed by the {who}")
             + _row(f"Proposals the {who} revised",
                    _sum(lambda p: p["revised"], lambda b: b["revised"]), whole,
@@ -6068,7 +6068,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
             f'model cost for the same {total} {many}: {_money(ours["cost"])} here, '
             f'{_money(theirs["cost"])} in run {bench["run_number"]}. '
             f'{ours["model_calls"]:g} model calls against {theirs["model_calls"]:g}; '
-            f'{_span(ours["seconds"])} of machine time against {_span(theirs["seconds"])}.')
+            f'{_span(ours["seconds"])} of wait time against {_span(theirs["seconds"])}.')
     tiles = (f'<section class="sc-tiles" aria-label="Headline numbers">'
              f'{against_tile}{speed}{cost}{signed}{brake_tile}</section>')
 
@@ -6207,7 +6207,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                     _line(f'{bench["label"]}, measured (run {bench["run_number"]})',
                           f'{_money(period["cost"])} vs {_money(theirs["cost"])}',
                           f'{_less(period["cost"], theirs["cost"])} cost for the same {n}')
-                    + _line("Machine time each, against that run",
+                    + _line("Wait time each, against that run",
                             f'{_sc_seconds(period["seconds_per_unit"])} vs '
                             f'{_sc_seconds(theirs["seconds_per_unit"])}',
                             _less(period["seconds_per_unit"], theirs["seconds_per_unit"]))
@@ -6277,7 +6277,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
     table = (
         f'<details class="sc-older"><summary>Show the working</summary><div class="sc-scroll">'
         f'<table class="sc-table sc-wide"><thead><tr><th></th><th>COST</th><th>MODEL CALLS</th>'
-        f'<th>TOKENS</th><th>MACHINE TIME</th><th>BASIS</th></tr></thead><tbody>'
+        f'<th>TOKENS</th><th>WAIT TIME</th><th>BASIS</th></tr></thead><tbody>'
         + _row(f"Every {one} run on a model", proj["all_model"],
                "scaled from this run's model turns")
         + _row(f"With keg v{cov['version']} serving" if cov["keg"] else "With a keg serving",
@@ -6364,7 +6364,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
             _chip("No model", f'{cov["covered"]} of {cov["of"]}', f'{cover_pct} of {many}')
             + _chip("Fewer model calls", _compact(avoided["model_calls"]),
                     f'{_compact(every["model_calls"])} down to {_compact(kept["model_calls"])}')
-            + _chip("Less machine time waiting on a model", _model_hours(avoided["hours"]),
+            + _chip("Less wait time on models", _model_hours(avoided["hours"]),
                     f'{_model_hours(every["hours"])} down to {_model_hours(kept["hours"])}'))
         same = (' The cost cut follows from coverage: an item the keg answers makes no '
                 'model call.')

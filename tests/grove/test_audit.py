@@ -380,7 +380,7 @@ def test_scorecard_reads_the_loop_off_the_records(tmp_path, monkeypatch):
                  "Per-call basis, measured this run:",
                  "SAVINGS · MEASURED", " down to ", "Show the working",
                  "No model</div>", "Fewer model calls</div>",
-                 "Less machine time waiting on a model</div>",
+                 "Less wait time on models</div>",
                  "Costs use the prices declared in the routing config. Scaled from this run.",
                  "The cost cut follows from coverage:"):
         assert text in html, text
