@@ -1198,9 +1198,14 @@ ul.listing li { padding: 0.7rem 0; }
     .sc-tstep { grid-template-columns: 1fr; gap: 4px; }
 }
 
-/* Goal page — a goal and its standard work, in the scorecard's style. */
-.layout:has(#goal-detail .sc-tiles) { grid-template-columns: var(--nav-w) 1fr; }
-.layout:has(#goal-detail .sc-tiles) .right-panel { display: none; }
+/* Goal page and Checkpoints: the full width, like the scorecard. The context
+   panel has nothing to show beside them. (A goal with no decision work keeps
+   the panel: its page is the plain one.) */
+.layout:has(#goal-detail .sc-gp-status), .layout:has(#checkpoints-page) {
+  grid-template-columns: var(--nav-w) 1fr; }
+#goal-detail > .meta { max-width: 1280px; margin-left: auto; margin-right: auto; }
+.layout:has(#goal-detail .sc-gp-status) .right-panel,
+.layout:has(#checkpoints-page) .right-panel { display: none; }
 .sc-goal { cursor: default; }
 .sc-goal .sc-header h1 { font-size: clamp(30px, 4vw, 52px); }
 .sc-goal .sc-version { font-size: 15px; line-height: 1.5; color: var(--sc-text-2); }
