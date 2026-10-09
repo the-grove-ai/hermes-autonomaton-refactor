@@ -6142,7 +6142,9 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
         if v["feedback"]:
             text.append("Operator feedback: " + "; ".join(f"“{f}”" for f in v["feedback"]) + ".")
         if v["seconds_to_signature"] is not None:
-            text.append(f"Signed by the {v['signed_by'] or 'operator'} "
+            signer = v["signed_by"] if v["signed_by"] not in (None, "", "operator") else (
+                g.get("operator_called") or "operator")
+            text.append(f"Signed by the {signer} "
                         f"{_span(v['seconds_to_signature'])} after proposal.")
         back = "".join(f'<code class="sc-rule">kept on a model when {_esc(c)}</code>'
                        for c in v["hands_back"])
@@ -6251,7 +6253,7 @@ def _scorecard_html(g, scale: int, key: str, chain=None, not_included: str = "")
                if rate is not None else "")
             + _benchmark_foot(g)
             + '</p></section>')
-    panels = (f'<section class="sc-pair">{who}<div class="sc-panel"><h3>The keg, '
+    panels = (f'<section class="sc-pair sc-pair-table">{who}<div class="sc-panel"><h3>The keg, '
               f'as signed</h3><div class="sc-versions">{cards}</div></div></section>')
 
     # 5. At volume

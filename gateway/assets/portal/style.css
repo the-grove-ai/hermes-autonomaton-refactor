@@ -1400,6 +1400,10 @@ ul.listing li { padding: 0.7rem 0; }
 .sc-pf-chart .sc-legend { margin-top: 14px; }
 @media (max-width: 900px) { .sc-pf-two, .sc-pf-row, .sc-chg { grid-template-columns: 1fr; }
   .sc-pf-change, .sc-chg-s { text-align: left; } }
+.sc-pair.sc-pair-table { grid-template-columns: 2fr 1fr; align-items: start; }
+.sc-pair-table .sc-table td, .sc-pair-table .sc-table th { white-space: nowrap; }
+.sc-pair-table .sc-table { width: 100%; }
+@media (max-width: 1000px) { .sc-pair.sc-pair-table { grid-template-columns: 1fr; } }
 .sc-roi-hero { display: grid; grid-template-columns: 1fr 1fr; margin-top: 18px; }
 .sc-roi-hero > div { padding: 6px 0 22px; display: flex; flex-direction: column; gap: 10px; }
 .sc-roi-hero > div + div { border-left: 1px solid var(--sc-line); padding-left: 40px; }
