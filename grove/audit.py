@@ -749,6 +749,7 @@ def economics(home: Optional[Path] = None, *, goal: Optional[str] = None) -> Dic
             "benchmark": (_against(periods, bench), bench)[1],
             "did_not_complete": _did_not_complete(records, intents),
             "operator_called": shown.get("operator_called") or "operator",
+            "ahead": list(shown.get("ahead") or []),
             # More of the run is still to come: items waiting in the queue, or
             # a declared backlog stage that has not been released yet.
             "in_progress": bool(open_items) or (
@@ -1381,6 +1382,19 @@ def _coverage(goal: str, units: List[Dict[str, Any]], records: List[Dict[str, An
     }
 
 
+def _ahead(cfg: Any) -> List[Dict[str, Any]]:
+    """Each declared backlog stage none of whose items has been released: its
+    label and how many items it holds. Empty when the goal declares none."""
+    from grove.decision_work import backlog_state
+
+    try:
+        state = backlog_state(cfg)
+    except (ValueError, OSError):
+        return []
+    return [{"label": s["label"], "items": s["items"]}
+            for s in state.get("stages") or [] if s["items"] and not s["released"]]
+
+
 def _presentation(goal: str) -> Dict[str, Any]:
     """How the goal names its own work: a title, what one item is called, and
     which input labels an item. Read from the goal's declaration. A log whose
@@ -1402,6 +1416,8 @@ def _presentation(goal: str) -> Dict[str, Any]:
         "ticket_model": cfg.ticket_model,
         "benchmark": cfg.benchmark,
         "operator_called": cfg.operator_called,
+        # Backlog stages not released yet: what is still to come, by name and size.
+        "ahead": _ahead(cfg),
         # One label per backlog stage, in release order: the run's later periods.
         "stage_labels": [label for _folder, label in cfg.backlog_stages],
     }

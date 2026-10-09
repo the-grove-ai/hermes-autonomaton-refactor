@@ -5824,6 +5824,9 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
     for index, p in enumerate(periods):
         mine = [u for u in units
                 if (u.get("batch") == batches[index] if index else not u.get("batch"))]
+        # Grouped: the ones a model ran, then the ones settled with no model.
+        # This panel is the proportion; the order of work is one level down.
+        mine = sorted(mine, key=lambda u: bool(u["keg"]))
         cells = "".join(
             f'<i class="{"sc-wf-hit" if u["keg"] else "sc-wf-miss"}" title="'
             + _esc(f'#{u["order"]}' + (f' · {u["label"]}' if u.get("label") else "")
@@ -5834,19 +5837,31 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
                  f'{_esc(str(p["label"]).split(" · ")[0])}<span>{p["keg_units"]} of '
                  f'{p["units"]}</span></div><div class="sc-wf-cells" '
                  f'style="grid-template-columns:repeat({per_row},var(--wf))">{cells}</div></div>')
+    ahead = list(g.get("ahead") or [])
+    for stage in ahead:
+        grid += (f'<div class="sc-wf-block"><div class="sc-wf-label">'
+                 f'{_esc(str(stage["label"]).split(" · ")[0])}<span>not released yet</span>'
+                 f'</div><div class="sc-wf-cells" '
+                 f'style="grid-template-columns:repeat({per_row},var(--wf))">'
+                 + '<i class="sc-gp-todo"></i>' * int(stage["items"]) + '</div></div>')
+    declared = g.get("periods_declared") or len(periods)
+    progress = (f' · {len(periods)} OF {declared} PERIODS'
+                if g.get("in_progress") and declared > len(periods) else so_far)
     settled = sum(p["keg_units"] for p in periods)
     total = sum(p["units"] for p in periods)
     rates = " · ".join(f'{(p["keg_units"] / p["units"] if p["units"] else 0) * 100:.0f}%'
                        for p in periods)
     chart = (
         f'<section class="sc-panel sc-pf-chart"><div class="sc-eyebrow">THE BENEFITS OF '
-        f'COMPILATION{so_far}</div>'
+        f'COMPILATION{progress}</div>'
         f'<h2>More work, done faster, with less risk and a radically lower cost.</h2>'
         f'<p class="sc-note">{settled} of {total} {_esc(many)} never called a model.</p>'
         f'<div class="sc-wf">{grid}</div>'
         f'<div class="sc-legend"><span><i class="sc-swatch sc-wf-hit"></i>Settled with no '
         f'model</span><span><i class="sc-swatch sc-wf-miss"></i>A model was called</span></div>'
-        f'<p class="sc-foot">{rates} settled without a model, period by period.</p></section>')
+        f'<p class="sc-foot">{rates} settled without a model, period by period. Grouped by '
+        f'how each was settled; the order they were worked is in How it got there.</p>'
+        f'</section>')
     return f'<div class="sc-pf{" sc-pf-two" if table else ""}">{table}{chart}</div>'
 
 
@@ -5874,10 +5889,14 @@ def _roi_rows_html(g, proj, scale: int) -> str:
     cols = ""
     n, months = tickets.get("count") or 0, tickets.get("months") or 1
     if tickets.get("dollars") is not None and n:
+        # A month at the run's pace: the same figure the sum below adds, so the
+        # tile and the sum agree and no one adds a run's total to a month's.
         cols += _col(
-            f'<span class="sc-event">ESTIMATE</span> · {months} MONTH{"" if months == 1 else "S"}',
-            f'${tickets["dollars"]:,.0f}', "Engineering expense avoided",
-            f'{tickets["hours"]:g} engineering hours never spent')
+            '<span class="sc-event">ESTIMATE</span>',
+            f'${tickets["dollars_per_month"]:,.0f}', "Engineering expense avoided",
+            f'a month at this run\'s pace · ${tickets["dollars"]:,.0f} and '
+            f'{tickets["hours"]:g} engineering hours over {months} '
+            f'month{"" if months == 1 else "s"}')
     # At the selected volume, in the same dollars as the sum below: what a
     # month of these calls costs with every one on a model, and with the keg
     # serving. (The run's own cost is cents; cents make no case at a glance.)
