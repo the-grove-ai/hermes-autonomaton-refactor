@@ -1186,10 +1186,10 @@ def test_the_scorecard_sets_the_proof_before_the_record(home, monkeypatch):
         "How these figures were measured")]
     assert order == sorted(order)
     # The same work two ways, from the periods' own figures.
-    for text in ("MEASURED · RUN 3 AGAINST RUN 2", "Model cost", "Model calls", "Machine time",
+    for text in ("MEASURED · RUN 3 AGAINST RUN 2", "Model cost", "Model calls", "Wait time",
                  "Messages the operator reviewed", "Proposals the operator revised",
                  "Turns that did not complete: 0 here, 1 in run 2;",
-                 '<span class="sc-down">33% lower</span>',          # 4 model calls against 6
+                 '<span class="sc-down">33% fewer</span>',          # 4 model calls against 6
                  '<span class="sc-quiet">the same</span>'):          # nothing revised either way
         assert text in html, text
     # One square for each item, in order: lit when no model was called.

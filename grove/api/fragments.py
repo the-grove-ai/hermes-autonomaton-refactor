@@ -5760,14 +5760,14 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
             return (sum(get_ours(p) or 0 for p in matched),
                     sum(get_theirs(p["benchmark"]) or 0 for p in matched))
 
-        def _row(label, pair, show, note="", lower_is_better=True):
+        def _row(label, pair, show, note="", word="lower"):
             ours, theirs = pair
             top = max(ours, theirs) or 1
             if ours == theirs:
                 change = '<span class="sc-quiet">the same</span>'
             elif theirs and ours < theirs:
                 change = (f'<span class="sc-down">{int((1 - ours / theirs) * 100 + 0.5)}% '
-                          f'lower</span>')
+                          f'{word}</span>')
             else:
                 more = show(ours - theirs)
                 change = f'<span class="sc-event">{_esc(more)} more</span>'
@@ -5793,14 +5793,14 @@ def _proof_html(g, brand: Optional[Mapping[str, str]] = None) -> str:
                f'<h2>The same {n} {_esc(many)}, two ways</h2>')
             + _row("Model cost", _sum(lambda p: p["cost"], lambda b: b["cost"]), _money)
             + _row("Model calls", _sum(lambda p: p["model_calls"], lambda b: b["model_calls"]),
-                   whole)
-            + _row("Machine time",
+                   whole, word="fewer")
+            + _row("Wait time",
                    _sum(lambda p: (p["seconds_per_unit"] or 0) * p["units"],
                         lambda b: (b["seconds_per_unit"] or 0) * b["units"]), _span)
             + _row(f'{many.capitalize()} the {who} reviewed',
                    _sum(lambda p: p["units"] - p["accepted"],
                         lambda b: b["units"] - b["accepted"]), whole,
-                   note=f"the rest settled from changes the {who} signed")
+                   note=f"the rest settled from changes signed by the {who}")
             + _row(f"Proposals the {who} revised",
                    _sum(lambda p: p["revised"], lambda b: b["revised"]), whole,
                    note=("a revision stops it serving until a fix is signed" if brand else
