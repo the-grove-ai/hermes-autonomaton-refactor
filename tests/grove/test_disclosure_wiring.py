@@ -179,3 +179,24 @@ def test_intercept_noop_when_disclosure_inactive():
     remaining = agent._intercept_pull_intents(intents, messages)
     assert [it.tool_name for it in remaining] == ["read_tool_schema"]
     assert messages == []
+
+
+def test_recordless_warning_names_native_tools_only(caplog):
+    """MCP tools are governed per server by a kind=mcp record, so the warning
+    about registered tools with no governing record must not name them; a
+    native tool with no record is still named."""
+    import logging
+
+    from grove.disclosure import build_disclosure_units
+
+    registry = _Registry([
+        ("mcp_someserver_read_thing", "an MCP tool"),
+        ("native_tool_with_no_record_xyz", "a native tool"),
+    ])
+    with caplog.at_level(logging.WARNING, logger="grove.disclosure"):
+        build_disclosure_units(registry)
+    warned = [r.getMessage() for r in caplog.records
+              if "NO governing capability record" in r.getMessage()]
+    assert warned, "a recordless native tool must still be reported"
+    assert "native_tool_with_no_record_xyz" in warned[0]
+    assert "mcp_someserver_read_thing" not in warned[0]

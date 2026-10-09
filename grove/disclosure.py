@@ -91,7 +91,11 @@ def build_disclosure_units(registry):
         fn = d.get("function") or {}
         desc = fn.get("description") or d.get("description") or ""
         mode, intents, keywords = record_map.get(name) or ("recordless", (), ())
-        if mode == "recordless":
+        # MCP tools are governed per server by a kind=mcp record, which the map
+        # above leaves out on purpose; an unrecorded MCP server has its own
+        # warning in run_agent._compute_mcp_allow. Naming them here reported
+        # every connector's tools as ungoverned on every start.
+        if mode == "recordless" and not _is_mcp(name):
             recordless.append(name)
         derived.append(DisclosableUnit(
             id=name, kind="tool", oneline=_oneline_from_description(desc),

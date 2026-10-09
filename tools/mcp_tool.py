@@ -261,7 +261,8 @@ if _MCP_AVAILABLE and not _MCP_MESSAGE_HANDLER_SUPPORTED:
 
 _DEFAULT_TOOL_TIMEOUT = 120      # seconds for tool calls
 _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
-_MAX_RECONNECT_RETRIES = 5
+_MAX_RECONNECT_RETRIES = 5        # fast retries with backoff after a drop
+_SLOW_RECONNECT_SECONDS = 300     # then keep trying at this interval, for good
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
 
@@ -1528,6 +1529,10 @@ class MCPServerTask:
                 # Reset the session reference; _run_http/_run_stdio will
                 # repopulate it on successful re-entry.
                 self.session = None
+                # The transport was live to return cleanly, so an earlier run
+                # of failures is over: the next drop starts counting afresh.
+                retries = 0
+                backoff = 1.0
                 # Keep _ready set across reconnects so tool handlers can
                 # still detect a transient in-flight state — it'll be
                 # re-set after the fresh session initializes.
@@ -1545,6 +1550,13 @@ class MCPServerTask:
                 self.session = None
                 raise
             except Exception as exc:
+                # A session at this point means the connection was up and then
+                # dropped: this is a new failure, not one more in a run of them.
+                # Without the reset the counter only ever climbed, and the
+                # sixth drop in a process's life ended the server for good.
+                if self.session is not None:
+                    retries = 0
+                    backoff = 1.0
                 self.session = None
 
                 # If this is the first connection attempt, retry with backoff
@@ -1599,21 +1611,33 @@ class MCPServerTask:
 
                 retries += 1
                 if retries > _MAX_RECONNECT_RETRIES:
+                    # A server that was connected and is now unreachable (a
+                    # node rebooting, a service being redeployed) comes back.
+                    # Giving up here left it dead until the gateway restarted,
+                    # so keep trying, slowly, and say so each time.
                     logger.warning(
-                        "MCP server '%s' failed after %d reconnection attempts, "
-                        "giving up: %s",
-                        self.name, _MAX_RECONNECT_RETRIES, exc,
+                        "MCP server '%s' still unreachable after %d attempts; "
+                        "its tools will fail until it returns. Trying again "
+                        "in %.0fs: %s",
+                        self.name, retries - 1, _SLOW_RECONNECT_SECONDS, exc,
                     )
-                    return
-
-                logger.warning(
-                    "MCP server '%s' connection lost (attempt %d/%d), "
-                    "reconnecting in %.0fs: %s",
-                    self.name, retries, _MAX_RECONNECT_RETRIES,
-                    backoff, exc,
-                )
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
+                    # Wake at once on shutdown rather than holding it up.
+                    try:
+                        await asyncio.wait_for(
+                            self._shutdown_event.wait(),
+                            timeout=_SLOW_RECONNECT_SECONDS,
+                        )
+                    except asyncio.TimeoutError:
+                        pass
+                else:
+                    logger.warning(
+                        "MCP server '%s' connection lost (attempt %d/%d), "
+                        "reconnecting in %.0fs: %s",
+                        self.name, retries, _MAX_RECONNECT_RETRIES,
+                        backoff, exc,
+                    )
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
 
                 # Check again after sleeping
                 if self._shutdown_event.is_set():

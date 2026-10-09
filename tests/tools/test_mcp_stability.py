@@ -325,3 +325,132 @@ class TestMCPInitialConnectionRetry:
                 await task
 
         asyncio.get_event_loop().run_until_complete(_run())
+
+
+class TestMCPReconnectAfterDrop:
+    """A server that was connected and dropped is retried for good: neither a
+    run of drops over the process's life nor a long outage ends it."""
+
+    # The patch below replaces asyncio.sleep for everything, the tests' own
+    # waits included; they use this reference to wait in real time.
+    _real_sleep = staticmethod(asyncio.sleep)
+
+    @staticmethod
+    def _no_wait():
+        """Patches that take the waiting out of the reconnect loop."""
+        real_sleep = asyncio.sleep
+
+        async def instant(_seconds):
+            await real_sleep(0)
+
+        return (
+            patch("tools.mcp_tool.asyncio.sleep", instant),
+            patch("tools.mcp_tool._SLOW_RECONNECT_SECONDS", 0.01),
+        )
+
+    def test_drops_over_the_process_life_do_not_end_the_server(self):
+        """More drops than _MAX_RECONNECT_RETRIES, each after a live
+        connection, still reconnect: the count starts again once it is up."""
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        drops = _MAX_RECONNECT_RETRIES + 3
+        calls = 0
+
+        async def _run():
+            nonlocal calls
+            server = MCPServerTask("test-drops", registry=ToolRegistry())
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal calls
+                calls += 1
+                self_inner.session = object()      # connected
+                self_inner._ready.set()
+                if calls <= drops:
+                    raise ConnectionError("connection dropped")
+                await self_inner._shutdown_event.wait()
+
+            sleep_patch, slow_patch = self._no_wait()
+            with patch.object(MCPServerTask, "_run_stdio", fake_run_stdio), sleep_patch, slow_patch:
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                for _ in range(200):
+                    if calls > drops:
+                        break
+                    await self._real_sleep(0.005)
+                assert calls == drops + 1, f"stopped reconnecting after {calls} attempts"
+                assert not task.done()
+                server._shutdown_event.set()
+                await task
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_an_outage_longer_than_the_fast_retries_is_still_recovered(self):
+        """Unreachable for more attempts than the fast retries allow, then
+        back: the server reconnects without a restart."""
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        failures = _MAX_RECONNECT_RETRIES + 4
+        calls = 0
+        recovered = False
+
+        async def _run():
+            nonlocal calls, recovered
+            server = MCPServerTask("test-outage", registry=ToolRegistry())
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal calls, recovered
+                calls += 1
+                if calls == 1:
+                    self_inner.session = object()  # connected once, then lost
+                    self_inner._ready.set()
+                    raise ConnectionError("connection dropped")
+                if calls <= 1 + failures:
+                    raise ConnectionError("host unreachable")
+                self_inner.session = object()
+                recovered = True
+                await self_inner._shutdown_event.wait()
+
+            sleep_patch, slow_patch = self._no_wait()
+            with patch.object(MCPServerTask, "_run_stdio", fake_run_stdio), sleep_patch, slow_patch:
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                for _ in range(400):
+                    if recovered:
+                        break
+                    await self._real_sleep(0.005)
+                assert recovered, f"gave up after {calls} attempts"
+                server._shutdown_event.set()
+                await task
+
+        asyncio.get_event_loop().run_until_complete(_run())
+
+    def test_shutdown_ends_the_slow_wait_at_once(self):
+        """A server waiting out its slow retry does not hold up shutdown."""
+        from tools.mcp_tool import MCPServerTask, _MAX_RECONNECT_RETRIES
+
+        calls = 0
+
+        async def _run():
+            nonlocal calls
+            server = MCPServerTask("test-slow-shutdown", registry=ToolRegistry())
+
+            async def fake_run_stdio(self_inner, config):
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    self_inner.session = object()
+                    self_inner._ready.set()
+                raise ConnectionError("host unreachable")
+
+            sleep_patch, _ = self._no_wait()
+            with patch.object(MCPServerTask, "_run_stdio", fake_run_stdio), sleep_patch, \
+                    patch("tools.mcp_tool._SLOW_RECONNECT_SECONDS", 3600):
+                task = asyncio.ensure_future(server.run({"command": "fake"}))
+                for _ in range(400):
+                    if calls >= _MAX_RECONNECT_RETRIES + 1:
+                        break
+                    await self._real_sleep(0.005)
+                assert calls >= _MAX_RECONNECT_RETRIES + 1   # into the slow wait
+                await self._real_sleep(0.05)
+                server._shutdown_event.set()
+                await asyncio.wait_for(task, timeout=2)
+
+        asyncio.get_event_loop().run_until_complete(_run())
