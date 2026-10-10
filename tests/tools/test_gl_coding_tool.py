@@ -435,6 +435,30 @@ def test_the_goals_own_request_cannot_pause_the_session(work):
     assert json.loads(gl.gl_coding({"verb": "pause"})).get("status") != "not_paused"
 
 
+def test_a_chat_outside_the_work_session_cannot_pause_it(work, monkeypatch):
+    """Found live, 2026-10-10: in a chat that was never the invoice session a
+    model answered "Good morning!" by calling the pause step. The pause
+    re-issued the message, the re-issued message was paused again, and it
+    went round until the operator asked for the work. There is nothing to
+    leave, so the pause is never reached and nothing is armed."""
+    paused = []
+    monkeypatch.setattr(work, "pause", lambda provenance: paused.append(provenance["turn_uid"]))
+    prov = turn_provenance.current()
+    for outside in (None, "some-other-goal"):
+        turn_provenance.set_current({**prov, "isolation_goal": outside,
+                                     "request": "Good morning!", "turn_uid": "g1",
+                                     "turn_id": "s#g1"})
+        out = json.loads(gl.gl_coding({"verb": "pause"}))
+        assert (out["success"], out["status"]) == (False, "not_paused")
+        assert "Answer the operator's message directly" in out["message"]
+    assert paused == []                                   # no re-issue: no loop
+    # Inside the session the same message still pauses it.
+    turn_provenance.set_current({**prov, "request": "Good morning!", "turn_uid": "g2",
+                                 "turn_id": "s#g2"})
+    assert json.loads(gl.gl_coding({"verb": "pause"}))["status"] == "pausing"
+    assert paused == ["g2"]
+
+
 def test_an_earlier_invoice_is_revised_by_the_name_the_operator_gave_it(work):
     # "I need to correct invoice 1, it should have been 6300": the operator
     # names an invoice by its place or its number, not by the queue's file id.

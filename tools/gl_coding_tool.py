@@ -535,7 +535,19 @@ def gl_coding(args: Dict[str, Any]) -> str:
             # own request for the work is never "about something else", so it
             # cannot pause the session. (Found live, 2026-10-07: a model
             # answered "code the next invoice" by pausing, turn after turn.)
-            asked = str((turn_provenance.current() or {}).get("request") or "")
+            prov = turn_provenance.current() or {}
+            # Nor can a chat that is not in the goal's work session pause it:
+            # there is nothing to leave. (Found live, 2026-10-10: a model
+            # paused in an ordinary chat; the re-issued message was paused
+            # again, and the same greeting went round seven times.)
+            if prov.get("isolation_goal") != work.config.goal_id:
+                return json.dumps({
+                    "success": False, "status": "not_paused",
+                    "message": ("This chat is not in the invoice session, so there is "
+                                "nothing to pause. Answer the operator's message directly "
+                                "and do not call this tool again this turn."),
+                }, ensure_ascii=False)
+            asked = str(prov.get("request") or "")
             if asks_for_work(asked, work.config):
                 return json.dumps({
                     "success": False, "status": "not_paused",
