@@ -16,11 +16,13 @@
 id: grove_browser_navigate
 kind: mcp
 trigger:
-  # The read record's always:true already keeps the server in the per-turn
-  # allow set; these say when navigation is the point of the turn.
-  intents: [research, retrieval, summarization]
-  keywords: [click, navigate, scroll, browse, "click through"]
+  # Presence is declared, never inferred from the turn's classification
+  # (native-presence-declared-v1): always offered, like the node's read tools.
+  # Being offered is not being allowed; the zone gate asks on every call.
+  intents: []
+  keywords: []
   dock_affinity: []
+  always: true
 bindings:
   tools:
     - mcp_grove_browser_browser_navigate
