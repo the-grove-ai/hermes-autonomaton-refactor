@@ -377,3 +377,46 @@ class TestFilterToolsByName:
         out = filter_tools_by_name(bad, allowed={"clarify", "write_file"})
         names = [t["function"]["name"] for t in out]
         assert names == ["clarify", "write_file"]
+
+
+# ── a turn routed without the classifier is not an uncertain one ─────────────
+
+
+def test_unknown_intent_from_the_classifier_is_still_flagged(caplog):
+    import logging
+
+    from grove.context_budget import resolve_tools_for_tier
+
+    tools = [_tool("read_file"), _tool("terminal")]
+    with caplog.at_level(logging.WARNING, logger="grove.context_budget"):
+        res = resolve_tools_for_tier(tools, None, None)
+    assert res.fallback is True
+    assert any("classifier returned unknown intent" in r.getMessage() for r in caplog.records)
+
+
+def test_a_turn_routed_without_the_classifier_raises_no_uncertainty(caplog):
+    """A goal's own work request is routed by a declared rule that calls no
+    classifier. No intent is the design, not a failure: same tools, no warning,
+    not marked as a fallback."""
+    import logging
+
+    from grove.context_budget import resolve_tools_for_tier
+
+    tools = [_tool("read_file"), _tool("terminal")]
+    flagged = resolve_tools_for_tier(tools, None, None)
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="grove.context_budget"):
+        res = resolve_tools_for_tier(tools, None, None, classifier_not_called=True)
+    assert res.fallback is False
+    assert not [r for r in caplog.records if "unknown intent" in r.getMessage()]
+    assert res.allowed_names == flagged.allowed_names
+    assert [t["function"]["name"] for t in res.tools] == [t["function"]["name"] for t in flagged.tools]
+
+
+def test_the_flag_does_not_excuse_a_classifier_that_answered_unknown():
+    """If a classifier WAS asked and said "unknown", that is uncertainty,
+    whatever the caller passes."""
+    from grove.context_budget import resolve_tools_for_tier
+
+    res = resolve_tools_for_tier([_tool("read_file")], "unknown", None, classifier_not_called=True)
+    assert res.fallback is True

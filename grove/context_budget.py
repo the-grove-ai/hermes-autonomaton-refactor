@@ -565,8 +565,14 @@ def resolve_tools_for_tier(
     complexity_signal: Optional[str],
     *,
     mcp_allow: Optional[Set[str]] = None,
+    classifier_not_called: bool = False,
 ) -> ToolResolution:
     """Resolve the per-turn tool surface (R1 + D4).
+
+    ``classifier_not_called``: the routing rule that decided this turn declares
+    it needs nothing from the classifier, so there is no intent and that is by
+    design, not a classifier failure. The surface is the same baseline + core;
+    it is not marked ``fallback`` and no uncertainty is raised.
 
     The native surface derives from the capability registry via
     intent/disclosure admission (``_registry_allowed_names``). The tier-
@@ -583,10 +589,13 @@ def resolve_tools_for_tier(
     run_agent answers with that surface and raises the operator Andon
     asynchronously.
     """
-    fallback = intent_class is None or intent_class == "unknown"
+    unknown = intent_class is None or intent_class == "unknown"
+    # Uncertainty is a classifier that was asked and gave no intent. A turn a
+    # declared rule routed without asking is not uncertain about anything.
+    fallback = unknown and not (classifier_not_called and intent_class is None)
 
     allowed = _registry_allowed_names(intent_class, complexity_signal)
-    if not fallback and allowed:
+    if not unknown and allowed:
         _validate_co_location(allowed, intent_class or "")
     if fallback:
         logger.warning(

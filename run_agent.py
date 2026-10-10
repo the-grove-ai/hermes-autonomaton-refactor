@@ -3520,7 +3520,7 @@ class AIAgent:
         if not self.tools:
             return
 
-        from grove.providers import current_classification
+        from grove.providers import current_classification, current_route_note
         from grove.context_budget import resolve_tools_for_tier
 
         classification = current_classification()
@@ -3542,6 +3542,12 @@ class AIAgent:
                 intent_class,
                 complexity,
                 mcp_allow=self._compute_mcp_allow(intent_class, goal_alignment),
+                # A rule that routes on what the turn is (a goal's own work
+                # request) calls no classifier: no intent, by declaration.
+                classifier_not_called=bool(
+                    classification is None
+                    and (current_route_note() or {}).get("classifier") == "not called"
+                ),
             )
 
         if budgeted:
