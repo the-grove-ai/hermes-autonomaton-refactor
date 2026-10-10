@@ -282,6 +282,7 @@ tool_effects:
   kanban_heartbeat:                      external_effect
   kanban_link:                           external_effect
   kanban_unblock:                        external_effect
+  mcp_grove_browser_browser_navigate:    external_effect
   mcp_notion_notion_create_comment:      external_effect
   mcp_notion_notion_create_database:     external_effect
   mcp_notion_notion_create_pages:        external_effect

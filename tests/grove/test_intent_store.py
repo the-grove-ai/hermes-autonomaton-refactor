@@ -649,3 +649,114 @@ class TestChainHeadAnchor:
         with caplog.at_level(logging.ERROR, logger="grove.dispatcher"):
             d._anchor_chain_head({"session_id": "s1", "record_hash": "abc"})
         assert any("chain-head anchor write failed" in r.message for r in caplog.records)
+
+
+# ── reading without re-parsing ────────────────────────────────────────────────
+
+
+def _count_parses(monkeypatch):
+    """Count the lines the store parses from here on."""
+    import grove.intent_store as mod
+
+    calls = {"n": 0}
+    real = mod.json.loads
+
+    def counting(*args, **kwargs):
+        calls["n"] += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(mod.json, "loads", counting)
+    return calls
+
+
+def test_a_second_read_parses_nothing_and_returns_the_same_records(tmp_path, monkeypatch):
+    store = IntentStore(tmp_path / "intents.jsonl")
+    for n in range(5):
+        store.append(_record(turn_id=f"sess-1#{n}"))
+    first = [r.turn_id for r in store.records()]
+    calls = _count_parses(monkeypatch)
+    again = [r.turn_id for r in store.records()]
+    assert again == first == [f"sess-1#{n}" for n in range(5)]
+    assert calls["n"] == 0
+
+
+def test_only_appended_lines_are_parsed_and_another_store_object_sees_them(tmp_path, monkeypatch):
+    path = tmp_path / "intents.jsonl"
+    store = IntentStore(path)
+    for n in range(4):
+        store.append(_record(turn_id=f"sess-1#{n}"))
+    list(store.records())
+    store.append(_record(turn_id="sess-1#4"))
+    calls = _count_parses(monkeypatch)
+    got = [r.turn_id for r in IntentStore(path).records()]
+    assert got[-1] == "sess-1#4" and len(got) == 5
+    assert calls["n"] == 1
+
+
+def test_a_replaced_file_is_read_afresh(tmp_path):
+    """A content purge and a checkpoint restore both replace the file."""
+    path = tmp_path / "intents.jsonl"
+    store = IntentStore(path)
+    for n in range(6):
+        store.append(_record(turn_id=f"old#{n}"))
+    assert len(list(store.records())) == 6
+
+    other = IntentStore(tmp_path / "other.jsonl")
+    for n in range(8):
+        other.append(_record(turn_id=f"new#{n}", session_id="sess-2"))
+    (tmp_path / "other.jsonl").replace(path)
+    assert [r.turn_id for r in store.records()] == [f"new#{n}" for n in range(8)]
+
+
+def test_a_file_rewritten_in_place_is_read_afresh(tmp_path):
+    """Same inode, different bytes where the last parsed line ended."""
+    path = tmp_path / "intents.jsonl"
+    store = IntentStore(path)
+    for n in range(3):
+        store.append(_record(turn_id=f"old#{n}"))
+    assert len(list(store.records())) == 3
+
+    donor = IntentStore(tmp_path / "donor.jsonl")
+    for n in range(7):
+        donor.append(_record(turn_id=f"new#{n}", user_message_stem="a longer stem than before"))
+    with open(path, "w", encoding="utf-8") as fh:        # in place: the inode stays
+        fh.write((tmp_path / "donor.jsonl").read_text(encoding="utf-8"))
+    assert [r.turn_id for r in store.records()] == [f"new#{n}" for n in range(7)]
+
+
+def test_a_shorter_file_is_read_afresh(tmp_path):
+    path = tmp_path / "intents.jsonl"
+    store = IntentStore(path)
+    for n in range(5):
+        store.append(_record(turn_id=f"sess-1#{n}"))
+    assert len(list(store.records())) == 5
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.writelines(lines[:2])
+    assert [r.turn_id for r in store.records()] == ["sess-1#0", "sess-1#1"]
+
+
+def test_a_last_line_with_no_newline_is_returned_once_and_not_doubled_when_completed(tmp_path):
+    path = tmp_path / "intents.jsonl"
+    store = IntentStore(path)
+    store.append(_record(turn_id="sess-1#0"))
+    store.append(_record(turn_id="sess-1#1"))
+    text = path.read_text(encoding="utf-8")
+    path.write_text(text.rstrip("\n"), encoding="utf-8")      # final newline not written yet
+    assert [r.turn_id for r in store.records()] == ["sess-1#0", "sess-1#1"]
+    assert [r.turn_id for r in store.records()] == ["sess-1#0", "sess-1#1"]
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write("\n")
+    store.append(_record(turn_id="sess-1#2"))
+    assert [r.turn_id for r in store.records()] == ["sess-1#0", "sess-1#1", "sess-1#2"]
+
+
+def test_a_deleted_file_reads_empty_and_a_new_one_is_read_from_its_start(tmp_path):
+    path = tmp_path / "intents.jsonl"
+    store = IntentStore(path)
+    store.append(_record(turn_id="sess-1#0"))
+    assert len(list(store.records())) == 1
+    path.unlink()
+    assert list(store.records()) == []
+    store.append(_record(turn_id="sess-9#0", session_id="sess-9"))
+    assert [r.turn_id for r in store.records()] == ["sess-9#0"]

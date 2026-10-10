@@ -1,0 +1,78 @@
+# grove-browser node MCP — NAVIGATE capability (the node's one Yellow tool).
+# Admission layer (distinct from the zones.schema.yaml zone grant): a tool no
+# capability record binds is never offered (grove.tool_admission), so without
+# this record browser_navigate was in the registry and never reached a turn.
+#
+# What the tool is, in the node's own declaration: navigation-only interaction.
+# It clicks and scrolls to reach content, then reads. Click targets are
+# addressed by ARIA role and name, limited to an allowlist of roles, and refused
+# when the name reads as an action. No typing, no form submission, no writes.
+# The node asks the engine to gate it Yellow; zones.schema.yaml classes it
+# external_effect, so every call asks the operator.
+#
+# SERVER-ID NOTE: as for grove_browser_read, the mcp_schema pointer is "grove"
+# (the sanitized tool name splits on its first underscore). Two records bound to
+# one server is the notion_read / notion_write precedent.
+id: grove_browser_navigate
+kind: mcp
+trigger:
+  # The read record's always:true already keeps the server in the per-turn
+  # allow set; these say when navigation is the point of the turn.
+  intents: [research, retrieval, summarization]
+  keywords: [click, navigate, scroll, browse, "click through"]
+  dock_affinity: []
+bindings:
+  tools:
+    - mcp_grove_browser_browser_navigate
+  credentials: null
+  toolset_key: null
+tier_rule:
+  eligible: [1, 2, 3]
+  preferred: 1
+  promotion_criteria: {}
+  validation:
+    strategy: shadow_compare
+    confidence_threshold: 0.95
+    shadow_window: 20
+zone: yellow
+telemetry:
+  feed: intent_feed
+  track: [invocation, result, cost, latency, confidence, human_feedback]
+context:
+  disclosure: eager
+  dock_composition: none
+  payload: |
+    mcp_schema:grove
+
+    Grove Browser node MCP (tailnet read substrate, GRV-004) — NAVIGATE.
+    Schema is pulled live from the connected grove-browser server; this pointer
+    binds the record to that server. browser_navigate (Yellow) clicks and
+    scrolls to reach content on a page, then reads it. Each call requires
+    operator approval. It cannot type, submit a form or write.
+lifecycle:
+  state: approved
+  provenance: migrated
+  created_at: "2026-10-09T00:00:00+00:00"
+  last_used: null
+  use_count: 0
+  # Navigation on logged-in sites stays supervised: it does not earn Green.
+  flywheel_eligible: false
+lineage:
+  source_patterns: []
+  parent_id: null
+  decision_log:
+    - actor: operator
+      timestamp: "2026-10-09T00:00:00+00:00"
+      from_state: migrated
+      to_state: approved
+      reason: "grove-browser 0.3.0 added browser_navigate, declared Yellow by the node; admission record so the tool is offered, behind the approval gate"
+      evidence: ["config/zones.schema.yaml#tool_zones", "config/capabilities/grove_browser_read.yaml"]
+failure:
+  fallback: halt_and_surface
+  diagnostic_context:
+    - "capability: grove_browser_navigate"
+    - "subsystem: grove-browser node MCP (tailnet endpoint) via tools/mcp_tool.py"
+    - "check: grove-browser MCP server reachable and serving browser_navigate; yellow-zone approval gate intact"
+  circuit_breaker:
+    threshold: 3
+    window_seconds: 300

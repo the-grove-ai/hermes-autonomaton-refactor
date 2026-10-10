@@ -416,6 +416,117 @@ def verify_chain(
     return report
 
 
+# ── reading without re-parsing ────────────────────────────────────────
+
+
+@dataclass
+class _Parsed:
+    """What has been parsed of one store file: the records of every whole
+    line up to ``offset``, valid while the file is the same file (``inode``)
+    and still holds ``tail`` just before ``offset``."""
+
+    inode: int = -1
+    offset: int = 0
+    tail: bytes = b""
+    lines: int = 0
+    records: List["IntentRecord"] = field(default_factory=list)
+
+
+_TAIL_BYTES = 64
+_PARSED: Dict[str, _Parsed] = {}
+_PARSED_LOCK = threading.Lock()
+
+
+def _parse_line(raw: bytes, line_no: int, path: Path) -> Optional["IntentRecord"]:
+    line = raw.decode("utf-8").strip()
+    if not line:
+        return None
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError as exc:
+        logger.debug(
+            "[grove.intent_store] malformed record line %d "
+            "in %s: %r", line_no, path, exc,
+        )
+        return None
+    if isinstance(data.get("tools_yielded"), list):
+        data["tools_yielded"] = tuple(data["tools_yielded"])
+    if isinstance(data.get("tools_offered"), list):
+        data["tools_offered"] = tuple(data["tools_offered"])
+    try:
+        return IntentRecord(**data)
+    except (TypeError, ValueError) as exc:
+        logger.debug(
+            "[grove.intent_store] schema mismatch line %d "
+            "in %s: %r", line_no, path, exc,
+        )
+        return None
+
+
+def _read_through(path: Path) -> List["IntentRecord"]:
+    """Every record in ``path``, in append order, parsing only the lines added
+    since the last call for the same file.
+
+    The kept records are dropped and the file read afresh whenever it is not
+    the file that was read before: another inode (a content purge and a
+    checkpoint restore both replace the file), a shorter file, or different
+    bytes where the last parsed line ended. A final line with no newline yet
+    is returned but not kept, so it is read again once it is complete.
+    Records are frozen, so handing the same objects to every reader is safe.
+    """
+    key = str(path)
+    with _PARSED_LOCK:
+        try:
+            stat = path.stat()
+        except FileNotFoundError:
+            _PARSED.pop(key, None)
+            return []
+        kept = _PARSED.get(key)
+        with open(path, "rb") as fh:
+            same = (
+                kept is not None
+                and kept.inode == stat.st_ino
+                and stat.st_size >= kept.offset
+            )
+            if same and kept.tail:
+                fh.seek(kept.offset - len(kept.tail))
+                same = fh.read(len(kept.tail)) == kept.tail
+            if not same:
+                kept = _Parsed(inode=stat.st_ino)
+            fh.seek(kept.offset)
+            added = fh.read()
+        whole = added[: added.rfind(b"\n") + 1]      # b"" when no newline
+        fresh: List[IntentRecord] = []
+        line_no = kept.lines
+        for raw in whole.splitlines():
+            line_no += 1
+            record = _parse_line(raw, line_no, path)
+            if record is not None:
+                fresh.append(record)
+        # Nothing is kept until every new line has parsed: a line that cannot
+        # be decoded raises, as it always has, and leaves what was kept alone.
+        if whole:
+            kept.records.extend(fresh)
+            kept.offset += len(whole)
+            kept.lines = line_no
+            kept.tail = (kept.tail + whole)[-_TAIL_BYTES:]
+        _PARSED[key] = kept
+        out = list(kept.records)
+        unfinished = added[len(whole):]
+        if unfinished.strip():
+            record = _parse_line(unfinished, line_no + 1, path)
+            if record is not None:
+                out.append(record)
+        return out
+
+
+def _forget_parsed() -> None:
+    """Drop every kept read. For tests that reuse a path across cases."""
+    with _PARSED_LOCK:
+        _PARSED.clear()
+
+
+
 class IntentStore:
     """Append-only JSON Lines store for IntentRecords.
 
@@ -591,33 +702,15 @@ class IntentStore:
         crashing on a damaged entry. Schema-mismatched lines (older
         records missing newer fields, or future fields this version
         doesn't know) are also skipped at debug.
+
+        The file only ever grows by whole lines, so what has been parsed is
+        kept and a later call parses only what was appended since (see
+        :func:`_read_through`). Several readers run on every turn; without
+        this each one parsed the whole file again.
         """
         if not self._path.exists():
             return
-        with open(self._path, "r", encoding="utf-8") as fh:
-            for line_no, line in enumerate(fh, start=1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError as exc:
-                    logger.debug(
-                        "[grove.intent_store] malformed record line %d "
-                        "in %s: %r", line_no, self._path, exc,
-                    )
-                    continue
-                if isinstance(data.get("tools_yielded"), list):
-                    data["tools_yielded"] = tuple(data["tools_yielded"])
-                if isinstance(data.get("tools_offered"), list):
-                    data["tools_offered"] = tuple(data["tools_offered"])
-                try:
-                    yield IntentRecord(**data)
-                except (TypeError, ValueError) as exc:
-                    logger.debug(
-                        "[grove.intent_store] schema mismatch line %d "
-                        "in %s: %r", line_no, self._path, exc,
-                    )
+        yield from _read_through(self._path)
 
     def latest_by_turn(self) -> Iterator[IntentRecord]:
         """Yield the latest record per ``turn_id``.

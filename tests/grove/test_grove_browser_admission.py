@@ -81,3 +81,46 @@ def test_record_owns_exactly_the_five_read_tools():
     assert sorted(rec.bindings.tools) == sorted(GB_TOOLS)
     assert rec.trigger.always is True
     assert rec.zone.value == "green"
+
+
+# ── browser_navigate: the node's one Yellow tool ──────────────────────────────
+
+GB_NAVIGATE = "mcp_grove_browser_browser_navigate"
+
+
+def test_navigate_is_bound_by_its_own_record_and_admitted():
+    """A tool no record binds is never offered. The navigate record binds
+    exactly the navigate tool, and the read record still owns only reads."""
+    from grove.capability import CapabilityKind
+    from grove.capability_registry import load_capabilities
+    from grove.tool_admission import get_admitted_tools
+
+    caps = load_capabilities()
+    rec = caps.get("grove_browser_navigate")
+    assert rec is not None and rec.kind == CapabilityKind.MCP
+    assert list(rec.bindings.tools) == [GB_NAVIGATE]
+    assert GB_NAVIGATE not in caps["grove_browser_read"].bindings.tools
+    assert GB_NAVIGATE in get_admitted_tools(None, "telegram", {})
+
+
+def test_navigate_asks_the_operator_at_dispatch():
+    """Yellow through the real classifier, and yellow on the record: clicking
+    on a logged-in site is supervised, and does not earn its way to Green."""
+    from grove.capability_registry import load_capabilities
+
+    clf = ZoneClassifier(REPO / "config" / "zones.schema.yaml")
+    assert clf.classify(GB_NAVIGATE).zone == "yellow"
+    rec = load_capabilities()["grove_browser_navigate"]
+    assert str(getattr(rec.zone, "value", rec.zone)) == "yellow"
+    assert rec.lifecycle.flywheel_eligible is False
+
+
+def test_navigate_record_binds_the_same_server_as_the_read_record():
+    """Both records point at the one grove-browser server (the notion_read /
+    notion_write shape)."""
+    from grove.capability_registry import load_capabilities
+
+    caps = load_capabilities()
+    pointer = lambda r: next(  # noqa: E731
+        ln.strip() for ln in r.context.payload.splitlines() if ln.strip().startswith("mcp_schema:"))
+    assert pointer(caps["grove_browser_navigate"]) == pointer(caps["grove_browser_read"]) == "mcp_schema:grove"
