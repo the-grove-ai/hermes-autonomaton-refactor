@@ -23,7 +23,7 @@ def test_manual_compress_reports_noop_without_success_banner(capsys):
     shell.agent._composed_system_prompt = ""
     shell.agent.tools = None
     shell.agent.session_id = shell.session_id  # no-op compression: no split
-    shell.agent._compress_context.return_value = (list(history), "")
+    shell.agent.compress_now.return_value = (list(history), "")
 
     def _estimate(messages, **_kwargs):
         assert messages == history
@@ -52,7 +52,7 @@ def test_manual_compress_explains_when_token_estimate_rises(capsys):
     shell.agent._composed_system_prompt = ""
     shell.agent.tools = None
     shell.agent.session_id = shell.session_id  # no-op: no split
-    shell.agent._compress_context.return_value = (compressed, "")
+    shell.agent.compress_now.return_value = (compressed, "")
 
     def _estimate(messages, **_kwargs):
         if messages == history:
@@ -96,7 +96,7 @@ def test_manual_compress_syncs_session_id_after_split():
     def _fake_compress(*args, **kwargs):
         shell.agent.session_id = new_child_id
         return (compressed, "")
-    shell.agent._compress_context.side_effect = _fake_compress
+    shell.agent.compress_now.side_effect = _fake_compress
     shell.agent.session_id = old_id  # starts in sync
     shell._pending_title = "stale title"
 
@@ -138,7 +138,7 @@ def test_manual_compress_flushes_compressed_history_to_child_session_db():
         shell.agent.session_id = new_child_id
         return (compressed, "")
 
-    shell.agent._compress_context.side_effect = _fake_compress
+    shell.agent.compress_now.side_effect = _fake_compress
 
     with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
         shell._manual_compress()
@@ -154,7 +154,7 @@ def test_manual_compress_does_not_flush_full_history_when_session_id_unchanged()
     shell.agent.compression_enabled = True
     shell.agent._composed_system_prompt = ""
     shell.agent.session_id = shell.session_id
-    shell.agent._compress_context.return_value = (list(history), "")
+    shell.agent.compress_now.return_value = (list(history), "")
 
     with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
         shell._manual_compress()
@@ -174,7 +174,7 @@ def test_manual_compress_no_sync_when_session_id_unchanged():
     shell.agent._composed_system_prompt = ""
     shell.agent.tools = None
     shell.agent.session_id = shell.session_id
-    shell.agent._compress_context.return_value = (list(history), "")
+    shell.agent.compress_now.return_value = (list(history), "")
     shell._pending_title = "keep me"
 
     with patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100):

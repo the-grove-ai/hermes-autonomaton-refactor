@@ -5325,6 +5325,65 @@ class Dispatcher:
             )
         return new_session_id
 
+    def compress_now(
+        self,
+        messages: list,
+        system_message: Optional[str],
+        *,
+        approx_tokens: Optional[int] = None,
+        focus_topic: Optional[str] = None,
+    ) -> Tuple[list, str]:
+        """Compress a conversation outside a turn, and return
+        ``(compressed_messages, new_system_prompt)``.
+
+        ``AIAgent._compress_context`` is a generator: it yields the session
+        rotation and the memory lifecycle events for the Dispatcher to execute,
+        and returns its result when exhausted. Inside a turn the turn loop
+        drives it. The callers that compress with no turn running (the
+        gateway's session hygiene, ``/compress`` on the gateway and in the CLI)
+        called it as a plain function and unpacked the generator, which failed
+        on every attempt after the summary had already been paid for. They
+        call this instead. It answers each yielded step the way the turn loop
+        does, and refuses a step it does not know rather than skip it.
+        """
+        from grove.intents import MemoryLifecycleIntent, Observation, SessionRotateIntent
+
+        import inspect
+
+        agent = self.agent
+        gen = agent._compress_context(
+            messages, system_message,
+            approx_tokens=approx_tokens, focus_topic=focus_topic,
+        )
+        if not inspect.isgenerator(gen):
+            # A stand-in agent (the gateway and CLI test doubles) that returns
+            # the result outright has nothing to be driven.
+            return gen
+        try:
+            yielded = next(gen)
+            while True:
+                if isinstance(yielded, SessionRotateIntent):
+                    value: Any = self.rotate_session(
+                        reason=yielded.reason,
+                        new_system_prompt=yielded.new_system_prompt,
+                        source=getattr(agent, "platform", None) or "cli",
+                        model=getattr(agent, "model", ""),
+                        model_config=getattr(agent, "_session_init_model_config", None),
+                    )
+                elif isinstance(yielded, MemoryLifecycleIntent):
+                    self.execute_memory_lifecycle(yielded)
+                    value = None
+                else:
+                    gen.close()
+                    raise RuntimeError(
+                        "compress_now: the compression step yielded "
+                        f"{type(yielded).__name__}, which only a running turn "
+                        "can execute. Nothing was compressed."
+                    )
+                yielded = gen.send(Observation(intent_id=None, success=True, value=value))
+        except StopIteration as done:
+            return done.value
+
     def update_token_counts(self, intent: "SessionUpdateTokensIntent") -> None:
         """Per-API-call telemetry write — handler for SessionUpdateTokensIntent."""
         if self.session is None or not self.session_id:

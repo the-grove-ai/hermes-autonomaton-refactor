@@ -9730,7 +9730,7 @@ class HermesCLI:
                 # _build_system_prompt appends system_message to prompt_parts
                 # which already contain the agent identity — resulting in the
                 # identity block appearing twice (issue #15281).
-                compressed, _ = self.agent._compress_context(
+                compressed, _ = self.agent.compress_now(
                     original_history,
                     None,
                     approx_tokens=approx_tokens,

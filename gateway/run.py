@@ -7748,7 +7748,12 @@ class GatewayRunner:
                             if len(_hyg_msgs) >= 4:
                                 # Compression-only — no turn dispatch; exempt from GRV-005 § II.
                                 #   See Sprint 27 A1 disposition.
-                                _hyg_agent = Dispatcher(agent_kwargs=dict(
+                                # session_db: the rotation the compression asks for
+                                # closes the old session and opens a child, so the
+                                # full transcript stays on record. Without it there
+                                # is no rotation and the transcript is rewritten in
+                                # place.
+                                _hyg_dispatcher = Dispatcher(session_db=getattr(self, "_session_db", None), agent_kwargs=dict(
                                     **_hyg_runtime,
                                     model=_hyg_model,
                                     max_iterations=4,
@@ -7756,14 +7761,15 @@ class GatewayRunner:
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
-                                )).agent
+                                ))
+                                _hyg_agent = _hyg_dispatcher.agent
                                 try:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
 
                                     loop = asyncio.get_running_loop()
                                     _compressed, _ = await loop.run_in_executor(
                                         None,
-                                        lambda: _hyg_agent._compress_context(
+                                        lambda: _hyg_dispatcher.compress_now(
                                             _hyg_msgs, "",
                                             approx_tokens=_approx_tokens,
                                         ),
@@ -11522,7 +11528,7 @@ class GatewayRunner:
 
             # Compression-only — no turn dispatch; exempt from GRV-005 § II.
             #   See Sprint 27 A1 disposition.
-            tmp_agent = Dispatcher(agent_kwargs=dict(
+            tmp_dispatcher = Dispatcher(session_db=getattr(self, "_session_db", None), agent_kwargs=dict(
                 **runtime_kwargs,
                 model=model,
                 max_iterations=4,
@@ -11530,7 +11536,8 @@ class GatewayRunner:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
-            )).agent
+            ))
+            tmp_agent = tmp_dispatcher.agent
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
 
@@ -11551,7 +11558,7 @@ class GatewayRunner:
                 loop = asyncio.get_running_loop()
                 compressed, _ = await loop.run_in_executor(
                     None,
-                    lambda: tmp_agent._compress_context(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
+                    lambda: tmp_dispatcher.compress_now(msgs, "", approx_tokens=approx_tokens, focus_topic=focus_topic)
                 )
 
                 # _compress_context already calls end_session() on the old session

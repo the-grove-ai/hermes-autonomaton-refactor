@@ -26,7 +26,7 @@ def test_focus_topic_extracted_and_passed(capsys):
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
     shell.agent._composed_system_prompt = ""
-    shell.agent._compress_context.return_value = (compressed, "")
+    shell.agent.compress_now.return_value = (compressed, "")
 
     def _estimate(messages):
         if messages is history:
@@ -40,8 +40,8 @@ def test_focus_topic_extracted_and_passed(capsys):
     assert 'focus: "database schema"' in output
 
     # Verify focus_topic was passed through
-    shell.agent._compress_context.assert_called_once()
-    call_kwargs = shell.agent._compress_context.call_args
+    shell.agent.compress_now.assert_called_once()
+    call_kwargs = shell.agent.compress_now.call_args
     assert call_kwargs.kwargs.get("focus_topic") == "database schema"
 
 
@@ -53,13 +53,13 @@ def test_no_focus_topic_when_bare_command(capsys):
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
     shell.agent._composed_system_prompt = ""
-    shell.agent._compress_context.return_value = (list(history), "")
+    shell.agent.compress_now.return_value = (list(history), "")
 
     with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
         shell._manual_compress("/compress")
 
-    shell.agent._compress_context.assert_called_once()
-    call_kwargs = shell.agent._compress_context.call_args
+    shell.agent.compress_now.assert_called_once()
+    call_kwargs = shell.agent.compress_now.call_args
     assert call_kwargs.kwargs.get("focus_topic") is None
 
 
@@ -71,13 +71,13 @@ def test_empty_focus_after_command_treated_as_none(capsys):
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
     shell.agent._composed_system_prompt = ""
-    shell.agent._compress_context.return_value = (list(history), "")
+    shell.agent.compress_now.return_value = (list(history), "")
 
     with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
         shell._manual_compress("/compress   ")
 
-    shell.agent._compress_context.assert_called_once()
-    call_kwargs = shell.agent._compress_context.call_args
+    shell.agent.compress_now.assert_called_once()
+    call_kwargs = shell.agent.compress_now.call_args
     assert call_kwargs.kwargs.get("focus_topic") is None
 
 
@@ -90,7 +90,7 @@ def test_focus_topic_printed_in_compression_banner(capsys):
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
     shell.agent._composed_system_prompt = ""
-    shell.agent._compress_context.return_value = (compressed, "")
+    shell.agent.compress_now.return_value = (compressed, "")
 
     with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
         shell._manual_compress("/compress API endpoints")
@@ -108,7 +108,7 @@ def test_no_focus_prints_standard_banner(capsys):
     shell.agent = MagicMock()
     shell.agent.compression_enabled = True
     shell.agent._composed_system_prompt = ""
-    shell.agent._compress_context.return_value = (compressed, "")
+    shell.agent.compress_now.return_value = (compressed, "")
 
     with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=100):
         shell._manual_compress("/compress")

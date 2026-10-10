@@ -10,7 +10,7 @@ class DummyAgent:
         self.session_id = "new-session"
         self.calls = []
 
-    def _compress_context(self, messages, system_message, *, approx_tokens=None, focus_topic=None):
+    def compress_now(self, messages, system_message, *, approx_tokens=None, focus_topic=None):
         self.calls.append(
             {
                 "messages": messages,
