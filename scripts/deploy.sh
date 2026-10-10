@@ -72,8 +72,7 @@ echo "▸ Deploying origin/main to ${INSTANCE} (${ZONE})"
 # `set -e` inside the remote shell makes any step's failure fail the whole
 # command, and gcloud propagates that non-zero exit back to us.
 #
-# OS Login logs us in as the operator's own account, NOT 'hermes' (the
-# `hermes@` in the ssh target is overridden — gcloud prints a notice). That
+# OS Login logs us in as the operator's own account, NOT 'hermes'. That
 # account can't even enter /home/hermes (mode 0750 on Ubuntu 24.04), and the
 # repo + venv are owned by hermes anyway, so the checkout + reinstall run AS
 # hermes via `sudo -u hermes`. The service restart needs root. Operator
@@ -117,7 +116,11 @@ echo "DEPLOYED_COMMIT=\$(sudo -u hermes git -C '${REPO_DIR}' rev-parse --short H
 REMOTE
 )"
 
-OUTPUT="$(gcloud compute ssh "hermes@${INSTANCE}" \
+# Log in as the operator's own OS Login account, which has sudo; the remote
+# block drops to hermes itself. A `hermes@` target used to be overridden by OS
+# Login. On 2026-10-09 it was honored instead, and hermes is not a sudoer: the
+# deploy stopped at its first sudo, before changing anything.
+OUTPUT="$(gcloud compute ssh "${INSTANCE}" \
   --zone="${ZONE}" \
   --tunnel-through-iap \
   --command="${REMOTE_CMD}")"
