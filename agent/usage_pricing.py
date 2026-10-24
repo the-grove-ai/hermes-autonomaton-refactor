@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal, Optional
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
@@ -135,13 +138,46 @@ def normalize_usage(
     )
 
 
-def _reported_cost(response_usage: Any) -> Optional[float]:
-    """The provider's own charge for the call, when its usage report has one."""
-    value = (response_usage.get("cost") if isinstance(response_usage, dict)
-             else getattr(response_usage, "cost", None))
+def _field(obj: Any, name: str) -> Any:
+    return obj.get(name) if isinstance(obj, dict) else getattr(obj, name, None)
+
+
+def _money(value: Any) -> Optional[float]:
     if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
         return None
     return float(value)
+
+
+def _reported_cost(response_usage: Any) -> Optional[float]:
+    """The provider's own charge for the call, when its usage report has one.
+
+    On a bring-your-own-key route (OpenRouter ``is_byok``) ``cost`` is only
+    the router's fee; the model's charge, billed to the operator's own
+    provider account, is ``cost_details.upstream_inference_cost``, so the
+    call cost is the two together. A charge of exactly 0 for a call that
+    used tokens is not believed: it is reported as no charge (None), with a
+    warning, so the turn is priced from the declared prices instead."""
+    cost = _money(_field(response_usage, "cost"))
+    if cost is None:
+        return None
+    if _field(response_usage, "is_byok") is True:
+        upstream = _money(_field(_field(response_usage, "cost_details") or {},
+                                 "upstream_inference_cost"))
+        if upstream is None:
+            logger.warning(
+                "Provider usage says bring-your-own-key but carries no "
+                "cost_details.upstream_inference_cost; the call's charge is unknown "
+                "and the turn will be priced from declared prices")
+            return None
+        return cost + upstream
+    used = (_field(response_usage, "prompt_tokens") or 0) + (
+        _field(response_usage, "completion_tokens") or 0)
+    if cost == 0 and isinstance(used, (int, float)) and used > 0:
+        logger.warning(
+            "Provider reported a charge of $0 for a call that used %d tokens; not "
+            "believed, the turn will be priced from declared prices", used)
+        return None
+    return cost
 
 
 def _subscription_included(provider: Optional[str]) -> bool:

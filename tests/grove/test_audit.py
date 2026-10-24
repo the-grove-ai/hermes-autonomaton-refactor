@@ -1050,6 +1050,20 @@ def test_a_turns_cost_is_what_the_provider_charged_when_it_said_so():
     assert _reported_cost(SimpleNamespace(cost=0.00012098)) == 0.00012098
     for none in ({}, SimpleNamespace(), {"cost": None}, {"cost": True}, {"cost": -1}, {"cost": "x"}):
         assert _reported_cost(none) is None
+    # Bring-your-own-key: the router's fee plus the upstream charge.
+    byok = {"cost": 0, "is_byok": True, "prompt_tokens": 13, "completion_tokens": 4,
+            "cost_details": {"upstream_inference_cost": 3.3e-06}}
+    assert _reported_cost(byok) == pytest.approx(3.3e-06)
+    assert _reported_cost(SimpleNamespace(
+        cost=1e-07, is_byok=True, cost_details=SimpleNamespace(upstream_inference_cost=2e-06))
+    ) == pytest.approx(2.1e-06)
+    assert _reported_cost({"cost": 0, "is_byok": True, "prompt_tokens": 13}) is None
+    # Not bring-your-own-key: cost is the whole charge; upstream is not added.
+    assert _reported_cost({"cost": 3.4e-06, "is_byok": False, "prompt_tokens": 9,
+                           "cost_details": {"upstream_inference_cost": 3.4e-06}}) == 3.4e-06
+    # $0 for a call that used tokens is not believed; $0 for no tokens stands.
+    assert _reported_cost({"cost": 0, "prompt_tokens": 50_000, "completion_tokens": 1_366}) is None
+    assert _reported_cost({"cost": 0, "prompt_tokens": 0, "completion_tokens": 0}) == 0.0
     assert CanonicalUsage().cost is None
 
     # The page says where the figure comes from, beside the number.
@@ -1296,3 +1310,16 @@ def test_a_branded_scorecard_speaks_in_the_brand_above_the_mechanism(home, monke
     top = html[:html.index("HOW IT GOT THERE")]
     assert "keg" not in top.lower()
     assert "Settled from the keg" in html[html.index("HOW IT GOT THERE"):]
+
+
+def test_a_disbelieved_zero_charge_is_said_out_loud(caplog):
+    import logging
+
+    from agent.usage_pricing import _reported_cost
+
+    with caplog.at_level(logging.WARNING, logger="agent.usage_pricing"):
+        logging.getLogger("agent.usage_pricing").warning("positive-control")
+        assert _reported_cost({"cost": 0, "prompt_tokens": 900, "completion_tokens": 10}) is None
+    msgs = [r.getMessage() for r in caplog.records if r.name == "agent.usage_pricing"]
+    assert msgs[0] == "positive-control"
+    assert any("charge of $0" in m and "910 tokens" in m for m in msgs[1:])
