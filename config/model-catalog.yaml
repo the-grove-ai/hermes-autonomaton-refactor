@@ -491,7 +491,6 @@ models:
   - slug: "deepseek/deepseek-v4.1-flash-1017"
     display_name: "DeepSeek V4.1 Flash 1017"
     provider: openrouter
-    status: candidate
     fits: [Telemetry, T1]
     context: 1048576
     tools: true
@@ -499,7 +498,7 @@ models:
     verified: "2026-10-24"
     input_cost_per_mtok: 0.098     # USD/Mtok — display-only, DeepInfra endpoint at 51% off ($0.20 list), verified deepseek/deepseek-v4.1-flash-1017 (OpenRouter 2026-10-24)
     output_cost_per_mtok: 0.294    # USD/Mtok — display-only ($0.60 list)
-    notes: "Fast tier candidate (Telemetry / T1). The 2026-10-17 snapshot of V4.1 Flash; supersedes the plain deepseek-v4.1-flash slug. 1M context, tools + structured outputs, native vision."
+    notes: "Fast tier (Telemetry / T1). The 2026-10-17 snapshot of V4.1 Flash; supersedes the plain deepseek-v4.1-flash slug. 1M context, tools + structured outputs, native vision."
 
   # ── claude-haiku-5.5 2026-10-24 — list price, identical across the Anthropic,
   # Bedrock, Vertex and Azure endpoints on the OpenRouter provider table. ──
