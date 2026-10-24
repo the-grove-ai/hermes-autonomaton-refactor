@@ -27,7 +27,6 @@ tier_preferences:
       work: classification, triage, short transformations. Also scores
       incoming requests to decide where they should run.
       Speed: fastest tier.
-    max_tokens: 4096
 
   Telemetry:
     provider: openrouter
@@ -40,7 +39,6 @@ tier_preferences:
       tool call). Bound separately from T1 so the operator can
       optimize classification and compaction independently.
       Speed: fastest tier.
-    max_tokens: 4096
 
   T-QA:
     provider: openrouter
@@ -53,7 +51,6 @@ tier_preferences:
       silently changes the judge, and vice versa (the Telemetry-tier
       precedent). Requires reliable forced tool_choice; the 1M
       context comfortably holds rubric + draft.
-    max_tokens: 4096
 
   T-GA:
     provider: openrouter
@@ -67,7 +64,6 @@ tier_preferences:
       Bound separately from T-QA so rebinding the quality judge never
       silently changes the attachment judge, and vice versa (the
       Telemetry-tier precedent). Requires reliable forced tool_choice.
-    max_tokens: 4096
 
   T2:
     provider: openrouter
@@ -77,7 +73,6 @@ tier_preferences:
       reasoning, code, analysis, drafting. The balance of capability
       and cost most interactions should run on.
       Speed: fast.
-    max_tokens: 8192
 
     # ----- LOCAL BINDING — run T2 on-device with Ollama -------------------
     # The T2 block above runs on a cloud model. To make the daily driver
@@ -115,7 +110,6 @@ tier_preferences:
       reasoning. Slower and several times costlier than T2, so it is
       used sparingly, only when the work needs it.
       Speed: slowest tier.
-    max_tokens: 16384
       # skill-adoption-v1 P3 — governed downshift (GRV-010 C2d). When T3's model
       # is unreachable (network / 5xx / 429 / exhausted credentials), the turn
       # re-routes THROUGH the Cognitive Router at T2 and re-drives, rather than
