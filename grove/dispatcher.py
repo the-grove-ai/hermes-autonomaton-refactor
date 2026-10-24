@@ -3011,6 +3011,8 @@ class Dispatcher:
         try:
             agent._turn_retries = 0
             agent._turn_call_ms = []
+            agent._turn_call_reasons = []
+            agent._next_call_reason = None
             agent._turn_call_usage = []
             agent._turn_only_tools = None
             agent._call_over_budget = None
@@ -3175,6 +3177,10 @@ class Dispatcher:
                 # How long each completed model call took, in order (ms).
                 "call_ms": [int(ms) for ms in
                             (getattr(agent, "_turn_call_ms", None) or [])][:cap],
+                # Why each of those calls was made, same order: "initial",
+                # "follow_up", or the retry that caused it.
+                "call_reasons": [str(r) for r in
+                                 (getattr(agent, "_turn_call_reasons", None) or [])][:cap],
                 "retries": int(getattr(agent, "_turn_retries", 0) or 0),
                 "fallbacks": [
                     {k: e.get(k) for k in ("event_type", "from_tier", "to_tier", "reason")

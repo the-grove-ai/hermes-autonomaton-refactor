@@ -10827,6 +10827,7 @@ class AIAgent:
                 index=0,
                 message=mock_message,
                 finish_reason=effective_finish_reason,
+                native_finish_reason=native_finish_reason,
             )
             return SimpleNamespace(
                 id="stream-" + str(uuid.uuid4()),
@@ -15489,6 +15490,13 @@ class AIAgent:
                     _calls = getattr(self, "_turn_call_ms", None)
                     if isinstance(_calls, list):
                         _calls.append(round(api_duration * 1000))
+                    # Why each call was made, in the same order: the first,
+                    # a follow-up (after tools or a nudge), or a named retry.
+                    _reasons = getattr(self, "_turn_call_reasons", None)
+                    if isinstance(_reasons, list):
+                        _reasons.append(getattr(self, "_next_call_reason", None)
+                                        or ("initial" if not _reasons else "follow_up"))
+                    self._next_call_reason = None
                     
                     # Stop thinking spinner silently -- the response box or tool
                     # execution messages that follow are more informative.
@@ -15599,6 +15607,7 @@ class AIAgent:
                         retry_count += 1
                         # stage-summary-v1 — surfaced on the turn's intent record.
                         self._turn_retries = getattr(self, "_turn_retries", 0) + 1
+                        self._next_call_reason = "invalid_response_retry"
                         # GRV-010 C2d-2 — the silent model swap on an
                         # empty/malformed response is removed; retry the same
                         # model with backoff (the retry loop continues below).
@@ -15744,189 +15753,14 @@ class AIAgent:
                                 f"{self.log_prefix}⚠️  Treating suspicious Ollama/GLM stop response as truncated",
                                 force=True,
                             )
+                            logger.warning(
+                                "Treating a stop response as truncated (Ollama/GLM heuristic): "
+                                "call #%d of this turn, model=%s", api_call_count, self.model)
                             finish_reason = "length"
 
-                    if finish_reason == "length":
-                        self._vprint(f"{self.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens", force=True)
-
-                        # Normalize the truncated response to a single OpenAI-style
-                        # message shape so text-continuation and tool-call retry
-                        # work uniformly across chat_completions, bedrock_converse,
-                        # and anthropic_messages.  For Anthropic we use the same
-                        # adapter the agent loop already relies on so the rebuilt
-                        # interim assistant message is byte-identical to what
-                        # would have been appended in the non-truncated path.
-                        _trunc_msg = None
-                        _trunc_transport = self._get_transport()
-                        if self.api_mode == "anthropic_messages":
-                            _trunc_result = _trunc_transport.normalize_response(
-                                response, strip_tool_prefix=self._is_anthropic_oauth
-                            )
-                        else:
-                            _trunc_result = _trunc_transport.normalize_response(response)
-                        _trunc_msg = _trunc_result
-
-                        _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
-                        _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
-
-                        # ── Detect thinking-budget exhaustion ──────────────
-                        # When the model spends ALL output tokens on reasoning
-                        # and has none left for the response, continuation
-                        # retries are pointless.  Detect this early and give a
-                        # targeted error instead of wasting 3 API calls.
-                        # A response is "thinking exhausted" only when the model
-                        # actually produced reasoning blocks but no visible text after
-                        # them.  Models that do not use <think> tags (e.g. GLM-4.7 on
-                        # NVIDIA Build, minimax) may return content=None or an empty
-                        # string for unrelated reasons — treat those as normal
-                        # truncations that deserve continuation retries, not as
-                        # thinking-budget exhaustion.
-                        _has_think_tags = bool(
-                            _trunc_content and re.search(
-                                r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>',
-                                _trunc_content,
-                                re.IGNORECASE,
-                            )
-                        )
-                        _thinking_exhausted = (
-                            not _trunc_has_tool_calls
-                            and _has_think_tags
-                            and (
-                                (_trunc_content is not None and not self._has_content_after_think_block(_trunc_content))
-                                or _trunc_content is None
-                            )
-                        )
-
-                        if _thinking_exhausted:
-                            _exhaust_error = (
-                                "Model used all output tokens on reasoning with none left "
-                                "for the response. Try lowering reasoning effort or "
-                                "increasing max_tokens."
-                            )
-                            self._vprint(
-                                f"{self.log_prefix}💭 Reasoning exhausted the output token budget — "
-                                f"no visible response was produced.",
-                                force=True,
-                            )
-                            # Return a user-friendly message as the response so
-                            # CLI (response box) and gateway (chat message) both
-                            # display it naturally instead of a suppressed error.
-                            _exhaust_response = (
-                                "⚠️ **Thinking Budget Exhausted**\n\n"
-                                "The model used all its output tokens on reasoning "
-                                "and had none left for the actual response.\n\n"
-                                "To fix this:\n"
-                                "→ Lower reasoning effort: `/thinkon low` or `/thinkon minimal`\n"
-                                "→ Or switch to a larger/non-reasoning model with `/model`"
-                            )
-                            self._cleanup_task_resources(effective_task_id)
-                            self._persist_session(messages, conversation_history)
-                            return {
-                                "final_response": _exhaust_response,
-                                "messages": messages,
-                                "api_calls": api_call_count,
-                                "completed": False,
-                                "partial": True,
-                                "error": _exhaust_error,
-                            }
-
-                        if self.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
-                            assistant_message = _trunc_msg
-                            if assistant_message is not None and not _trunc_has_tool_calls:
-                                length_continue_retries += 1
-                                interim_msg = self._build_assistant_message(assistant_message, finish_reason)
-                                messages.append(interim_msg)
-                                if assistant_message.content:
-                                    truncated_response_parts.append(assistant_message.content)
-
-                                if length_continue_retries < 3:
-                                    self._vprint(
-                                        f"{self.log_prefix}↻ Requesting continuation "
-                                        f"({length_continue_retries}/3)..."
-                                    )
-                                    continue_msg = {
-                                        "role": "user",
-                                        "content": (
-                                            "[System: Your previous response was truncated by the output "
-                                            "length limit. Continue exactly where you left off. Do not "
-                                            "restart or repeat prior text. Finish the answer directly.]"
-                                        ),
-                                    }
-                                    messages.append(continue_msg)
-                                    self._session_messages = messages
-                                    self._save_session_log(messages)
-                                    restart_with_length_continuation = True
-                                    break
-
-                                partial_response = self._strip_think_blocks("".join(truncated_response_parts)).strip()
-                                self._cleanup_task_resources(effective_task_id)
-                                self._persist_session(messages, conversation_history)
-                                return {
-                                    "final_response": partial_response or None,
-                                    "messages": messages,
-                                    "api_calls": api_call_count,
-                                    "completed": False,
-                                    "partial": True,
-                                    "error": "Response remained truncated after 3 continuation attempts",
-                                }
-
-                        if self.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
-                            assistant_message = _trunc_msg
-                            if assistant_message is not None and _trunc_has_tool_calls:
-                                if truncated_tool_call_retries < 1:
-                                    truncated_tool_call_retries += 1
-                                    self._vprint(
-                                        f"{self.log_prefix}⚠️  Truncated tool call detected — retrying API call...",
-                                        force=True,
-                                    )
-                                    # Don't append the broken response to messages;
-                                    # just re-run the same API call from the current
-                                    # message state, giving the model another chance.
-                                    continue
-                                self._vprint(
-                                    f"{self.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
-                                    force=True,
-                                )
-                                self._cleanup_task_resources(effective_task_id)
-                                self._persist_session(messages, conversation_history)
-                                return {
-                                    "final_response": None,
-                                    "messages": messages,
-                                    "api_calls": api_call_count,
-                                    "completed": False,
-                                    "partial": True,
-                                    "error": "Response truncated due to output length limit",
-                                }
-
-                        # If we have prior messages, roll back to last complete state
-                        if len(messages) > 1:
-                            self._vprint(f"{self.log_prefix}   ⏪ Rolling back to last complete assistant turn")
-                            rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
-
-                            self._cleanup_task_resources(effective_task_id)
-                            self._persist_session(messages, conversation_history)
-
-                            return {
-                                "final_response": None,
-                                "messages": rolled_back_messages,
-                                "api_calls": api_call_count,
-                                "completed": False,
-                                "partial": True,
-                                "error": "Response truncated due to output length limit"
-                            }
-                        else:
-                            # First message was truncated - mark as failed
-                            self._vprint(f"{self.log_prefix}❌ First response truncated - cannot recover", force=True)
-                            self._persist_session(messages, conversation_history)
-                            return {
-                                "final_response": None,
-                                "messages": messages,
-                                "api_calls": api_call_count,
-                                "completed": False,
-                                "failed": True,
-                                "error": "First response truncated due to output length limit"
-                            }
-                    
+                    # Every completed call is accounted, truncated ones too: its
+                    # tokens, its charge and its "API call #" line come before the
+                    # finish-reason branches, any of which may retry or return.
                     # Track actual token usage from response for context management
                     if hasattr(response, 'usage') and response.usage:
                         canonical_usage = normalize_usage(
@@ -16047,6 +15881,206 @@ class AIAgent:
                                 f"{cached:,}/{prompt:,} tokens "
                                 f"({hit_pct:.0f}% hit, {written:,} written)"
                             )
+                    
+                    if finish_reason == "length":
+                        self._vprint(f"{self.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens", force=True)
+                        _tr_choice = (getattr(response, "choices", None) or [None])[0]
+                        _tr_usage = getattr(response, "usage", None)
+                        logger.warning(
+                            "Response truncated: call #%d of this turn, model=%s finish_reason=length "
+                            "native_finish_reason=%s max_tokens_sent=%s output_tokens=%s "
+                            "reasoning_tokens=%s continuations_so_far=%d",
+                            api_call_count, self.model,
+                            getattr(_tr_choice, "native_finish_reason", None),
+                            api_kwargs.get("max_tokens") or api_kwargs.get("max_completion_tokens"),
+                            getattr(_tr_usage, "completion_tokens", None),
+                            getattr(getattr(_tr_usage, "completion_tokens_details", None),
+                                    "reasoning_tokens", None),
+                            length_continue_retries,
+                        )
+
+                        # Normalize the truncated response to a single OpenAI-style
+                        # message shape so text-continuation and tool-call retry
+                        # work uniformly across chat_completions, bedrock_converse,
+                        # and anthropic_messages.  For Anthropic we use the same
+                        # adapter the agent loop already relies on so the rebuilt
+                        # interim assistant message is byte-identical to what
+                        # would have been appended in the non-truncated path.
+                        _trunc_msg = None
+                        _trunc_transport = self._get_transport()
+                        if self.api_mode == "anthropic_messages":
+                            _trunc_result = _trunc_transport.normalize_response(
+                                response, strip_tool_prefix=self._is_anthropic_oauth
+                            )
+                        else:
+                            _trunc_result = _trunc_transport.normalize_response(response)
+                        _trunc_msg = _trunc_result
+
+                        _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
+                        _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
+
+                        # ── Detect thinking-budget exhaustion ──────────────
+                        # When the model spends ALL output tokens on reasoning
+                        # and has none left for the response, continuation
+                        # retries are pointless.  Detect this early and give a
+                        # targeted error instead of wasting 3 API calls.
+                        # A response is "thinking exhausted" only when the model
+                        # actually produced reasoning blocks but no visible text after
+                        # them.  Models that do not use <think> tags (e.g. GLM-4.7 on
+                        # NVIDIA Build, minimax) may return content=None or an empty
+                        # string for unrelated reasons — treat those as normal
+                        # truncations that deserve continuation retries, not as
+                        # thinking-budget exhaustion.
+                        _has_think_tags = bool(
+                            _trunc_content and re.search(
+                                r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>',
+                                _trunc_content,
+                                re.IGNORECASE,
+                            )
+                        )
+                        _thinking_exhausted = (
+                            not _trunc_has_tool_calls
+                            and _has_think_tags
+                            and (
+                                (_trunc_content is not None and not self._has_content_after_think_block(_trunc_content))
+                                or _trunc_content is None
+                            )
+                        )
+
+                        if _thinking_exhausted:
+                            _exhaust_error = (
+                                "Model used all output tokens on reasoning with none left "
+                                "for the response. Try lowering reasoning effort or "
+                                "increasing max_tokens."
+                            )
+                            self._vprint(
+                                f"{self.log_prefix}💭 Reasoning exhausted the output token budget — "
+                                f"no visible response was produced.",
+                                force=True,
+                            )
+                            # Return a user-friendly message as the response so
+                            # CLI (response box) and gateway (chat message) both
+                            # display it naturally instead of a suppressed error.
+                            _exhaust_response = (
+                                "⚠️ **Thinking Budget Exhausted**\n\n"
+                                "The model used all its output tokens on reasoning "
+                                "and had none left for the actual response.\n\n"
+                                "To fix this:\n"
+                                "→ Lower reasoning effort: `/thinkon low` or `/thinkon minimal`\n"
+                                "→ Or switch to a larger/non-reasoning model with `/model`"
+                            )
+                            self._cleanup_task_resources(effective_task_id)
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": _exhaust_response,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "error": _exhaust_error,
+                            }
+
+                        if self.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                            assistant_message = _trunc_msg
+                            if assistant_message is not None and not _trunc_has_tool_calls:
+                                length_continue_retries += 1
+                                interim_msg = self._build_assistant_message(assistant_message, finish_reason)
+                                messages.append(interim_msg)
+                                if assistant_message.content:
+                                    truncated_response_parts.append(assistant_message.content)
+
+                                if length_continue_retries < 3:
+                                    self._vprint(
+                                        f"{self.log_prefix}↻ Requesting continuation "
+                                        f"({length_continue_retries}/3)..."
+                                    )
+                                    self._next_call_reason = "length_continuation"
+                                    continue_msg = {
+                                        "role": "user",
+                                        "content": (
+                                            "[System: Your previous response was truncated by the output "
+                                            "length limit. Continue exactly where you left off. Do not "
+                                            "restart or repeat prior text. Finish the answer directly.]"
+                                        ),
+                                    }
+                                    messages.append(continue_msg)
+                                    self._session_messages = messages
+                                    self._save_session_log(messages)
+                                    restart_with_length_continuation = True
+                                    break
+
+                                partial_response = self._strip_think_blocks("".join(truncated_response_parts)).strip()
+                                self._cleanup_task_resources(effective_task_id)
+                                self._persist_session(messages, conversation_history)
+                                return {
+                                    "final_response": partial_response or None,
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": False,
+                                    "partial": True,
+                                    "error": "Response remained truncated after 3 continuation attempts",
+                                }
+
+                        if self.api_mode in {"chat_completions", "bedrock_converse", "anthropic_messages"}:
+                            assistant_message = _trunc_msg
+                            if assistant_message is not None and _trunc_has_tool_calls:
+                                if truncated_tool_call_retries < 1:
+                                    truncated_tool_call_retries += 1
+                                    self._vprint(
+                                        f"{self.log_prefix}⚠️  Truncated tool call detected — retrying API call...",
+                                        force=True,
+                                    )
+                                    logger.warning(
+                                        "Truncated tool call: call #%d of this turn, model=%s; "
+                                        "retrying the same call once", api_call_count, self.model)
+                                    self._next_call_reason = "tool_args_retry"
+                                    # Don't append the broken response to messages;
+                                    # just re-run the same API call from the current
+                                    # message state, giving the model another chance.
+                                    continue
+                                self._vprint(
+                                    f"{self.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
+                                    force=True,
+                                )
+                                self._cleanup_task_resources(effective_task_id)
+                                self._persist_session(messages, conversation_history)
+                                return {
+                                    "final_response": None,
+                                    "messages": messages,
+                                    "api_calls": api_call_count,
+                                    "completed": False,
+                                    "partial": True,
+                                    "error": "Response truncated due to output length limit",
+                                }
+
+                        # If we have prior messages, roll back to last complete state
+                        if len(messages) > 1:
+                            self._vprint(f"{self.log_prefix}   ⏪ Rolling back to last complete assistant turn")
+                            rolled_back_messages = self._get_messages_up_to_last_assistant(messages)
+
+                            self._cleanup_task_resources(effective_task_id)
+                            self._persist_session(messages, conversation_history)
+
+                            return {
+                                "final_response": None,
+                                "messages": rolled_back_messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "partial": True,
+                                "error": "Response truncated due to output length limit"
+                            }
+                        else:
+                            # First message was truncated - mark as failed
+                            self._vprint(f"{self.log_prefix}❌ First response truncated - cannot recover", force=True)
+                            self._persist_session(messages, conversation_history)
+                            return {
+                                "final_response": None,
+                                "messages": messages,
+                                "api_calls": api_call_count,
+                                "completed": False,
+                                "failed": True,
+                                "error": "First response truncated due to output length limit"
+                            }
                     
                     has_retried_429 = False  # Reset on success
                     # Clear Nous rate limit state on successful request —
@@ -17258,6 +17292,10 @@ class AIAgent:
                 _boost_base = self.max_tokens if self.max_tokens else 4096
                 _boost = _boost_base * (length_continue_retries + 1)
                 self._ephemeral_max_output_tokens = min(_boost, 32768)
+                logger.warning(
+                    "Continuing a truncated response (%d/3): model=%s output budget raised "
+                    "to %d tokens for this call", length_continue_retries, self.model,
+                    self._ephemeral_max_output_tokens)
                 continue
 
             # Guard: if all retries exhausted without a successful response
@@ -17366,6 +17404,10 @@ class AIAgent:
                     
                     if self._incomplete_scratchpad_retries <= 2:
                         self._vprint(f"{self.log_prefix}🔄 Retrying API call ({self._incomplete_scratchpad_retries}/2)...")
+                        logger.warning(
+                            "Incomplete REASONING_SCRATCHPAD: model=%s; retrying the call (%d/2)",
+                            self.model, self._incomplete_scratchpad_retries)
+                        self._next_call_reason = "scratchpad_retry"
                         # Don't add the broken message, just retry
                         continue
                     else:

@@ -3074,6 +3074,44 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
 
+    def test_a_truncated_call_is_accounted_logged_and_given_a_reason(self, agent, caplog):
+        """The truncated call is a real call: its tokens and charge count, it
+        gets its own "API call #" line, a WARNING says why a second call
+        followed, and the turn records the reason for each call."""
+        import logging as _logging
+
+        self._setup_agent(agent)
+        agent._turn_call_ms, agent._turn_call_reasons, agent._turn_call_usage = [], [], []
+        agent._next_call_reason = None
+        first = _mock_response(content="Part 1 ", finish_reason="length", usage={
+            "prompt_tokens": 100, "completion_tokens": 8192, "total_tokens": 8292, "cost": 0.004})
+        second = _mock_response(content="Part 2", finish_reason="stop", usage={
+            "prompt_tokens": 110, "completion_tokens": 600, "total_tokens": 710, "cost": 0.001})
+        agent.client.chat.completions.create.side_effect = [first, second]
+
+        with caplog.at_level(_logging.INFO, logger="run_agent"):
+            # Positive control: the capture sees a WARNING from this logger.
+            _logging.getLogger("run_agent").warning("positive-control")
+            with (
+                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+            ):
+                result = agent.run_conversation("hello")
+
+        msgs = [r.getMessage() for r in caplog.records if r.name == "run_agent"]
+        assert "positive-control" in msgs
+        assert result["final_response"].startswith("Part 1 Part 2")
+        assert agent._turn_call_reasons == ["initial", "length_continuation"]
+        assert agent.session_api_calls == 2
+        assert agent.session_completion_tokens == 8792
+        assert [u["cost"] for u in agent._turn_call_usage] == [0.004, 0.001]
+        assert sum(m.startswith("API call #") for m in msgs) == 2
+        assert any(r.levelno == _logging.WARNING and r.getMessage().startswith("Response truncated")
+                   for r in caplog.records)
+        assert any(r.levelno == _logging.WARNING and r.getMessage().startswith(
+            "Continuing a truncated response") for r in caplog.records)
+
     def test_ollama_glm_stop_after_tools_without_terminal_boundary_requests_continuation(self, agent):
         """Ollama-hosted GLM responses can misreport truncated output as stop."""
         self._setup_agent(agent)
