@@ -121,6 +121,7 @@ tier_preferences:
 model_facts:
   "deepseek/deepseek-v4-flash":
     context_window: 1048576
+    max_output_tokens: 943717
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -128,6 +129,7 @@ model_facts:
     cost_per_mtok_output: 0.18
   "z-ai/glm-5.2":
     context_window: 1048576
+    max_output_tokens: 943718
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -137,6 +139,7 @@ model_facts:
     cost_per_mtok_output: 2.42
   "deepseek/deepseek-v4-pro":
     context_window: 1048576
+    max_output_tokens: 384000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -144,6 +147,7 @@ model_facts:
     cost_per_mtok_output: 0.87
   "google/gemini-3.6-flash":
     context_window: 1048576
+    max_output_tokens: 65536
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -153,6 +157,7 @@ model_facts:
     # OpenRouter endpoint list (price basis noted per entry).
   "moonshotai/kimi-k3.1-pro":
     context_window: 1048576
+    max_output_tokens: 943718
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -162,6 +167,7 @@ model_facts:
     cost_per_mtok_cache_read: 0.2
   "moonshotai/kimi-k3":
     context_window: 1048576
+    max_output_tokens: 943718
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -170,6 +176,7 @@ model_facts:
     cost_per_mtok_output: 14.25
   "deepseek/deepseek-v4.1-flash":
     context_window: 1048576
+    max_output_tokens: 943718
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -178,6 +185,7 @@ model_facts:
     cost_per_mtok_output: 0.42
   "deepseek/deepseek-v4.1-flash-1017":
     context_window: 1048576
+    max_output_tokens: 393216
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -187,6 +195,7 @@ model_facts:
     cost_per_mtok_output: 0.294
   "openai/gpt-6-luna":
     context_window: 1050000
+    max_output_tokens: 128000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -195,6 +204,7 @@ model_facts:
     cost_per_mtok_output: 0.5
   "google/gemini-3.5-flash-lite":
     context_window: 1048576
+    max_output_tokens: 65536
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -203,6 +213,7 @@ model_facts:
     cost_per_mtok_output: 2.5
   "z-ai/glm-5.3-flash":
     context_window: 1048576
+    max_output_tokens: 943717
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -211,6 +222,7 @@ model_facts:
     cost_per_mtok_output: 0.25
   "google/gemini-3.8-flash":
     context_window: 1048576
+    max_output_tokens: 65536
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -219,6 +231,7 @@ model_facts:
     cost_per_mtok_output: 3.75
   "anthropic/claude-sonnet-5.5":
     context_window: 1000000
+    max_output_tokens: 128000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -231,6 +244,7 @@ model_facts:
     cost_per_mtok_output: 10
   "z-ai/glm-5.3":
     context_window: 1048576
+    max_output_tokens: 943718
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -239,6 +253,7 @@ model_facts:
     cost_per_mtok_output: 2.5
   "deepseek/deepseek-v4-pro-0813":
     context_window: 1048576
+    max_output_tokens: 393216
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -247,6 +262,7 @@ model_facts:
     cost_per_mtok_output: 2.6
   "anthropic/claude-opus-5.5":
     context_window: 1000000
+    max_output_tokens: 128000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -262,6 +278,7 @@ model_facts:
     # Context window, reasoning support and price from the live OpenRouter list.
   "anthropic/claude-haiku-5.5":
     context_window: 1000000
+    max_output_tokens: 128000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -274,6 +291,7 @@ model_facts:
     cost_per_mtok_cache_write: 0.125
   "anthropic/claude-haiku-4.5":
     context_window: 200000
+    max_output_tokens: 64000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -286,6 +304,7 @@ model_facts:
     cost_per_mtok_output: 5
   "anthropic/claude-sonnet-4.6":
     context_window: 1000000
+    max_output_tokens: 128000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -298,6 +317,7 @@ model_facts:
     cost_per_mtok_output: 15
   "anthropic/claude-sonnet-5":
     context_window: 1000000
+    max_output_tokens: 128000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -310,6 +330,7 @@ model_facts:
     cost_per_mtok_output: 10
   "anthropic/claude-opus-4.6":
     context_window: 1000000
+    max_output_tokens: 128000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -322,6 +343,7 @@ model_facts:
     cost_per_mtok_output: 25
   "anthropic/claude-opus-4.8":
     context_window: 1000000
+    max_output_tokens: 128000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -334,6 +356,7 @@ model_facts:
     cost_per_mtok_output: 25
   "google/gemini-2.5-pro":
     context_window: 1048576
+    max_output_tokens: 65536
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -342,6 +365,7 @@ model_facts:
     cost_per_mtok_output: 10
   "google/gemini-2.5-flash":
     context_window: 1048576
+    max_output_tokens: 65535
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -350,6 +374,7 @@ model_facts:
     cost_per_mtok_output: 2.5
   "google/gemini-2.5-flash-lite":
     context_window: 1048576
+    max_output_tokens: 65535
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -358,6 +383,7 @@ model_facts:
     cost_per_mtok_output: 0.4
   "google/gemini-3.5-flash":
     context_window: 1048576
+    max_output_tokens: 65536
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -366,6 +392,7 @@ model_facts:
     cost_per_mtok_output: 9
   "google/gemini-3.1-pro-preview":
     context_window: 1048576
+    max_output_tokens: 65536
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -374,6 +401,7 @@ model_facts:
     cost_per_mtok_output: 12
   "google/gemini-3.1-pro-preview-customtools":
     context_window: 1048576
+    max_output_tokens: 65536
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -382,6 +410,7 @@ model_facts:
     cost_per_mtok_output: 12
   "deepseek/deepseek-v3.2":
     context_window: 163840
+    max_output_tokens: 65536
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -390,6 +419,7 @@ model_facts:
     cost_per_mtok_output: 0.38
   "z-ai/glm-4.6":
     context_window: 202752
+    max_output_tokens: 131072
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -398,6 +428,7 @@ model_facts:
     cost_per_mtok_output: 2
   "z-ai/glm-4.7-flash":
     context_window: 200000
+    max_output_tokens: 117964
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -406,6 +437,7 @@ model_facts:
     cost_per_mtok_output: 0.4
   "moonshotai/kimi-k2.6":
     context_window: 262144
+    max_output_tokens: 235929
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -414,6 +446,7 @@ model_facts:
     cost_per_mtok_output: 3.5
   "moonshotai/kimi-k2.5":
     context_window: 262144
+    max_output_tokens: 235929
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -422,6 +455,7 @@ model_facts:
     cost_per_mtok_output: 2.25
   "qwen/qwen3.7-max":
     context_window: 1000000
+    max_output_tokens: 131072
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -434,6 +468,7 @@ model_facts:
     cost_per_mtok_output: 4.425
   "qwen/qwen3.6-flash":
     context_window: 1000000
+    max_output_tokens: 65536
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -446,6 +481,7 @@ model_facts:
     cost_per_mtok_output: 1.125
   "xiaomi/mimo-v2.5":
     context_window: 1050000
+    max_output_tokens: 945000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -454,6 +490,7 @@ model_facts:
     cost_per_mtok_output: 0.28
   "x-ai/grok-4.5":
     context_window: 500000
+    max_output_tokens: 450000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -462,6 +499,7 @@ model_facts:
     cost_per_mtok_output: 6
   "openai/gpt-5.1":
     context_window: 400000
+    max_output_tokens: 128000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -470,6 +508,7 @@ model_facts:
     cost_per_mtok_output: 10
   "openai/gpt-5-mini":
     context_window: 400000
+    max_output_tokens: 128000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -478,6 +517,7 @@ model_facts:
     cost_per_mtok_output: 2
   "minimax/minimax-m3":
     context_window: 524288
+    max_output_tokens: 512000
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system
@@ -486,6 +526,7 @@ model_facts:
     cost_per_mtok_output: 1.1
   "nvidia/nemotron-3-ultra-550b-a55b":
     context_window: 262144
+    max_output_tokens: 182520
     reasoning_support: true
     native_tool_schema: chat_completions
     system_message_role: system

@@ -835,3 +835,24 @@ class TestModelFactsAbsence:
         assert facts.native_tool_schema == "anthropic_messages"
         assert facts.prompt_cache_style == "anthropic"
         assert facts.max_output_tokens == 64000
+
+
+def test_repo_model_facts_declare_output_limits():
+    """output-caps-v1: every catalog model's facts state the model's own
+    output limit, so a tier's cap can follow the model bound to it."""
+    import yaml
+
+    from grove.config.model_catalog import _load_catalog_file, _repo_catalog_path
+
+    seed = Path(__file__).resolve().parents[2] / "config" / "routing.operational.yaml"
+    facts = yaml.safe_load(seed.read_text())["model_facts"]
+    for m in _load_catalog_file(_repo_catalog_path()):
+        f = facts.get(m["slug"])
+        if f is None:
+            continue
+        limit = f.get("max_output_tokens")
+        assert isinstance(limit, int) and not isinstance(limit, bool) and limit > 0, (
+            f"{m['slug']} declares no max_output_tokens")
+    assert facts["openai/gpt-6-luna"]["max_output_tokens"] == 128000
+    assert facts["anthropic/claude-haiku-5.5"]["max_output_tokens"] == 128000
+    assert facts["moonshotai/kimi-k3.1-pro"]["max_output_tokens"] == 943718
