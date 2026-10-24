@@ -2987,7 +2987,9 @@ def _model_options_html(catalog: list, current_slug, tier: str | None = None) ->
     With ``tier``, only the models offered for that tier (not deprecated, and
     fitting it), cheapest first, each with its price. The current model is
     always present and selected, even when it is deprecated or off-catalog, so
-    the operator sees the truth (mirrors the dock status-select idiom)."""
+    the operator sees the truth (mirrors the dock status-select idiom). An
+    option is a name and a price, nothing more: why a model is held or on
+    trial is said once, on the card (``_model_flag``)."""
     from grove.config.model_catalog import STATUS_DEPRECATED, get_models_for_tier
 
     by_slug = {m["slug"]: m for m in catalog}
@@ -2996,21 +2998,40 @@ def _model_options_html(catalog: list, current_slug, tier: str | None = None) ->
     options: list[str] = []
     if current_slug and current_slug not in {m["slug"] for m in offered}:
         held = by_slug.get(current_slug)
-        why = "not in catalog" if held is None else (
-            "deprecated" if held.get("status") == STATUS_DEPRECATED else "not offered for this tier")
         options.append(
             f'<option value="{_esc(current_slug)}" selected>'
-            f'{_esc(held["display_name"] if held else current_slug)} ({why})</option>'
+            f'{_esc(held["display_name"] if held else current_slug)}</option>'
         )
     for m in offered:
         sel = " selected" if m["slug"] == current_slug else ""
         label = m["display_name"]
         if tier:
             label += f' — ${m["input_cost_per_mtok"]:g} / ${m["output_cost_per_mtok"]:g}'
-            if m.get("status") == "candidate":
-                label += " (candidate)"
         options.append(f'<option value="{_esc(m["slug"])}"{sel}>{_esc(label)}</option>')
     return "".join(options)
+
+
+def _model_flag(tier: str, current, catalog: list) -> str:
+    """The one line that says why the bound model is not a plain menu pick:
+    off-catalog, deprecated, not on this tier's menu, or a candidate. Empty
+    for an active model on the menu."""
+    from grove.config.model_catalog import STATUS_DEPRECATED, get_models_for_tier
+
+    if not current:
+        return ""
+    by_slug = {m["slug"]: m for m in catalog}
+    entry = by_slug.get(current)
+    if entry is None:
+        return ("Not in the catalog. Add it to the catalog, or swap this tier "
+                "to a model on the menu.")
+    if entry.get("status") == STATUS_DEPRECATED:
+        newer = by_slug.get(entry.get("superseded_by") or "", {}).get("display_name")
+        return "Deprecated" + (f": superseded by {newer}." if newer else ".")
+    if current not in {m["slug"] for m in get_models_for_tier(tier, catalog)}:
+        return f"Not on the {tier} menu."
+    if entry.get("status") == "candidate":
+        return "Candidate: on offer, not yet proven here."
+    return ""
 
 
 def render_tier_card(tier: str, config, catalog: list, error: str | None = None,
@@ -3033,15 +3054,9 @@ def render_tier_card(tier: str, config, catalog: list, error: str | None = None,
     elif source == "catalog":
         cost = f"${p_in} in / ${p_out} out per Mtok (display-only)"
     else:
-        cost = "cost unknown — model not in catalog"
+        cost = "No price on record."
     facts_line = _model_facts_line(entry)
-    status = (entry or {}).get("status")
-    flag = ""
-    if status == "deprecated":
-        newer = by_slug.get((entry or {}).get("superseded_by") or "", {}).get("display_name")
-        flag = ("Deprecated" + (f": superseded by {newer}." if newer else "."))
-    elif status == "candidate":
-        flag = "Candidate: on offer, not yet proven here."
+    flag = _model_flag(tier, current, catalog)
 
     tier_e = _esc(tier)
     revert_btn = ""

@@ -89,14 +89,22 @@ def test_the_shipped_catalog_is_coherent():
         assert offered and all(m["tools"] for m in offered), tier
 
 
-def test_the_picker_keeps_the_current_model_and_says_why_it_is_not_offered():
+def test_the_picker_keeps_the_current_model_and_the_card_says_why_it_is_not_offered():
     from grove.api import fragments
 
     html = fragments._model_options_html(CATALOG, "a/fast-old", "T1")
-    assert '<option value="a/fast-old" selected>Fast-Old (deprecated)</option>' in html
-    assert html.count("a/fast-old") == 1 and "(candidate)" in html
-    assert "not offered for this tier" in fragments._model_options_html(CATALOG, "a/big", "T1")
-    assert "(not in catalog)" in fragments._model_options_html(CATALOG, "q/gone", "T1")
+    assert '<option value="a/fast-old" selected>Fast-Old</option>' in html
+    assert html.count("a/fast-old") == 1
+    # An option is a name and a price; no status rides along in parentheses.
+    assert '>Cheap — $0.15 / $0.3</option>' in html and "(" not in html
+    assert '<option value="q/gone" selected>q/gone</option>' in (
+        fragments._model_options_html(CATALOG, "q/gone", "T1"))
+    # The reason is said once, on the card.
+    assert fragments._model_flag("T1", "a/fast-old", CATALOG) == "Deprecated: superseded by Fast."
+    assert fragments._model_flag("T1", "a/big", CATALOG) == "Not on the T1 menu."
+    assert fragments._model_flag("T1", "q/gone", CATALOG).startswith("Not in the catalog.")
+    assert fragments._model_flag("T1", "b/cheap", CATALOG).startswith("Candidate:")
+    assert fragments._model_flag("T1", "a/fast", CATALOG) == ""
     # With no tier (a skill pin), every model that is not deprecated.
     plain = fragments._model_options_html(CATALOG, None)
     assert "a/fast-old" not in plain and "a/big" in plain
