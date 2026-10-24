@@ -174,18 +174,18 @@ models:
     display_name: "DeepSeek V4 Flash"
     provider: openrouter
     status: deprecated
-    superseded_by: "deepseek/deepseek-v4.1-flash"
+    superseded_by: "deepseek/deepseek-v4.1-flash-1017"
     context: 1048576
     tools: true
     structured_output: true
     input_cost_per_mtok: 0.09     # USD/Mtok — display-only, verified deepseek/deepseek-v4-flash (live OpenRouter 2026-06-30)
     output_cost_per_mtok: 0.18    # USD/Mtok — display-only
-    notes: "Retired by DeepSeek 2026-09-10 in favour of deepseek/deepseek-v4.1-flash — prefer that. 1M context."
+    notes: "Retired by DeepSeek 2026-09-10. Prefer deepseek/deepseek-v4.1-flash-1017. 1M context."
   - slug: "deepseek/deepseek-v3.2"
     display_name: "DeepSeek V3.2"
     provider: openrouter
     status: deprecated
-    superseded_by: "deepseek/deepseek-v4.1-flash"
+    superseded_by: "deepseek/deepseek-v4.1-flash-1017"
     context: 163840
     tools: true
     structured_output: true
@@ -348,13 +348,14 @@ models:
   - slug: "deepseek/deepseek-v4.1-flash"
     display_name: "DeepSeek V4.1 Flash"
     provider: openrouter
-    fits: [Telemetry, T1]
+    status: deprecated
+    superseded_by: "deepseek/deepseek-v4.1-flash-1017"
     context: 1048576
     tools: true
     structured_output: true
     input_cost_per_mtok: 0.14     # USD/Mtok — display-only, DeepInfra endpoint, verified deepseek/deepseek-v4.1-flash (live OpenRouter 2026-10-04)
     output_cost_per_mtok: 0.42    # USD/Mtok — display-only
-    notes: "Fast tier candidate (Telemetry / T1). Replaces V4 Flash, which DeepSeek retired 2026-09-10. 1M context, tools + structured outputs, native vision."
+    notes: "The pre-1017 snapshot of V4.1 Flash. Superseded by deepseek/deepseek-v4.1-flash-1017 — prefer that. 1M context."
   - slug: "openai/gpt-6-luna"
     display_name: "GPT-6 Luna"
     provider: openrouter
@@ -483,3 +484,18 @@ models:
     input_cost_per_mtok: 2.0     # USD/Mtok — display-only, list price, verified qwen/qwen3.8-max-0902 (live OpenRouter 2026-10-06)
     output_cost_per_mtok: 6.0    # USD/Mtok — display-only
     notes: "Apex candidate (T3). 1M context."
+
+  # ── deepseek-v4.1-flash-1017 2026-10-24 — DeepInfra standard endpoint price
+  # (provider_routing.openrouter.order), from the OpenRouter provider table. ──
+  - slug: "deepseek/deepseek-v4.1-flash-1017"
+    display_name: "DeepSeek V4.1 Flash 1017"
+    provider: openrouter
+    status: candidate
+    fits: [Telemetry, T1]
+    context: 1048576
+    tools: true
+    structured_output: true
+    verified: "2026-10-24"
+    input_cost_per_mtok: 0.098     # USD/Mtok — display-only, DeepInfra endpoint at 51% off ($0.20 list), verified deepseek/deepseek-v4.1-flash-1017 (OpenRouter 2026-10-24)
+    output_cost_per_mtok: 0.294    # USD/Mtok — display-only ($0.60 list)
+    notes: "Fast tier candidate (Telemetry / T1). The 2026-10-17 snapshot of V4.1 Flash; supersedes the plain deepseek-v4.1-flash slug. 1M context, tools + structured outputs, native vision."
