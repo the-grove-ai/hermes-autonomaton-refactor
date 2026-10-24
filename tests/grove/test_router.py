@@ -856,3 +856,106 @@ def test_repo_model_facts_declare_output_limits():
     assert facts["openai/gpt-6-luna"]["max_output_tokens"] == 128000
     assert facts["anthropic/claude-haiku-5.5"]["max_output_tokens"] == 128000
     assert facts["moonshotai/kimi-k3.1-pro"]["max_output_tokens"] == 943718
+
+
+# ── output-caps-v1: a tier's output cap follows its model, held to a ceiling ──
+
+
+def _write_caps(tmp_path: Path, *, t2_cap=None, facts=None, ceiling="absent") -> Path:
+    """VALID_CONFIG with T2's cap replaced (None drops it), model_facts set,
+    and output_ceiling_tokens set unless left absent."""
+    import yaml
+
+    op = _write(tmp_path)
+    data = yaml.safe_load(op.read_text())
+    t2 = data["tier_preferences"]["T2"]
+    t2.pop("max_tokens", None)
+    if t2_cap is not None:
+        t2["max_tokens"] = t2_cap
+    if facts is not None:
+        data["model_facts"] = facts
+    if ceiling != "absent":
+        data["output_ceiling_tokens"] = ceiling
+    op.write_text(yaml.safe_dump(data, sort_keys=False))
+    return op
+
+
+@pytest.mark.parametrize("tier_cap,model_max,ceiling,expected", [
+    (None, 128000, 128000, 128000),
+    (None, 943718, 128000, 128000),
+    (None, 0, 128000, 128000),
+    (200000, 64000, 128000, 64000),
+    (8192, 128000, 128000, 8192),
+    (8192, 0, 128000, 8192),
+])
+def test_resolve_output_cap(tier_cap, model_max, ceiling, expected):
+    from grove.router import resolve_output_cap
+
+    assert resolve_output_cap(tier_cap, model_max, ceiling) == expected
+
+
+def test_tier_without_cap_resolves_from_its_model(tmp_path):
+    op = _write_caps(tmp_path, facts={"claude-sonnet-4-6": {
+        "context_window": 1000000, "max_output_tokens": 64000}})
+    assert CognitiveRouter(op).get_tier_config("T2").max_tokens == 64000
+
+
+def test_tier_cap_above_the_model_limit_is_clamped(tmp_path):
+    op = _write_caps(tmp_path, t2_cap=200000, facts={"claude-sonnet-4-6": {
+        "context_window": 1000000, "max_output_tokens": 64000}})
+    assert CognitiveRouter(op).get_tier_config("T2").max_tokens == 64000
+
+
+def test_model_limit_above_the_ceiling_is_held_to_it(tmp_path):
+    op = _write_caps(tmp_path, facts={"claude-sonnet-4-6": {
+        "context_window": 1000000, "max_output_tokens": 943718}}, ceiling=100000)
+    assert CognitiveRouter(op).get_tier_config("T2").max_tokens == 100000
+
+
+def test_tier_without_facts_gets_the_ceiling(tmp_path, caplog):
+    op = _write_caps(tmp_path)
+    with caplog.at_level(logging.WARNING, logger="grove.router"):
+        logging.getLogger("grove.router").warning("positive-control")
+        router = CognitiveRouter(op)
+    assert router.get_tier_config("T2").max_tokens == 128000
+    msgs = [r.getMessage() for r in caplog.records if r.name == "grove.router"]
+    assert msgs[0] == "positive-control"
+    assert any("model_facts" in m and "claude-sonnet-4-6" in m for m in msgs[1:])
+
+
+@pytest.mark.parametrize("bad", [0, -1, "big", True])
+def test_bad_output_ceiling_fails_load(tmp_path, bad):
+    op = _write_caps(tmp_path, ceiling=bad)
+    with pytest.raises(ValueError, match="output_ceiling_tokens"):
+        CognitiveRouter(op)
+
+
+def test_handler_tier_cap_untouched(tmp_path):
+    assert CognitiveRouter(_write_caps(tmp_path)).get_tier_config("T0").max_tokens is None
+
+
+def test_reused_agent_takes_the_new_tiers_cap(tmp_path):
+    """A tier with no cap never inherits the previous tier's cap on a reused
+    agent: the router hands every model tier a resolved cap."""
+    from types import SimpleNamespace
+
+    from grove.dispatcher import Dispatcher
+
+    op = _write_caps(tmp_path, facts={"claude-sonnet-4-6": {
+        "context_window": 1000000, "max_output_tokens": 64000}})
+    router = CognitiveRouter(op)
+
+    class _Agent:
+        provider = "anthropic"
+        max_tokens = None
+
+        def apply_tier(self, model, max_tokens, model_facts=None):
+            self.model = model
+            if max_tokens is not None:  # the real apply_tier keeps the old cap on None
+                self.max_tokens = max_tokens
+
+    agent = _Agent()
+    for tier in ("T1", "T2"):
+        decision = SimpleNamespace(tier=tier, tier_config=router.get_tier_config(tier))
+        Dispatcher._bind_agent_to_tier(agent, decision, lambda cfg: {})
+    assert agent.max_tokens == 64000

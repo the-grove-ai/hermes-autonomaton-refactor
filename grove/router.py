@@ -96,6 +96,9 @@ class TierConfig:
 # and it lives in the SAME file the dispatch path already reads — no catalog
 # read, so the G-1b dispatch-isolation invariant is untouched.
 _CONTEXT_WINDOW_FLOOR = 8192  # conservative floor when context_window is undeclared
+# output-caps-v1 — the harness's ceiling on any one answer, when the operational
+# config does not declare ``output_ceiling_tokens``.
+_OUTPUT_CEILING_DEFAULT = 128000
 
 
 @dataclass(frozen=True)
@@ -171,6 +174,18 @@ def _opt_float(value: Any) -> Optional[float]:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def resolve_output_cap(tier_max_tokens: Optional[int], model_max_output: int, ceiling: int) -> int:
+    """The output cap a model tier runs at (output-caps-v1).
+
+    The tier's own cap when it declares one, else the model's declared limit,
+    else the ceiling; then held to the model's limit (when declared) and to
+    the ceiling. A tier never runs above what its model can produce."""
+    base = tier_max_tokens if tier_max_tokens is not None else (model_max_output or ceiling)
+    if model_max_output > 0:
+        base = min(base, model_max_output)
+    return min(base, ceiling)
 
 
 def _resolve_facts(facts_map: dict, slug: Optional[str]) -> "tuple[ModelFacts, Optional[str]]":
@@ -643,6 +658,14 @@ class CognitiveRouter:
                 f"must be a mapping of slug -> facts (got {type(model_facts).__name__})"
             )
 
+        ceiling = op.get("output_ceiling_tokens", _OUTPUT_CEILING_DEFAULT)
+        if isinstance(ceiling, bool) or not isinstance(ceiling, int) or ceiling <= 0:
+            raise ValueError(
+                f"operational routing config at {self._config_path}: "
+                f"'output_ceiling_tokens' must be a whole number of tokens above 0 "
+                f"(got {ceiling!r})"
+            )
+
         tiers: dict[str, TierConfig] = {}
         for name, spec in tier_prefs.items():
             spec = spec or {}
@@ -665,7 +688,12 @@ class CognitiveRouter:
                 handler=spec.get("handler"),
                 provider=spec.get("provider"),
                 model=_tier_model,
-                max_tokens=spec.get("max_tokens"),
+                max_tokens=(
+                    resolve_output_cap(spec.get("max_tokens"),
+                                       _tier_facts.max_output_tokens, ceiling)
+                    if _tier_model and not spec.get("handler")
+                    else spec.get("max_tokens")
+                ),
                 max_latency_ms=spec.get("max_latency_ms"),
                 description=str(spec.get("description") or "").strip(),
                 model_facts=(_tier_facts if not spec.get("handler") else None),

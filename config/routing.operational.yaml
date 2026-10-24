@@ -2,6 +2,11 @@ schema_version: '2.0'
 surface_class: in_scope
 writable_on: autonomous_loop
 default_tier: T1
+
+# The most any one answer may run, in output tokens. A tier's cap follows its
+# model's declared max_output_tokens and is held to this ceiling; a tier may
+# still set a lower max_tokens of its own. output-caps-v1.
+output_ceiling_tokens: 128000
 tier_preferences:
   T0:
     handler: pattern_cache
