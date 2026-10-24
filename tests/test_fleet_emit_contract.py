@@ -17,6 +17,7 @@ finish_reason lies; native_finish_reason is truth).
 """
 
 import json
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -517,7 +518,8 @@ class _ScriptedAgent:
         return step() if callable(step) else step
 
 
-def _drive_worker(monkeypatch, tmp_path, cap_gov, payload, script, run_id="rid1"):
+def _drive_worker(monkeypatch, tmp_path, cap_gov, payload, script, run_id="rid1",
+                  model_limit=None):
     """Drive the REAL run_worker through the P1 emit lifecycle. Upstream is
     stubbed at the same clean seams as the fleet-failure-forensics harness;
     the emit tool, staging jail, extraction, and event assembly are REAL."""
@@ -532,6 +534,8 @@ def _drive_worker(monkeypatch, tmp_path, cap_gov, payload, script, run_id="rid1"
         model_binding = None
 
     agent = _ScriptedAgent(script)
+    if model_limit is not None:
+        agent._model_facts = SimpleNamespace(max_output_tokens=model_limit)
 
     class _Dispatcher:
         captured = {}
@@ -653,6 +657,30 @@ def test_truncation_raised_cap_retry_then_success(monkeypatch, tmp_path):
     assert agent.calls[1]["max_tokens"] == 200  # doubled from 100
     assert agent.calls[1]["prompt"] == agent.calls[0]["prompt"]
     assert agent.calls[1]["history"] is None
+
+
+def test_raised_cap_retry_never_exceeds_the_model_limit(monkeypatch, tmp_path):
+    """output-caps-v1: the raised cap is held to the model's own limit."""
+    ev, agent, _ = _drive_worker(
+        monkeypatch, tmp_path, _FORGE_GOV, _ROWS_PAYLOAD, [_TRUNC, _emit_step(_FORGE_ARGS)],
+        model_limit=150,
+    )
+    assert ev["status"] == "success"
+    assert agent.calls[1]["max_tokens"] == 150
+    assert agent.calls[1]["history"] is None
+
+
+def test_no_raised_cap_retry_when_already_at_the_model_limit(monkeypatch, tmp_path):
+    """At the model's limit there is no higher cap: the identical-at-cap rerun
+    (deterministic failure) is skipped and the ladder goes to the re-prompt."""
+    ev, agent, _ = _drive_worker(
+        monkeypatch, tmp_path, _FORGE_GOV, _ROWS_PAYLOAD, [_TRUNC, _TRUNC, _TRUNC],
+        model_limit=100,
+    )
+    assert ev["status"] == "failed"
+    assert all(c["max_tokens"] == 100 for c in agent.calls)
+    assert len(agent.calls) == 2
+    assert agent.calls[1]["history"] is not None  # the re-prompt, not a fresh rerun
 
 
 def test_truncation_exhausted_is_emit_truncation_andon(monkeypatch, tmp_path):

@@ -365,6 +365,22 @@ class CognitiveRouter:
             self._warn_missing_facts(slug, missing)
         return facts
 
+    def output_ceiling(self) -> int:
+        """The harness's ceiling on any one answer (``output_ceiling_tokens``)."""
+        return self._output_ceiling
+
+    def retarget(self, tier_config: "TierConfig", model: str) -> "TierConfig":
+        """A tier's envelope bound to a different model (output-caps-v1).
+
+        The substituted model brings its own facts, and the tier's resolved cap
+        is held to what that model can produce — a cap resolved for one model
+        is never carried onto another unchecked."""
+        facts = self.model_facts_for(model)
+        cap = tier_config.max_tokens
+        if cap is not None:
+            cap = resolve_output_cap(cap, facts.max_output_tokens, self._output_ceiling)
+        return replace(tier_config, model=model, model_facts=facts, max_tokens=cap)
+
     def _warn_missing_facts(self, slug: Optional[str], reason: str) -> None:
         if slug in self._warned_missing_facts:
             return
@@ -444,7 +460,7 @@ class CognitiveRouter:
             default_config = self.get_tier_config(self._default_tier)
             return RoutingDecision(
                 tier=self._default_tier,
-                tier_config=replace(default_config, model=operator_model),
+                tier_config=self.retarget(default_config, operator_model),
                 reason="operator_model_untiered",
                 confidence=confidence,
                 pattern_cache_hit=False,
@@ -675,6 +691,16 @@ class CognitiveRouter:
             cost_output_raw = spec.get("cost_per_mtok_output")
             _tier_model = spec.get("model")
             _tier_facts, _facts_missing = _resolve_facts(model_facts, _tier_model)
+            if (_tier_model and not spec.get("handler") and not _facts_missing
+                    and _tier_facts.max_output_tokens <= 0
+                    and _tier_model not in self._warned_missing_facts):
+                self._warned_missing_facts.add(_tier_model)
+                logger.warning(
+                    "[grove.router] routing.model_facts: no max_output_tokens declared "
+                    "for bound model %r (tier %s) — its output cap is the ceiling "
+                    "(%d). Declare the model's limit under routing.model_facts.",
+                    _tier_model, name, ceiling,
+                )
             if _tier_model and _facts_missing and _tier_model not in self._warned_missing_facts:
                 self._warned_missing_facts.add(_tier_model)
                 logger.warning(
@@ -765,6 +791,7 @@ class CognitiveRouter:
 
         # All-or-nothing swap (mutation only after validation succeeds).
         self._tiers = tiers
+        self._output_ceiling = ceiling
         self._routing_rules = routing_rules
         self._default_tier = default_tier
         self._escalation_threshold = float(threshold)

@@ -959,3 +959,36 @@ def test_reused_agent_takes_the_new_tiers_cap(tmp_path):
         decision = SimpleNamespace(tier=tier, tier_config=router.get_tier_config(tier))
         Dispatcher._bind_agent_to_tier(agent, decision, lambda cfg: {})
     assert agent.max_tokens == 64000
+
+
+def _small_facts():
+    return {"claude-sonnet-4-6": {"context_window": 1000000, "max_output_tokens": 64000},
+            "x/small": {"context_window": 200000, "max_output_tokens": 16000}}
+
+
+def test_retarget_holds_the_cap_to_the_new_model(tmp_path):
+    """A model substituted onto a resolved tier is re-resolved: its own facts,
+    and a cap never above what the substituted model can produce."""
+    router = CognitiveRouter(_write_caps(tmp_path, facts=_small_facts()))
+    tc = router.retarget(router.get_tier_config("T2"), "x/small")
+    assert (tc.model, tc.max_tokens, tc.model_facts.max_output_tokens) == ("x/small", 16000, 16000)
+    assert tc.provider == "anthropic"
+
+
+def test_untiered_operator_model_gets_its_own_cap(tmp_path):
+    router = CognitiveRouter(_write_caps(tmp_path, facts=_small_facts()))
+    d = router.route(operator_model="x/small")
+    assert d.reason == "operator_model_untiered"
+    assert d.tier_config.max_tokens == 16000
+    assert d.tier_config.model_facts.max_output_tokens == 16000
+
+
+def test_facts_without_an_output_limit_say_so(tmp_path, caplog):
+    op = _write_caps(tmp_path, facts={"claude-sonnet-4-6": {"context_window": 1000000}})
+    with caplog.at_level(logging.WARNING, logger="grove.router"):
+        logging.getLogger("grove.router").warning("positive-control")
+        router = CognitiveRouter(op)
+    assert router.get_tier_config("T2").max_tokens == 128000
+    msgs = [r.getMessage() for r in caplog.records if r.name == "grove.router"]
+    assert msgs[0] == "positive-control"
+    assert any("max_output_tokens" in m and "claude-sonnet-4-6" in m for m in msgs[1:])

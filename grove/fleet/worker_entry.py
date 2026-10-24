@@ -151,6 +151,18 @@ def _resolve_declared_sink(cap, worker_id: str) -> Path:
     return Path(_grove_subdir_realpath(staging, grove))
 
 
+def _raised_output_cap(agent, current: int) -> int:
+    """Double the output cap for the one raised-cap retry, held to the model's
+    declared limit and to the harness ceiling (output-caps-v1)."""
+    from grove.providers import _ensure_router
+    from grove.router import _OUTPUT_CEILING_DEFAULT, resolve_output_cap
+
+    router = _ensure_router()
+    ceiling = router.output_ceiling() if router is not None else _OUTPUT_CEILING_DEFAULT
+    limit = int(getattr(getattr(agent, "_model_facts", None), "max_output_tokens", 0) or 0)
+    return resolve_output_cap(2 * current, limit, ceiling)
+
+
 def _resolve_worker_runtime(cap, worker_id: str):
     """Resolve (model, max_tokens, runtime) from the record's preferred tier.
 
@@ -166,7 +178,7 @@ def _resolve_worker_runtime(cap, worker_id: str):
     F3): a dead pin must halt the worker, not silently inherit the tier.
     """
     from grove.fleet.errors import FleetWorkerAndon
-    from grove.providers import resolve_tier_to_runtime, route_for_agent
+    from grove.providers import _ensure_router, resolve_tier_to_runtime, route_for_agent
 
     tier = f"T{cap.tier_rule.preferred}"
     mb = getattr(cap, "model_binding", None)
@@ -201,8 +213,11 @@ def _resolve_worker_runtime(cap, worker_id: str):
         # Frozen dataclass — replace, never mutate (the router caches its
         # TierConfig instances). Credential resolution below then sees the
         # pinned slug, so api_key/base_url/api_mode match the model actually
-        # called; provider + max_tokens carry from the tier envelope.
-        tier_config = dc_replace(tier_config, model=pinned)
+        # called; the provider carries from the tier envelope. The router
+        # re-resolves the cap and facts for the pinned model (output-caps-v1).
+        router = _ensure_router()
+        tier_config = (router.retarget(tier_config, pinned) if router is not None
+                       else dc_replace(tier_config, model=pinned))
     runtime = resolve_tier_to_runtime(tier_config)
     return tier_config.model, tier_config.max_tokens, runtime
 
@@ -1358,7 +1373,16 @@ def run_worker(worker_id: str, run_id: str, payload: Any) -> Dict[str, Any]:
             while fleet_emit_tool.emitted() is None:
                 if _is_truncation_result(result) and not raise_used:
                     raise_used = True
-                    agent.max_tokens = 2 * (agent.max_tokens or max_tokens or 8192)
+                    current = agent.max_tokens or max_tokens or 8192
+                    raised = _raised_output_cap(agent, current)
+                    if raised <= current:
+                        # Already at the model's limit: an identical-at-cap
+                        # rerun fails deterministically, so go to the re-prompt.
+                        logger.warning(
+                            "fleet worker %s truncated at its model's output limit "
+                            "(%d tokens); no higher cap to retry at", worker_id, current)
+                        continue
+                    agent.max_tokens = raised
                     next_prompt, history = prompt, None
                 elif not reprompt_used:
                     reprompt_used = True
