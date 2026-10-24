@@ -514,35 +514,20 @@ routing_rules:
     target_tier: T1
     classify: false        # decided by what the turn is: the classifier is not called
 
-    # Coding — Premium (T2) through complex; Apex (T3) reserved for novel.
-  premium_coding:
-    enabled: true
-    match:
-      complexity: [simple, moderate, complex]
-      intents: [code_generation, debugging]
-    target_tier: T2
-
-  apex_coding:
-    enabled: true
-    match:
-      complexity: [novel]
-      intents: [code_generation, debugging]
-    target_tier: T3
-
-    # Other knowledge work — Premium (T2) at simple/moderate; Apex (T3) at
-    # complex/novel.
+    # Knowledge work, coding included — Premium (T2) at simple/moderate; Apex
+    # (T3) at complex/novel. One partition: coding has no carve-out.
   premium:
     enabled: true
     match:
       complexity: [simple, moderate]
-      intents: [research, analysis, creative_writing, planning, system_admin]
+      intents: [code_generation, debugging, research, analysis, creative_writing, planning, system_admin]
     target_tier: T2
 
   apex:
     enabled: true
     match:
       complexity: [complex, novel]
-      intents: [research, analysis, creative_writing, planning, system_admin]
+      intents: [code_generation, debugging, research, analysis, creative_writing, planning, system_admin]
     target_tier: T3
 
     # Standing flywheel sinks — binding only. Disabled until an approved diff

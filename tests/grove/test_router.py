@@ -712,16 +712,15 @@ def _repo_router() -> CognitiveRouter:
 @pytest.mark.parametrize(
     "intent,complexity,expected",
     [
-        # routing-favor-t2-v1 — coding is conservative: Premium (T2) through
-        # complex, Apex (T3) only at novel.
+        # Knowledge work, coding included — Premium (T2) at simple/moderate;
+        # Apex (T3) at complex/novel.
         ("code_generation", "simple", "T2"),
         ("code_generation", "moderate", "T2"),
-        ("code_generation", "complex", "T2"),
+        ("code_generation", "complex", "T3"),
         ("code_generation", "novel", "T3"),
-        ("debugging", "complex", "T2"),
+        ("debugging", "moderate", "T2"),
+        ("debugging", "complex", "T3"),
         ("debugging", "novel", "T3"),
-        # Other knowledge work — Premium (T2) at simple/moderate; Apex (T3) at
-        # complex/novel.
         ("research", "moderate", "T2"),
         ("research", "complex", "T3"),
         ("analysis", "simple", "T2"),
@@ -737,8 +736,8 @@ def _repo_router() -> CognitiveRouter:
     ],
 )
 def test_real_repo_config_favor_t2_partition(intent, complexity, expected):
-    """routing-favor-t2-v1: the live repo config routes by the coding-
-    conservative partition. Asserted against config/routing.config.yaml
+    """routing-favor-t2-v1: the live repo config routes all knowledge work,
+    coding included, by one complexity partition. Asserted against config/routing.config.yaml
     directly — a drift in the shipped partition fails here."""
     assert _repo_router().route(
         intent=intent, complexity_signal=complexity, confidence=0.9
@@ -753,12 +752,12 @@ def test_real_repo_config_unknown_intent_defaults_t1():
 
 def test_real_repo_config_escalation_disabled_low_conf_coding_holds():
     """escalation is disabled in the partition: a low-confidence coding turn
-    routes by premium_coding (T2), NOT a step_up."""
+    routes by premium (T2), NOT a step_up."""
     d = _repo_router().route(
         intent="code_generation", complexity_signal="moderate", confidence=0.2
     )
     assert d.tier == "T2"
-    assert d.reason == "premium_coding"  # not "escalation"
+    assert d.reason == "premium"  # not "escalation"
 
 
 def test_malformed_rule_reload_keeps_prior_config(tmp_path, caplog):
