@@ -17286,16 +17286,11 @@ class AIAgent:
                 continue
 
             if restart_with_length_continuation:
-                # Progressively boost the output token budget on each retry.
-                # Retry 1 → 2× base, retry 2 → 3× base, capped at 32 768.
-                # Applies to all providers via _ephemeral_max_output_tokens.
-                _boost_base = self.max_tokens if self.max_tokens else 4096
-                _boost = _boost_base * (length_continue_retries + 1)
-                self._ephemeral_max_output_tokens = min(_boost, 32768)
+                # The cap is already the model's limit held to the harness
+                # ceiling (output-caps-v1), so the continuation runs at it.
                 logger.warning(
-                    "Continuing a truncated response (%d/3): model=%s output budget raised "
-                    "to %d tokens for this call", length_continue_retries, self.model,
-                    self._ephemeral_max_output_tokens)
+                    "Continuing a truncated response (%d/3): model=%s at its %s-token cap",
+                    length_continue_retries, self.model, self.max_tokens)
                 continue
 
             # Guard: if all retries exhausted without a successful response

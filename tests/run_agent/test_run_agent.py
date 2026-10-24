@@ -3074,6 +3074,27 @@ class TestRunConversation:
         assert second_call_messages[-1]["role"] == "user"
         assert "truncated by the output length limit" in second_call_messages[-1]["content"]
 
+    def test_a_continuation_keeps_the_cap(self, agent):
+        """output-caps-v1: the cap is already the model's limit held to the
+        ceiling, so a continuation runs at the same cap, not a raised one."""
+        self._setup_agent(agent)
+        agent.max_tokens = 8192
+        first = _mock_response(content="Part 1 ", finish_reason="length")
+        second = _mock_response(content="Part 2", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [first, second]
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.run_conversation("hello")
+
+        calls = agent.client.chat.completions.create.call_args_list
+        assert len(calls) == 2
+        assert calls[0].kwargs["max_tokens"] == 8192
+        assert calls[1].kwargs["max_tokens"] == 8192
+
     def test_a_truncated_call_is_accounted_logged_and_given_a_reason(self, agent, caplog):
         """The truncated call is a real call: its tokens and charge count, it
         gets its own "API call #" line, a WARNING says why a second call
