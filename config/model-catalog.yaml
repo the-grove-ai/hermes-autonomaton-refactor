@@ -229,18 +229,19 @@ models:
   - slug: "moonshotai/kimi-k3"
     display_name: "Kimi K3"
     provider: openrouter
-    fits: [T2, T3]
+    status: deprecated
+    superseded_by: "moonshotai/kimi-k3.1-pro"
     context: 1048576
     tools: true
     structured_output: true
     input_cost_per_mtok: 3     # USD/Mtok — display-only (promoted from the operator overlay, P4 fold-in)
     output_cost_per_mtok: 15    # USD/Mtok — display-only
-    notes: "Ultra-large-scale open-weight multimodal reasoning model. 1M context. Strong at complex coding, tool use, debugging, and agentic workflows. Released 2026-07-16."
+    notes: "Superseded by moonshotai/kimi-k3.1-pro — prefer that. 1M context. Released 2026-07-16."
   - slug: "moonshotai/kimi-k2.6"
     display_name: "Kimi K2.6"
     provider: openrouter
     status: deprecated
-    superseded_by: "moonshotai/kimi-k3"
+    superseded_by: "moonshotai/kimi-k3.1-pro"
     context: 262144
     tools: true
     structured_output: true
@@ -251,7 +252,7 @@ models:
     display_name: "Kimi K2.5"
     provider: openrouter
     status: deprecated
-    superseded_by: "moonshotai/kimi-k3"
+    superseded_by: "moonshotai/kimi-k3.1-pro"
     context: 262144
     tools: true
     structured_output: true
@@ -513,3 +514,17 @@ models:
     input_cost_per_mtok: 0.1     # USD/Mtok — display-only, list price, verified anthropic/claude-haiku-5.5 (OpenRouter 2026-10-24)
     output_cost_per_mtok: 0.5    # USD/Mtok — display-only
     notes: "Fast, cheap. Supersedes Haiku 4.5 at a tenth of its price. 1M context, tools + structured outputs, native vision."
+
+  # ── kimi-k3.1-pro 2026-10-24 — Moonshot AI standard endpoint (mxfp4), the
+  # only provider on OpenRouter; the highspeed endpoint is $4 / $20. ──
+  - slug: "moonshotai/kimi-k3.1-pro"
+    display_name: "Kimi K3.1 Pro"
+    provider: openrouter
+    fits: [T2, T3]
+    context: 1048576
+    tools: true
+    structured_output: true
+    verified: "2026-10-24"
+    input_cost_per_mtok: 2.0     # USD/Mtok — display-only, Moonshot AI endpoint, verified moonshotai/kimi-k3.1-pro (OpenRouter 2026-10-24)
+    output_cost_per_mtok: 10.0    # USD/Mtok — display-only
+    notes: "Moonshot AI flagship open-weight multimodal reasoning model; post-trained successor to Kimi K3. 1M context, tools + structured outputs, text, image and video in."

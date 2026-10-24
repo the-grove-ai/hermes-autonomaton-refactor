@@ -151,6 +151,15 @@ model_facts:
     cost_per_mtok_output: 7.5
     # model-list-refresh 2026-10-04 — context windows + prices from the live
     # OpenRouter endpoint list (price basis noted per entry).
+  "moonshotai/kimi-k3.1-pro":
+    context_window: 1048576
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # Moonshot AI endpoint (sole provider), live OpenRouter 2026-10-24
+    cost_per_mtok_input: 2.0
+    cost_per_mtok_output: 10.0
+    cost_per_mtok_cache_read: 0.2
   "moonshotai/kimi-k3":
     context_window: 1048576
     reasoning_support: true
