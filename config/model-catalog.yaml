@@ -33,13 +33,14 @@ models:
   - slug: "anthropic/claude-haiku-4.5"
     display_name: "Claude Haiku 4.5"
     provider: openrouter
-    fits: [Telemetry, T1, T2]
+    status: deprecated
+    superseded_by: "anthropic/claude-haiku-5.5"
     context: 200000
     tools: true
     structured_output: true
     input_cost_per_mtok: 1     # USD/Mtok — display-only, verified anthropic/claude-haiku-4.5
     output_cost_per_mtok: 5    # USD/Mtok — display-only
-    notes: "Fast, cheap. Default T1 / telemetry."
+    notes: "Superseded by anthropic/claude-haiku-5.5 — prefer that. 200K context."
   - slug: "anthropic/claude-sonnet-4.6"
     display_name: "Claude Sonnet 4.6"
     provider: openrouter
@@ -499,3 +500,17 @@ models:
     input_cost_per_mtok: 0.098     # USD/Mtok — display-only, DeepInfra endpoint at 51% off ($0.20 list), verified deepseek/deepseek-v4.1-flash-1017 (OpenRouter 2026-10-24)
     output_cost_per_mtok: 0.294    # USD/Mtok — display-only ($0.60 list)
     notes: "Fast tier candidate (Telemetry / T1). The 2026-10-17 snapshot of V4.1 Flash; supersedes the plain deepseek-v4.1-flash slug. 1M context, tools + structured outputs, native vision."
+
+  # ── claude-haiku-5.5 2026-10-24 — list price, identical across the Anthropic,
+  # Bedrock, Vertex and Azure endpoints on the OpenRouter provider table. ──
+  - slug: "anthropic/claude-haiku-5.5"
+    display_name: "Claude Haiku 5.5"
+    provider: openrouter
+    fits: [Telemetry, T1, T2]
+    context: 1000000
+    tools: true
+    structured_output: true
+    verified: "2026-10-24"
+    input_cost_per_mtok: 0.1     # USD/Mtok — display-only, list price, verified anthropic/claude-haiku-5.5 (OpenRouter 2026-10-24)
+    output_cost_per_mtok: 0.5    # USD/Mtok — display-only
+    notes: "Fast, cheap. Supersedes Haiku 4.5 at a tenth of its price. 1M context, tools + structured outputs, native vision."

@@ -251,6 +251,18 @@ model_facts:
     # catalog-facts-backfill 2026-10-04 — every catalog model declares its facts,
     # so no dropdown choice falls back to the 8,192-token context floor.
     # Context window, reasoning support and price from the live OpenRouter list.
+  "anthropic/claude-haiku-5.5":
+    context_window: 1000000
+    reasoning_support: true
+    native_tool_schema: chat_completions
+    system_message_role: system
+      # Honours Anthropic-style cache_control markers, as Haiku 4.5 does.
+    prompt_cache_style: anthropic
+      # list price, OpenRouter 2026-10-24
+    cost_per_mtok_input: 0.1
+    cost_per_mtok_output: 0.5
+    cost_per_mtok_cache_read: 0.01
+    cost_per_mtok_cache_write: 0.125
   "anthropic/claude-haiku-4.5":
     context_window: 200000
     reasoning_support: true

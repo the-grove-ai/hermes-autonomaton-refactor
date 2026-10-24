@@ -121,7 +121,7 @@ shape:
 ```yaml
     T1:
       provider: openrouter
-      model: anthropic/claude-haiku-4.5
+      model: anthropic/claude-haiku-5.5
       max_tokens: 4096
     T2:
       provider: ollama
