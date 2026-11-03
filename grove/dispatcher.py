@@ -699,6 +699,16 @@ def _guarantee_turn_record(dispatch_turn):
 
 
 
+def _session_work_is_done(work: Any) -> bool:
+    """compiler-shapes-v1 — nothing waiting on the operator and nothing left
+    in the queue: the turn that got here has no next turn to close it."""
+    try:
+        return work.pending() is None and work.next_item() is None
+    except Exception as exc:  # noqa: BLE001 — reported; the sweep closes it later
+        logger.warning("[grove.dispatcher] could not tell whether the work is done: %r", exc)
+        return False
+
+
 def _skills_loaded(agent: Any) -> List[Dict[str, str]]:
     """compiler-shapes-v1 — what the composed prompt carries: the skill kegs
     whose ``goal_skill`` section is in ``agent._composed_prompt``, projected
@@ -4566,6 +4576,12 @@ class Dispatcher:
             agent, outcome="pending", final_response_chars=len(response_text),
             intent_class_override="conversation", tier_override="T0",
         )
+        if not data.get("next_armed") and _session_work_is_done(work):
+            # compiler-shapes-v1 — the turn that leaves nothing to arm (the
+            # batch that empties the queue, the last confirmation) has no next
+            # turn to close its record: it closes its own, the way every other
+            # turn is closed by the one after it.
+            self._finalize_previous_turn_pending(self._current_turn_id)
         self._persist_t0_turn(user_message, response_text)
         return self._session_result_dict(agent, response_text)
 

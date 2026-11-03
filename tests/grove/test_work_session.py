@@ -1719,3 +1719,50 @@ def test_a_batch_decision_names_the_rule_too(env):
     assert [r["rule"]["if"] for r in proposed] == ["channel == 'billing'", "channel == 'outage'"]
     assert proposed[0]["rule"]["rule_id"] == keg_mod.rule_id(spec["conditions"][0])
 
+
+def test_a_batch_counts_each_item_it_serves_as_a_hit(env):
+    from grove.pattern_cache import PatternCacheStore
+
+    work = env.work(session=BATCH)
+    _serve_keg()
+    env.add("billing", "outage", "billing", "legal")
+    work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    row = PatternCacheStore().get("keg:mt:v2")
+    assert row.hit_count == 3 and row.last_hit_at is not None
+
+
+def _reading(work):
+    """The real adapter adds its reader to a batch action; the stand-in's does here."""
+    orig = work.session_step
+
+    def step(action, prov, fields=None):
+        if action.get("action") == "batch":
+            action = {**action, "inputs_for": _read}
+        return orig(action, prov, fields)
+    work.session_step = step
+    return work
+
+
+def test_the_turn_that_empties_the_queue_is_finalized_at_once(env):
+    work = _reading(env.work(session=BATCH))
+    _serve_keg()
+    env.add("billing", "outage")
+    d, agent, written, said = _dispatcher(env, work)
+    finalized = []
+    d._finalize_previous_turn_pending = lambda turn_id: finalized.append(turn_id)
+    result = d._session_intercept(agent, "work the backlog", "sess#8")
+    assert "Tagged 2 of 2" in result["final_response"]
+    assert [w["outcome"] for w in written] == ["pending"]
+    assert finalized == ["sess#8", "sess#9"]         # the previous turn, then its own
+
+
+def test_a_turn_that_arms_the_next_item_is_still_finalized_by_the_next_turn(env):
+    work = _reading(env.work(session=BATCH))
+    _serve_keg()
+    env.add("billing", "legal")
+    d, agent, written, said = _dispatcher(env, work)
+    finalized = []
+    d._finalize_previous_turn_pending = lambda turn_id: finalized.append(turn_id)
+    d._session_intercept(agent, "work the backlog", "sess#8")
+    assert [w["outcome"] for w in written] == ["pending"]
+    assert finalized == ["sess#8"]                   # the next item is armed: its turn closes this one

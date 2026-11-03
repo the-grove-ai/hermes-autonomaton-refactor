@@ -2140,6 +2140,7 @@ class DecisionWork:
         is the adapter's reader: a queue path in, the item's declared inputs
         out (ValueError when the item cannot be read). Returns the counts."""
         from grove import keg as keg_mod
+        from grove.pattern_cache import PatternCacheStore
 
         self.check_turn(provenance)
         if self.pending() is not None:
@@ -2216,6 +2217,8 @@ class DecisionWork:
                 "by": "keg_authority", "session_id": prov.get("session_id"),
                 "turn_id": prov.get("turn_id"), "turn_uid": prov.get("turn_uid"),
             })
+            # Each item the keg decides is a hit on it, as a single T0 serve is.
+            PatternCacheStore().record_hit(str(keg_ref.get("pattern_id")))
             out["coded"] += 1
         out["left"] = out["total"] - out["coded"]
         if not out["coded"] and not in_order:
