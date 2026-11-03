@@ -240,3 +240,98 @@ class KegRepo:
                     f"(hand-edited?)")
             if self._git("status", "--porcelain").stdout.strip():
                 raise ValueError(f"{kid}: the keg's working tree has uncommitted changes")
+
+
+# ── the skill keg: seeded from the repo, never edited on the node ────────
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parent.parent
+
+
+def skill_repo_path(slug: str, home: Optional[Path] = None) -> Path:
+    return kegs_dir(home) / f"{slug}-skill"
+
+
+def seed_skill(slug: str, *, source: Optional[Path] = None,
+               home: Optional[Path] = None) -> Dict[str, Any]:
+    """Seed (or re-seed) the skill ``slug`` from the repo's ``SKILL.md`` into
+    its own keg. Unchanged content is a no-op that returns the HEAD manifest;
+    changed content lands as the next version. Returns the manifest."""
+    src = Path(source) if source is not None else _repo_root() / "skills" / slug / "SKILL.md"
+    data = src.read_bytes()
+    digest = content_hash(data)
+    repo = KegRepo.open_or_init(skill_repo_path(slug, home))
+    current = repo.manifest()
+    if current and current.get("content_hash") == digest:
+        return current
+    version = int(current.get("version") or 0) + 1
+    manifest = {
+        "keg_id": keg_id(f"{slug}-skill", version, digest),
+        "slug": f"{slug}-skill",
+        "version": version,
+        "kind": KIND_SKILL,
+        "scope": "reserved",
+        "authority_level": "green",
+        "content_file": "SKILL.md",
+        "content_hash": digest,
+        "status": "active",
+        "skill": slug,
+        "source": f"skills/{slug}/SKILL.md",
+    }
+    repo.commit({"SKILL.md": data}, manifest, f"seed {slug} v{version}: {digest}")
+    return repo.manifest()
+
+
+def skill_kegs_for_goal(goal_id: str, *, home: Optional[Path] = None,
+                        dock: Any = None) -> List[Dict[str, Any]]:
+    """The skill kegs a Dock goal unlocks, verified, in declaration order:
+    ``{slug, keg_id, version, content_hash, commit, body}``. A goal the Dock
+    does not know, or a declared skill with no keg, is a LookupError; a
+    keg whose content does not match its manifest is a ValueError (verify)."""
+    from grove.dock import _parse_frontmatter, load_dock
+
+    if dock is None:
+        dock = load_dock()
+    goal = next((g for g in (getattr(dock, "goals", None) or ()) if g.id == goal_id), None)
+    if goal is None:
+        raise LookupError(f"the Dock declares no goal {goal_id!r}")
+    out: List[Dict[str, Any]] = []
+    for slug in goal.unlocked_skills:
+        repo = KegRepo(skill_repo_path(slug, home))
+        if not repo.exists() or repo.head() is None:
+            raise LookupError(
+                f"goal {goal_id!r} unlocks skill {slug!r} but there is no keg at "
+                f"{repo.path} — seed it: python -m grove.keg_store seed-skill {slug}")
+        repo.verify()
+        manifest = repo.manifest()
+        _, body = _parse_frontmatter(repo.read(str(manifest["content_file"])).decode("utf-8"))
+        out.append({
+            "slug": slug,
+            "keg_id": manifest["keg_id"],
+            "version": int(manifest["version"]),
+            "content_hash": manifest["content_hash"],
+            "commit": manifest["commit"],
+            "body": body,
+        })
+    return out
+
+
+def _main(argv: Optional[List[str]] = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(prog="python -m grove.keg_store")
+    sub = parser.add_subparsers(dest="command", required=True)
+    seed = sub.add_parser("seed-skill", help="seed a repo skill into the cellar as a keg")
+    seed.add_argument("slug")
+    seed.add_argument("--source", type=Path, default=None)
+    args = parser.parse_args(argv)
+    if args.command == "seed-skill":
+        manifest = seed_skill(args.slug, source=args.source)
+        print(dump_yaml(manifest).decode("utf-8"), end="")
+        return 0
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(_main())

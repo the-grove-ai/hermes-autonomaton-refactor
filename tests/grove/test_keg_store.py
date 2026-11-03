@@ -104,3 +104,90 @@ def test_commit_never_reads_the_users_git_config(tmp_path, monkeypatch):
 def test_open_without_init_reports_absence(tmp_path):
     repo = KegRepo(tmp_path / "nope")
     assert not repo.exists() and repo.head() is None and repo.manifest() == {}
+
+
+# ── the vanilla skill, seeded as a keg ────────────────────────────────
+
+import textwrap
+from pathlib import Path
+
+from grove.dock import load_dock
+from grove.keg_store import seed_skill, skill_kegs_for_goal
+
+REPO = Path(__file__).resolve().parents[2]
+
+
+def _dock(tmp_path, skills=("gl-invoice-coding",)):
+    (tmp_path / "dock").mkdir(exist_ok=True)
+    (tmp_path / "dock" / "dock.yaml").write_text(textwrap.dedent(f"""\
+        version: "1.0"
+        goals:
+          - id: gl-invoice-coding
+            name: Code every invoice
+            vector: operational
+            status: accelerating
+            definition_of_done: coded
+            context_sources: []
+            keywords: [invoice]
+            unlocked_skills: {list(skills)}
+        """))
+    return load_dock(tmp_path / "dock" / "dock.yaml")
+
+
+def test_seed_skill_commits_the_repo_file_as_v1_and_is_idempotent(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    m1 = seed_skill("gl-invoice-coding")
+    m2 = seed_skill("gl-invoice-coding")
+    assert m1["version"] == 1 and m1["kind"] == "skill" and m1["scope"] == "reserved"
+    assert m1["keg_id"].startswith("keg:gl-invoice-coding-skill:v1:")
+    source = (REPO / "skills" / "gl-invoice-coding" / "SKILL.md").read_bytes()
+    assert m1["content_hash"] == content_hash(source)
+    assert m1["keg_id"].endswith(m1["content_hash"][7:19])
+    assert m2 == m1
+    repo = KegRepo(tmp_path / "cellar" / "kegs" / "gl-invoice-coding-skill")
+    assert [e["message"] for e in repo.log()] == [f"seed gl-invoice-coding v1: {m1['content_hash']}"]
+    assert repo.read("SKILL.md") == source
+    assert not (tmp_path / "cellar" / ".git").exists()
+
+
+def test_an_edited_skill_seeds_as_the_next_version(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    src = tmp_path / "SKILL.md"
+    src.write_text("---\nname: demo\n---\n# A\n")
+    m1 = seed_skill("demo", source=src)
+    src.write_text("---\nname: demo\n---\n# B\n")
+    m2 = seed_skill("demo", source=src)
+    assert (m1["version"], m2["version"]) == (1, 2)
+    assert m2["keg_id"].startswith("keg:demo-skill:v2:") and m2["commit"] != m1["commit"]
+    assert len(KegRepo(tmp_path / "cellar" / "kegs" / "demo-skill").log()) == 2
+
+
+def test_skill_kegs_for_goal_reads_the_docks_unlocked_skills(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    seeded = seed_skill("gl-invoice-coding")
+    [k] = skill_kegs_for_goal("gl-invoice-coding", dock=_dock(tmp_path))
+    assert k["slug"] == "gl-invoice-coding" and k["keg_id"] == seeded["keg_id"]
+    assert k["version"] == 1 and k["content_hash"] == seeded["content_hash"]
+    assert k["commit"] == seeded["commit"]
+    assert k["body"].startswith("# GL invoice coding") and "created_by" not in k["body"]
+    assert skill_kegs_for_goal("gl-invoice-coding", dock=_dock(tmp_path, skills=())) == []
+
+
+def test_an_unlocked_skill_with_no_keg_is_a_loud_lookup_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    with pytest.raises(LookupError, match="gl-invoice-coding"):
+        skill_kegs_for_goal("gl-invoice-coding", dock=_dock(tmp_path))
+
+
+def test_a_hand_edited_skill_keg_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    seed_skill("gl-invoice-coding")
+    (tmp_path / "cellar" / "kegs" / "gl-invoice-coding-skill" / "SKILL.md").write_text("# tampered\n")
+    with pytest.raises(ValueError, match="gl-invoice-coding-skill"):
+        skill_kegs_for_goal("gl-invoice-coding", dock=_dock(tmp_path))
+
+
+def test_a_goal_the_dock_does_not_know_is_a_lookup_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("GROVE_HOME", str(tmp_path))
+    with pytest.raises(LookupError, match="no-such-goal"):
+        skill_kegs_for_goal("no-such-goal", dock=_dock(tmp_path))
