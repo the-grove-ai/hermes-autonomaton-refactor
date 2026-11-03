@@ -518,3 +518,25 @@ def test_the_schema_description_states_the_contract_not_the_procedure():
     d = gl.GL_CODING_SCHEMA["description"]
     assert "Never tell the operator" not in d and "Say 'revise'" not in d
     assert "verb='next'" in d and "verb='record'" in d and "verb='decide'" in d
+
+
+# ── compiler-shapes-v1: a keg decision names the rule that fired ───────
+
+
+def test_a_keg_decision_names_the_rule_that_fired(work):
+    from grove import keg as keg_mod
+
+    _t0()
+    gl.gl_coding({"verb": "apply_keg", "keg": KEG})
+    record = work.pending()
+    cond = KEG["conditions"][0]
+    assert record["rule"] == {"rule_id": keg_mod.rule_id(cond), "if": cond["if"]}
+    assert record["rule"]["rule_id"].startswith("rule:") and len(record["rule"]["rule_id"]) == 17
+    assert keg_mod.rule_id({"if": cond["if"], "then": {"gl_code": "9999"}}) == record["rule"]["rule_id"]
+
+
+def test_a_model_decision_has_no_rule(work):
+    _call(verb="next")
+    _call(verb="record", gl_code="6110", reasoning="hosting")
+    record = work.pending()
+    assert record["keg"] is None and "rule" not in record

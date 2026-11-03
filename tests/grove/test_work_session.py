@@ -1703,3 +1703,19 @@ def test_the_goal_page_does_not_call_a_run_complete_with_a_stage_still_to_releas
     html = fragments.render_goal_detail(None, goal)          # nothing queued, two stages ahead
     assert "is complete" not in html
     assert "Month 2 has not been released yet." in html and "THIS RUN · SO FAR" in html
+
+
+# ── compiler-shapes-v1: the batch names rules, counts hits, closes itself ─
+
+
+def test_a_batch_decision_names_the_rule_too(env):
+    from grove import keg as keg_mod
+
+    work = env.work(session=BATCH)
+    spec = _serve_keg()
+    env.add("billing", "outage", "legal")
+    work.session_step({"action": "batch", "inputs_for": _read}, env.prov(tier="T0"))
+    proposed = [r for r in work.log.run_records() if r["kind"] == "proposed"]
+    assert [r["rule"]["if"] for r in proposed] == ["channel == 'billing'", "channel == 'outage'"]
+    assert proposed[0]["rule"]["rule_id"] == keg_mod.rule_id(spec["conditions"][0])
+

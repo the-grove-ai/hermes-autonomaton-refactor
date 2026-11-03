@@ -392,6 +392,14 @@ def validate_spec(spec: Any) -> None:
             )
 
 
+def rule_id(condition: Mapping[str, Any]) -> str:
+    """A stable id for one condition: ``rule:`` + the first 12 hex of the
+    sha256 of its ``if`` text. The same test is the same rule in every
+    version that carries it; a decision record names the one that fired."""
+    text = str((condition or {}).get("if") or "")
+    return "rule:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
 def rules_digest(spec: Mapping[str, Any], evidence: Any, lineage: Any = None) -> str:
     """Identity digest for one drafted keg: its interface plus the evidence it
     rests on. Identical rules on identical evidence are the identical keg (never

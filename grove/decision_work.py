@@ -2014,12 +2014,14 @@ class DecisionWork:
         reasoning: str,
         provenance: Optional[Mapping[str, Any]],
         keg: Optional[Mapping[str, Any]] = None,
+        rule: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Record a proposed decision for the next queued item.
 
         ``inputs`` come from the adapter's own parse of the item, never from
         the model. ``keg`` names the keg and version when a keg, not a model,
-        produced the output."""
+        produced the output, and ``rule`` the condition of it that fired
+        (``{rule_id, if}``)."""
         self.check_turn(provenance)
         waiting = self.pending()
         if waiting is not None:
@@ -2054,6 +2056,7 @@ class DecisionWork:
             "tier": prov.get("tier"),
             "model": prov.get("model"),
             "keg": dict(keg) if keg else None,
+            **({"rule": dict(rule)} if rule else {}),
             "session_id": prov.get("session_id"),
             "turn_id": prov.get("turn_id"),
             "turn_uid": prov.get("turn_uid"),
@@ -2203,6 +2206,7 @@ class DecisionWork:
                 "inputs": inputs, "output": clean,
                 "reasoning": f"keg {keg_ref['name']} v{keg_ref['version']}",
                 "tier": "T0", "model": "pattern_cache", "keg": dict(keg_ref),
+                **({"rule": rule} if (rule := self.rule_that_fired(spec, inputs)) else {}),
                 "session_id": prov.get("session_id"), "turn_id": prov.get("turn_id"),
                 "turn_uid": prov.get("turn_uid"), "batch": batch_id,
             })
@@ -2982,8 +2986,20 @@ class DecisionWork:
         return self.record(
             item_id=item_id, inputs=inputs, output=output,
             reasoning=f"keg {keg_ref.get('name')} v{keg_ref.get('version')}",
-            provenance=provenance, keg=keg_ref,
+            provenance=provenance, keg=keg_ref, rule=self.rule_that_fired(spec, inputs),
         )
+
+    @staticmethod
+    def rule_that_fired(spec: Mapping[str, Any],
+                        inputs: Mapping[str, Any]) -> Optional[Dict[str, Any]]:
+        """The keg condition that answers ``inputs``, named for the record:
+        ``{"rule_id", "if"}``, or None when no condition matches."""
+        from grove import keg as keg_mod
+
+        cond = keg_mod.match(spec, inputs)
+        if cond is None:
+            return None
+        return {"rule_id": keg_mod.rule_id(cond), "if": str(cond.get("if") or "")}
 
     # -- Jidoka's evidence ------------------------------------------------
 
