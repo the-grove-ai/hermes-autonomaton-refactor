@@ -5859,10 +5859,12 @@ class Dispatcher:
         prompt — ``[]`` when the turn is not isolated to a goal. Raises
         LookupError / ValueError from ``skill_kegs_for_goal`` (fail loud)."""
         goal = getattr(self, "_current_turn_isolation", None)
-        if not goal:
+        # Isolation is a goal id or nothing; anything else (a stand-in session's
+        # meta) is not a goal and unlocks nothing.
+        if not isinstance(goal, str) or not goal:
             return []
         from grove.keg_store import skill_kegs_for_goal
-        return list(skill_kegs_for_goal(str(goal)))
+        return list(skill_kegs_for_goal(goal))
 
     def _resolve_turn_isolation(self, agent: Any, user_message: Any) -> Optional[str]:
         """The decision-work goal this turn's session is isolated to, or None.

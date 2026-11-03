@@ -168,3 +168,13 @@ def test_a_goal_that_unlocks_no_skill_is_not_held_to_one(tmp_path, monkeypatch):
     grants.sign(cfg)
     assert cfg.unlocked_skills == ()
     DecisionWork(cfg).check_turn(_prov(skills_loaded=[]))
+
+
+def test_a_non_string_isolation_value_loads_no_skill():
+    from unittest.mock import MagicMock
+
+    d = Dispatcher.__new__(Dispatcher)
+    d._current_turn_isolation = MagicMock()          # a mocked session's get_meta()
+    assert d._turn_goal_skills() == []
+    d._current_turn_isolation = ""
+    assert d._turn_goal_skills() == []
