@@ -1895,6 +1895,13 @@ def _sign_keg(
         "by": "operator", "at": now, "proposal_id": proposal.proposal_id,
     }
     store.set_promotion_evidence(pattern_id, json.dumps(record, sort_keys=True))
+    # compiler-shapes-v1 — the signature is the version's second commit in
+    # its keg: the manifest goes active with who signed and when.
+    from grove.keg_store import sign_helper
+    signed_manifest = sign_helper(
+        slug=slug, pattern_id=pattern_id, proposal_id=proposal.proposal_id,
+        signed_by="operator", signed_at=now, replaces=replaced,
+    )
     logger.info(
         "[flywheel] keg signed: %s v%s (pattern_id=%s, replaces=%s) — "
         "standard work, serving at T0",
@@ -1915,6 +1922,7 @@ def _sign_keg(
             "authority_level": keg.get("authority_level"),
             "signed_by": "operator",
             "signed_at": now,
+            "keg_commit": signed_manifest.get("commit"),
         },
     }
     label = (

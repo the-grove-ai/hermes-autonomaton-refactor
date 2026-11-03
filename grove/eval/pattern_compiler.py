@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import collections
 import hashlib
+import logging
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -23,6 +24,8 @@ from typing import Any, Dict, List, Optional
 
 from grove.pattern_cache import CompiledPattern, STATUS_SUSPENDED, t0_key
 from grove.router_merge import load_operational_routing_config
+
+logger = logging.getLogger(__name__)
 
 # Defaults — used when routing.operational.yaml carries no pattern_cache section.
 # Mirror the GATE-A decision-4 values.
@@ -700,6 +703,8 @@ def backtest_keg(spec: Dict[str, Any], history: List[Dict[str, Any]],
             # Why standard work does not answer this case, when the caller
             # knows (e.g. "2 values in <table>") — shown beside the case.
             "note": str(case.get("note") or ""),
+            # The decision this case replays, when the history names it.
+            "decided_id": case.get("decided_id"),
             "deferred": bool(deferred),
             "result": result,
             "agrees_with_confirmed": agrees,
@@ -747,6 +752,7 @@ def propose_keg(
     evidence_turn_ids: Any,
     history: List[Dict[str, Any]],
     feedback: Optional[List[str]] = None,
+    evidence_decisions: Any = None,
     lineage: Optional[str] = None,
     andon_id: Optional[str] = None,
     miss: Optional[Dict[str, Any]] = None,
@@ -835,8 +841,13 @@ def propose_keg(
     }
     keg_mod.validate_spec(spec)
 
-    digest = keg_mod.rules_digest(spec, evidence_ids, lineage)
-    pattern_id = f"keg:{slug}:v{version}:{digest[:12]}"
+    # compiler-shapes-v1 — the id's hex is the content hash of the keg
+    # document as committed to the cellar (the spec with its lineage and
+    # evidence), so identical rules on identical evidence in the same run are
+    # the identical keg, and a version can be verified from its file alone.
+    from grove.keg_store import helper_document_hash, keg_id as _keg_id
+    digest = helper_document_hash(spec, lineage, evidence_ids)
+    pattern_id = _keg_id(slug, version, digest)
     # The slug in a keg's bookkeeping is what ties versions together; read it
     # with its lineage (see keg_record) rather than by parsing this id.
     prior_entry = pattern_store.get(prior_id) if prior_id else None
@@ -937,6 +948,26 @@ def propose_keg(
             "an identical proposal is already in the queue",
             proposal_id=proposal.proposal_id,
         )
+    # compiler-shapes-v1 — the proposal is an asset in the cellar: the keg
+    # document, its replay and a manifest, committed as this version's
+    # proposal. A failure here propagates (the row and the queue entry are
+    # already written; the operator sees why the cellar could not take it).
+    from grove.keg_store import write_helper_proposal
+    try:
+        write_helper_proposal(
+            slug=slug, spec=spec, lineage=lineage, evidence_turn_ids=evidence_ids,
+            evidence_decisions=evidence_decisions, backtest=backtest,
+            pattern_id=pattern_id, evidence_hash=_evidence_hash(evidence_ids),
+            approved_signature=invocation["approved_signature"],
+            proposal_id=proposal.proposal_id, replaces=[prior_id] if prior_id else [],
+            goal=dock_goal, now=now, tool=tool_name, intent_class=intent_class,
+            andon_id=andon_id, flag=flag, feedback=feedback,
+        )
+    except Exception:
+        logger.error(
+            "[pattern_compiler] could not commit keg %s to the cellar — check the "
+            "cellar directory under GROVE_HOME and that git is installed", pattern_id)
+        raise
     if ledger is None:
         from grove.andon import _bus
         ledger = _bus()                # the one bus: this session's ledger
@@ -954,6 +985,7 @@ def propose_keg(
         replayed=backtest["replayed"],
         unchanged=backtest["unchanged"],
         would_change=backtest["would_change"],
+        not_covered=backtest["not_covered"],
         evidence_count=len(evidence_ids),
     )
     return _result(

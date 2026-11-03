@@ -514,6 +514,7 @@ def propose_direct_rule(
         flag_detail=str(andon.get("summary") or ""),
         evidence_turn_ids=[str(c.get("turn_id") or c["ref"]) for c in matching]
         or [str(andon.get("andon_id"))],
+        evidence_decisions=[c["decided_id"] for c in matching if c.get("decided_id")],
         history=history, lineage=run.get("run_id"), andon_id=andon.get("andon_id"),
     )
     summary = _summary(result)
@@ -738,6 +739,9 @@ def answer(
         flag=str(andon.get("flag")),
         flag_detail=str(andon.get("summary") or ""),
         evidence_turn_ids=evidence_ids,
+        evidence_decisions=[c["decided_id"] for c in history
+                            if str(c.get("turn_id")) in {str(e) for e in evidence_ids}
+                            and c.get("decided_id")],
         history=history,
         feedback=feedback,
         lineage=lineage,

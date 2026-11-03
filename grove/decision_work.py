@@ -2952,6 +2952,10 @@ class DecisionWork:
                 "note": _note(inputs.get(label_key)) if label_key else "",
                 "decision": verdict["decision"],
                 "turn_id": record.get("turn_id"),
+                # The records themselves, so a replay line names the decision
+                # it replayed and a keg's manifest names its evidence.
+                "proposed_id": record.get("id"),
+                "decided_id": verdict.get("id"),
                 # The operator's own words on this item, as evidence for a rule.
                 "operator_said": verdict.get("operator_said") or record.get("operator_said"),
             })

@@ -24,6 +24,7 @@ signature) and Compilation (a goal turn reads its skill from here).
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -335,3 +336,160 @@ def _main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(_main())
+
+
+# ── the helper keg: what Kaizen compiles, and the operator signs ─────────
+
+
+def helper_repo_path(slug: str, home: Optional[Path] = None) -> Path:
+    return kegs_dir(home) / slug
+
+
+def helper_document(spec: Mapping[str, Any], lineage: Any,
+                    evidence_turn_ids: Any) -> bytes:
+    """The committed keg document: the GRV-004 spec plus the run it was
+    earned in and the turns it rests on. Its bytes are the version's hash."""
+    return dump_yaml({
+        **dict(spec),
+        "lineage": lineage,
+        "evidence": sorted(str(e) for e in (evidence_turn_ids or ())),
+    })
+
+
+def helper_document_hash(spec: Mapping[str, Any], lineage: Any,
+                         evidence_turn_ids: Any) -> str:
+    return content_hash(helper_document(spec, lineage, evidence_turn_ids))
+
+
+_REPLAY_STATUS = {"unchanged": "held", "would_change": "would_change",
+                  "not_covered": "reserved"}
+
+
+def replay_lines(backtest: Mapping[str, Any]) -> List[Dict[str, Any]]:
+    """One line per replayed decision, in the replay's own order:
+    ``{item_id, decided_id, expected, got, status, reserve_reason}`` with
+    ``status`` held / would_change / reserved."""
+    out = []
+    for case in backtest.get("cases") or ():
+        expected = case.get("confirmed")
+        if expected is None:
+            expected = case.get("served")
+        out.append({
+            "item_id": case.get("ref"),
+            "decided_id": case.get("decided_id"),
+            "expected": dict(expected) if isinstance(expected, Mapping) else expected,
+            "got": dict(case["keg"]) if isinstance(case.get("keg"), Mapping) else case.get("keg"),
+            "status": _REPLAY_STATUS[case["result"]],
+            "reserve_reason": (str(case.get("note")) or None) if case.get("note") else None,
+        })
+    return out
+
+
+def _replay_tallies(lines: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts = {"held": 0, "would_change": 0, "reserved": 0}
+    for line in lines:
+        counts[line["status"]] += 1
+    return {"replayed": len(lines), **counts}
+
+
+def _replay_text(tallies: Mapping[str, int]) -> str:
+    return (f"replay {tallies['replayed']} replayed, {tallies['held']} held, "
+            f"{tallies['would_change']} would change, {tallies['reserved']} reserved")
+
+
+def compiled_under_for_goal(goal: str, *, home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
+    """The skill keg a goal's helpers are compiled under, projected to
+    ``{skill_keg_id, skill_version, skill_content_hash, skill_commit}``; None
+    when the Dock does not know the goal or it unlocks no skill. A declared
+    skill that is missing or hand-edited raises (the turn could not have
+    run without it)."""
+    from grove.dock import load_dock
+
+    dock = load_dock()
+    if dock is None or not any(g.id == goal for g in dock.goals):
+        return None
+    skills = skill_kegs_for_goal(goal, home=home, dock=dock)
+    if not skills:
+        return None
+    first = skills[0]
+    return {"skill_keg_id": first["keg_id"], "skill_version": first["version"],
+            "skill_content_hash": first["content_hash"], "skill_commit": first["commit"]}
+
+
+def write_helper_proposal(
+    *, slug: str, spec: Mapping[str, Any], lineage: Any, evidence_turn_ids: Any,
+    evidence_decisions: Any, backtest: Mapping[str, Any], pattern_id: str,
+    evidence_hash: str, approved_signature: str, proposal_id: str, replaces: Any,
+    goal: str, now: str, tool: str, intent_class: str, andon_id: Any, flag: str,
+    feedback: Any, home: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Commit a proposed helper version: ``keg.yaml``, its replay and the
+    manifest (status ``proposed``). Returns the manifest."""
+    document = helper_document(spec, lineage, evidence_turn_ids)
+    digest = content_hash(document)
+    if keg_id(slug, int(spec["version"]), digest) != pattern_id:
+        raise ValueError(
+            f"{pattern_id}: the id's hex is not the content hash of the keg document "
+            f"({digest})")
+    lines = replay_lines(backtest)
+    tallies = _replay_tallies(lines)
+    replay_file = f"replay/v{int(spec['version'])}.jsonl"
+    manifest = {
+        "keg_id": pattern_id,
+        "slug": slug,
+        "version": int(spec["version"]),
+        "kind": KIND_HELPER,
+        "scope": spec.get("scope"),
+        "authority_level": spec.get("authority_level"),
+        "content_file": "keg.yaml",
+        "content_hash": digest,
+        "status": "proposed",
+        "goal": goal,
+        "compiled_by": {"kaizen": "grove.eval.pattern_compiler",
+                        "engine_commit": engine_commit()},
+        "compiled_under": compiled_under_for_goal(goal, home=home),
+        "evidence": [str(d) for d in (evidence_decisions or ())],
+        "evidence_hash": evidence_hash,
+        "approved_signature": approved_signature,
+        "proposal_id": proposal_id,
+        "replaces": [str(r) for r in (replaces or ())],
+        "replay": {"file": replay_file, **tallies},
+        "proposed_at": now,
+        "signed_at": None,
+        "signed_by": None,
+        "imported": False,
+        # What the build cache needs to be rebuilt from this manifest alone.
+        "tool": tool,
+        "intent_class": intent_class,
+        "andon_id": andon_id,
+        "flag": flag,
+        "repetition_count": len(list(evidence_turn_ids or ())),
+        "feedback": list(feedback or []),
+    }
+    repo = KegRepo.open_or_init(helper_repo_path(slug, home))
+    replay_bytes = "".join(json.dumps(l, sort_keys=True, default=str) + "\n" for l in lines)
+    message = (f"propose v{manifest['version']}: proposal {proposal_id}; {_replay_text(tallies)}; "
+               f"supersedes {', '.join(manifest['replaces']) or 'nothing'}")
+    repo.commit({"keg.yaml": document, replay_file: replay_bytes.encode("utf-8")},
+                manifest, message)
+    return repo.manifest()
+
+
+def sign_helper(*, slug: str, pattern_id: str, proposal_id: str, signed_by: str,
+                signed_at: str, replaces: Any, home: Optional[Path] = None) -> Dict[str, Any]:
+    """The operator signed the version at HEAD: commit its manifest as
+    ``active``. HEAD must be that version, or ValueError."""
+    repo = KegRepo(helper_repo_path(slug, home))
+    current = repo.manifest()
+    if not current or current.get("keg_id") != pattern_id:
+        raise ValueError(
+            f"{pattern_id}: the keg at {repo.path} has {current.get('keg_id')!r} at HEAD, "
+            f"not the version being signed")
+    manifest = {**current, "status": "active", "signed_by": signed_by, "signed_at": signed_at,
+                "proposal_id": proposal_id, "replaces": [str(r) for r in (replaces or ())]}
+    tallies = {k: int(v) for k, v in (current.get("replay") or {}).items() if k != "file"}
+    message = (f"sign v{manifest['version']}: proposal {proposal_id}; signed_by {signed_by}; "
+               f"{_replay_text(tallies)}; "
+               f"supersedes {', '.join(manifest['replaces']) or 'nothing'}")
+    repo.commit({}, manifest, message)
+    return repo.manifest()
