@@ -931,6 +931,24 @@ def _context_files_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     return SectionResult(label="context_files", text=text)
 
 
+def _goal_skill_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
+    """compiler-shapes-v1 — the skill(s) an isolated goal unlocks, read from
+    their kegs in the cellar (``grove.keg_store.skill_kegs_for_goal``) and
+    threaded in as ``ctx["goal_skills"]``. Declared standard work for the
+    goal's own turns, so it is neither tier-gated nor a recall section: a T1
+    coding turn carries its procedure. Absent when no goal is isolated."""
+    skills = ctx.get("goal_skills") or ()
+    parts = []
+    for skill in skills:
+        body = str(skill.get("body") or "").strip()
+        if not body:
+            continue
+        parts.append(f"## Skill: {skill.get('slug')} ({skill.get('keg_id')})\n\n{body}")
+    if not parts:
+        return None
+    return SectionResult(label="goal_skill", text="\n\n".join(parts))
+
+
 def _external_memory_provider(ctx: Dict[str, Any]) -> Optional[SectionResult]:
     manager = ctx.get("memory_manager")
     if manager is None:
@@ -996,6 +1014,9 @@ _DEFAULT_SECTIONS: Tuple[Tuple[str, SectionProvider, int, str], ...] = (
     # context
     ("system_message",                 _system_message_provider,                 10, "context"),
     ("context_files",                  _context_files_provider,                  20, "context"),
+    # compiler-shapes-v1 — the isolated goal's skill, from its keg. Not
+    # gateable: the goal declares it, the tier does not get a say.
+    ("goal_skill",                     _goal_skill_provider,                     25, "context"),
     # volatile
     # ("memory") + ("user_profile") retired by legacy-memory-tool-retirement-v1
     # (the legacy file-store providers; already disabled via config). The Grove

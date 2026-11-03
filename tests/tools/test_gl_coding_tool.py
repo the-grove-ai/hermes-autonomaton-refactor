@@ -5,6 +5,7 @@ against a different domain."""
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -357,7 +358,7 @@ def test_refusal_message_carries_the_next_step_and_no_manual_instruction(work, m
     assert "Do not add steps of your own" in out["tell_the_operator"]
     from grove import reissue
     assert reissue.take("chat-9")["request"] == "code the next invoice."
-    assert "never tell the operator" in gl.GL_CODING_SCHEMA["description"]
+    assert "never tell the controller to\nstart a new session" in _SKILL
 
 
 def test_one_invoice_per_request_the_model_cannot_run_on_after_a_confirmation(work):
@@ -375,7 +376,7 @@ def test_one_invoice_per_request_the_model_cannot_run_on_after_a_confirmation(wo
     assert work.pending() is None                       # nothing was coded
     # The operator's next request is a new turn, and proceeds.
     assert _call(verb="next")["item_id"] == "02_BO"
-    assert "One invoice per request" in gl.GL_CODING_SCHEMA["description"]
+    assert "One invoice per request" in _SKILL
 
 
 def test_the_adapter_reads_the_account_and_a_printed_notice_when_declared():
@@ -499,3 +500,21 @@ def test_a_confirmation_with_nothing_waiting_on_a_request_for_the_next_invoice(w
     turn_provenance.set_current({**asked, "request": "what did we do so far"})
     refused = _call(verb="decide", decision="confirm")
     assert refused["refused"] == "nothing_pending" and "instead_of" not in refused
+
+
+# ── compiler-shapes-v1: the procedure is the skill's, the tool is data ──
+
+
+_SKILL = (Path(__file__).resolve().parents[2] / "skills" / "gl-invoice-coding" / "SKILL.md").read_text()
+
+
+def test_next_returns_data_only_the_procedure_is_the_skills(work):
+    out = _call(verb="next")
+    assert out["status"] == "ready" and "chart_of_accounts" in out and "vendor_guide_row" in out
+    assert "instructions" not in out
+
+
+def test_the_schema_description_states_the_contract_not_the_procedure():
+    d = gl.GL_CODING_SCHEMA["description"]
+    assert "Never tell the operator" not in d and "Say 'revise'" not in d
+    assert "verb='next'" in d and "verb='record'" in d and "verb='decide'" in d

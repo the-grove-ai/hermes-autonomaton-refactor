@@ -1,8 +1,9 @@
 """gl_coding — the GL invoice-coding adapter for decision work.
 
-Everything specific to coding vendor invoices to GL accounts lives here, in the
-coding skill and in the ``gl-invoice-coding`` Dock goal's ``decision_work``
-config. The queue, the decision log, the isolation checks, the evidence rule
+Everything specific to coding vendor invoices to GL accounts lives in three
+places: the procedure in ``skills/gl-invoice-coding/SKILL.md`` (loaded from its
+keg on every model turn of the goal), the data verbs here, and the
+``gl-invoice-coding`` Dock goal's ``decision_work`` config. The queue, the decision log, the isolation checks, the evidence rule
 and the keg loop are generic (``grove.decision_work``, ``grove.keg``); this
 adapter only knows how to read an invoice and how to word its three verbs.
 
@@ -216,16 +217,6 @@ def _next(work: DecisionWork) -> Dict[str, Any]:
         "vendor_guide_row": guide_row,
         "vendor_in_guide": guide_row is not None,
         "chart_of_accounts": chart,
-        "instructions": (
-            "Choose the GL code from chart_of_accounts using the invoice and "
-            "the vendor guide row. Then you MUST do exactly one of two things "
-            "before you reply: (1) call record with gl_code and one line of "
-            "reasoning; or (2) if the invoice and the guide do not let you "
-            "choose (the guide says to confirm with the operator, or the "
-            "lines are too vague), call ask and then put your question to the "
-            "operator. Never tell the operator a code you have not recorded: "
-            "a code that is not on record is not a decision."
-        ),
     }
 
 
@@ -622,29 +613,15 @@ def gl_coding(args: Dict[str, Any]) -> str:
 GL_CODING_SCHEMA = {
     "name": "gl_coding",
     "description": (
-        "Code vendor invoices to GL accounts, one at a time. verb='next' "
-        "returns the next uncoded invoice, the vendor's row in the vendor "
-        "guide and the full chart of accounts. verb='record' stores your "
-        "proposed gl_code with one line of reasoning; after next you must "
-        "call record before replying, unless you need the operator to choose, "
-        "in which case call verb='ask' and then ask your question. Never "
-        "state a code you have not recorded. verb='decide' stores "
-        "the operator's answer: decision='confirm', or decision='correct' "
-        "with corrected_gl_code when the operator revises the code. Always "
-        "ask the operator to confirm or revise each coding before moving on. "
-        "Say 'revise' and 'revised' to the operator, never 'correct'. One "
-        "invoice per request: after decide, stop — never call next or record "
-        "again in the same turn. Never tell the operator to ask for the next "
-        "invoice or to say the word: when a work session is on, the system "
-        "presents it. If the operator's message is about something other "
-        "than invoices, call verb='pause' and nothing else. If the operator "
-        "wants to change an invoice already decided, call decide with "
-        "decision='correct', corrected_gl_code and that invoice's item_id. "
-        "Use only what this tool "
-        "returns to choose a code. If the tool refuses, relay its `message` "
-        "to the operator as written — it already says what happens next — "
-        "and do not add instructions of your own (never tell the operator "
-        "to start a new session; the system does that itself when needed)."
+        "The record for coding vendor invoices to GL accounts, one at a time. "
+        "verb='next' returns the next uncoded invoice, the vendor's row in the "
+        "vendor guide and the full chart of accounts. verb='record' stores a "
+        "proposed gl_code with one line of reasoning. verb='ask' stores the "
+        "question you are about to put to the operator instead of a code. "
+        "verb='decide' stores the operator's answer: decision='confirm', or "
+        "decision='correct' with corrected_gl_code; item_id names an invoice "
+        "already decided. verb='pause' leaves the work session. How to use "
+        "these verbs is in the gl-invoice-coding skill loaded with the goal."
     ),
     "parameters": {
         "type": "object",

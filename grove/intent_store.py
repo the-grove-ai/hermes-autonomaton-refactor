@@ -167,6 +167,10 @@ class IntentRecord:
     # tool stays available across a terse continuation reply. Same tuple/JSON
     # coercion as tools_yielded so the frozen record stays hashable.
     tools_offered: Tuple[str, ...] = field(default_factory=tuple)
+    # compiler-shapes-v1 — the skill kegs composed into THIS turn's prompt,
+    # each ``{keg_id, version, content_hash}``. Empty at T0 (no prompt went
+    # to a model) and on any turn outside an isolated goal. Hashed.
+    skills_loaded: Tuple[Dict[str, str], ...] = field(default_factory=tuple)
     api_calls: int = 0
     duration_ms: float = 0.0
     final_response_chars: Optional[int] = None
@@ -453,6 +457,8 @@ def _parse_line(raw: bytes, line_no: int, path: Path) -> Optional["IntentRecord"
         data["tools_yielded"] = tuple(data["tools_yielded"])
     if isinstance(data.get("tools_offered"), list):
         data["tools_offered"] = tuple(data["tools_offered"])
+    if isinstance(data.get("skills_loaded"), list):
+        data["skills_loaded"] = tuple(dict(s) for s in data["skills_loaded"])
     try:
         return IntentRecord(**data)
     except (TypeError, ValueError) as exc:
@@ -578,6 +584,7 @@ class IntentStore:
         # Coerce tuple → list for stable JSON; reads coerce back.
         data["tools_yielded"] = list(data["tools_yielded"])
         data["tools_offered"] = list(data["tools_offered"])
+        data["skills_loaded"] = [dict(s) for s in data["skills_loaded"]]
         # Normalize through JSON once so the hash is computed over EXACTLY the
         # values a later reader will parse back (default=str coercions, etc.).
         data = json.loads(json.dumps(data, sort_keys=True, default=str))

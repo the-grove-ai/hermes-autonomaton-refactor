@@ -760,3 +760,22 @@ def test_a_deleted_file_reads_empty_and_a_new_one_is_read_from_its_start(tmp_pat
     assert list(store.records()) == []
     store.append(_record(turn_id="sess-9#0", session_id="sess-9"))
     assert [r.turn_id for r in store.records()] == ["sess-9#0"]
+
+
+# ── compiler-shapes-v1: the skills a turn loaded ───────────────────────
+
+
+def test_skills_loaded_round_trips_and_is_hashed(tmp_path):
+    from grove.intent_store import record_digest
+
+    loaded = ({"keg_id": "keg:x-skill:v1:abcabcabcabc", "version": "1", "content_hash": "sha256:ab"},)
+    store = IntentStore(store_path=tmp_path / "r.jsonl")
+    store.append(_record(skills_loaded=loaded))
+    store.append(_record(turn_id="sess-1#1"))
+    with_skill, without = list(store.records())
+    assert with_skill.skills_loaded == loaded and without.skills_loaded == ()
+    a = json.loads((tmp_path / "r.jsonl").read_text().splitlines()[0])
+    assert a["skills_loaded"] == [dict(loaded[0])]
+    b = dict(a); b["skills_loaded"] = []
+    assert record_digest({k: v for k, v in a.items() if k != "record_hash"}) != record_digest(
+        {k: v for k, v in b.items() if k != "record_hash"})

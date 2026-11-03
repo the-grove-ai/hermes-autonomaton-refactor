@@ -309,6 +309,9 @@ class DecisionWorkConfig:
     evidence: Optional[EvidenceRule]
     isolation: Optional[str]
     sources: Tuple[Path, ...] = field(default_factory=tuple)
+    # compiler-shapes-v1 — the skills the Dock goal unlocks, by slug. A model
+    # turn of this work runs with them loaded from their kegs, or not at all.
+    unlocked_skills: Tuple[str, ...] = ()
     keg: Optional[KegDeclaration] = None
     # What to do when this goal's work is asked for in a session that is not
     # clean: None (refuse) or "open_clean_session" (the gateway opens one and
@@ -605,6 +608,7 @@ def load_config(goal: Any) -> Optional[DecisionWorkConfig]:
         evidence=evidence,
         isolation=isolation,
         sources=tuple(resolved()) if callable(resolved) else (),
+        unlocked_skills=tuple(str(s) for s in (getattr(goal, "unlocked_skills", None) or ())),
         keg=keg,
         on_unclean=on_unclean,
         item_name=item_name,
@@ -1956,6 +1960,20 @@ class DecisionWork:
                 "This decision cannot be recorded: the turn drew on recalled "
                 f"context ({', '.join(found)}). Work for this goal uses its "
                 "declared sources only.",
+                provenance,
+            )
+        # compiler-shapes-v1 — a model turn of this work runs under the goal's
+        # skill, loaded from its keg, or it does not decide. A T0 step (the
+        # session rule, or a signed keg) sends no prompt to any model, so
+        # there is nothing to load.
+        at_t0 = (provenance.get("session_step") == "t0" or provenance.get("tier") == "T0"
+                 or bool(provenance.get("t0_pattern")))
+        if self.config.unlocked_skills and not at_t0 and not provenance.get("skills_loaded"):
+            raise self.abnormal(
+                "no_skill_loaded",
+                "This decision cannot be recorded: the turn ran without the goal's "
+                f"skill ({', '.join(self.config.unlocked_skills)}), so the procedure "
+                "that governs it was not in force.",
                 provenance,
             )
 

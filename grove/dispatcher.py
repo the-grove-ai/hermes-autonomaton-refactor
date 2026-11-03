@@ -698,6 +698,22 @@ def _guarantee_turn_record(dispatch_turn):
     return _guarded
 
 
+
+def _skills_loaded(agent: Any) -> List[Dict[str, str]]:
+    """compiler-shapes-v1 — what the composed prompt carries: the skill kegs
+    whose ``goal_skill`` section is in ``agent._composed_prompt``, projected
+    to their identity ``{keg_id, version, content_hash}``."""
+    composed = getattr(agent, "_composed_prompt", None)
+    sections = (getattr(composed, "sections", None) or {})
+    if "goal_skill" not in sections:
+        return []
+    return [
+        {"keg_id": str(s.get("keg_id")), "version": str(s.get("version")),
+         "content_hash": str(s.get("content_hash"))}
+        for s in (getattr(agent, "_goal_skills", None) or ())
+    ]
+
+
 class Dispatcher:
     """Grove Autonomaton runtime entry point per GRV-005 § II.
 
@@ -2238,6 +2254,24 @@ class Dispatcher:
             # the goal's tool (and any it declares beside it), nothing else.
             agent._turn_only_tools = self._turn_tools()
         except Exception:  # a frozen / exotic agent stand-in
+            pass
+        # compiler-shapes-v1 — the skill(s) the isolated goal unlocks, read
+        # from their kegs for THIS turn's prompt. A declared skill that cannot
+        # be loaded stops the turn loud: the procedure is not in force, so no
+        # model runs for the goal.
+        try:
+            agent._goal_skills = self._turn_goal_skills()
+        except (LookupError, ValueError) as skill_exc:
+            logger.error(
+                "[grove.dispatcher] turn %s: the goal's skill could not be loaded "
+                "— %s", self._current_turn_id, skill_exc,
+            )
+            self._write_intent_record(
+                agent, outcome="error", failure_kind="skill_keg_fault",
+                failure_summary=type(skill_exc).__name__,
+            )
+            raise
+        except AttributeError:  # a frozen / exotic agent stand-in
             pass
         self._current_turn_t0_handback = None
         self._current_turn_t0_handback_why = None
@@ -3816,6 +3850,9 @@ class Dispatcher:
                         "selected_names"
                     ) or ()
                 ),
+                # compiler-shapes-v1 — the same source the governed tools read
+                # at the point of action (turn_provenance), never a tracker.
+                skills_loaded=tuple(self.turn_provenance(agent).get("skills_loaded") or ()),
                 api_calls=api_calls,
                 duration_ms=round(duration_ms, 2),
                 final_response_chars=final_response_chars,
@@ -5638,6 +5675,9 @@ class Dispatcher:
             # applies the current tier's context gate.
             tier_context_blocks=getattr(agent, "_tier_context_blocks", None),
             isolated_sections=getattr(agent, "_isolated_sections", None),
+            # compiler-shapes-v1 — the isolated goal's skill kegs (dispatch_turn
+            # sets them per turn; [] outside a goal's work).
+            goal_skills=list(getattr(agent, "_goal_skills", None) or ()),
             tier=getattr(agent, "_tier_name", None),  # Sprint 75 — identity gate
             # K6 (D3) — the routed tier's cellar budget, read off the resolved
             # TierBudget on the agent. None on a construction-time / non-routed
@@ -5797,6 +5837,16 @@ class Dispatcher:
         return budgets
 
     # ── goal isolation ──────────────────────────────────────────────────
+
+    def _turn_goal_skills(self) -> List[Dict[str, Any]]:
+        """The skill kegs the isolated goal unlocks, verified, for this turn's
+        prompt — ``[]`` when the turn is not isolated to a goal. Raises
+        LookupError / ValueError from ``skill_kegs_for_goal`` (fail loud)."""
+        goal = getattr(self, "_current_turn_isolation", None)
+        if not goal:
+            return []
+        from grove.keg_store import skill_kegs_for_goal
+        return list(skill_kegs_for_goal(str(goal)))
 
     def _resolve_turn_isolation(self, agent: Any, user_message: Any) -> Optional[str]:
         """The decision-work goal this turn's session is isolated to, or None.
@@ -6255,6 +6305,7 @@ class Dispatcher:
                 "tier": "T0", "model": "session_rule", "t0_pattern": None,
                 "request": getattr(self, "_current_turn_user_message", None),
                 "cellar_hits": 0, "sections": [], "tools_yielded": [],
+                "skills_loaded": [],
                 "isolation_goal": self._current_turn_isolation,
                 "attempts": [], "session_step": "t0",
             }
@@ -6283,6 +6334,9 @@ class Dispatcher:
             "cellar_hits": cellar_hits,
             "sections": sections,
             "tools_yielded": list(self._current_turn_tools_yielded),
+            # compiler-shapes-v1 — the skill kegs in this turn's prompt; none
+            # on a T0 serve, which sends no prompt.
+            "skills_loaded": [] if t0_pattern else _skills_loaded(agent),
             "isolation_goal": self._current_turn_isolation,
             # Earlier attempts at this request, when this turn is a re-issue.
             "attempts": list(
@@ -6388,6 +6442,14 @@ class Dispatcher:
         if isolated != getattr(self, "_last_applied_isolated_sections", None):
             blocks_changed = True
             self._last_applied_isolated_sections = isolated
+        # compiler-shapes-v1 — a change in the goal's skill set (entering or
+        # leaving a goal's work, or a re-seeded skill) changes the prompt.
+        skills_sig = tuple(
+            (s.get("keg_id"), s.get("content_hash"))
+            for s in (getattr(agent, "_goal_skills", None) or ()))
+        if skills_sig != getattr(self, "_last_applied_goal_skills", ()):
+            blocks_changed = True
+            self._last_applied_goal_skills = skills_sig
         # skill-adoption-v1 C3 — a change in THIS turn's primary skill (vs the slug
         # the injected prompt was last composed with) forces a recompose so the
         # payload loads or displaces. A None primary NEVER forces — the prior
