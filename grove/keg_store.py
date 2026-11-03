@@ -1,0 +1,242 @@
+"""The cellar's kegs — each one its own git repository (compiler-shapes-v1).
+
+``$GROVE_HOME/cellar/`` is a plain directory: storage, never a repository.
+Every keg under ``cellar/kegs/<slug>/`` is a git repository of its own, with
+versions as commits and nothing else: no branches beyond ``main``, no tags,
+no submodules, no remote. A keg is complete on its own — copy its directory
+anywhere and it still verifies.
+
+Two kinds share one manifest shape (``manifest.yaml``, keys sorted):
+
+* ``skill`` — a vanilla Hermes ``SKILL.md``, seeded from the repo by the
+  operator. The node never edits it.
+* ``helper`` — the GRV-004 keg document (``keg.yaml``) Kaizen compiles from
+  the operator's decisions, with its replay (``replay/v<N>.jsonl``) beside it.
+
+A version's id is ``keg:<slug>:v<N>:<12 hex>``, the hex being the content
+hash of the committed document. The manifest records the commit the version
+landed in.
+
+Pipeline stage: Execution (Kaizen writes a proposal; the engine commits a
+signature) and Compilation (a goal turn reads its skill from here).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import subprocess
+from pathlib import Path
+from typing import Any, Dict, List, Mapping, Optional
+
+import yaml
+
+CELLAR_DIRNAME = "cellar"
+MANIFEST_FILE = "manifest.yaml"
+
+KIND_SKILL = "skill"
+KIND_HELPER = "helper"
+
+_GIT_ENV = {
+    # No user or system config is read: a keg's history is the node's, not
+    # the operator's shell identity.
+    "GIT_CONFIG_GLOBAL": os.devnull,
+    "GIT_CONFIG_SYSTEM": os.devnull,
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_AUTHOR_NAME": "mylo",
+    "GIT_AUTHOR_EMAIL": "mylo@localhost",
+    "GIT_COMMITTER_NAME": "mylo",
+    "GIT_COMMITTER_EMAIL": "mylo@localhost",
+}
+
+
+# ── paths and hashing ─────────────────────────────────────────────────
+
+
+def cellar_dir(home: Optional[Path] = None) -> Path:
+    if home is None:
+        from hermes_constants import get_hermes_home
+        home = Path(get_hermes_home())
+    return Path(home) / CELLAR_DIRNAME
+
+
+def kegs_dir(home: Optional[Path] = None) -> Path:
+    return cellar_dir(home) / "kegs"
+
+
+def content_hash(data: bytes) -> str:
+    """``sha256:<hex>`` of the exact bytes of a committed document."""
+    return "sha256:" + hashlib.sha256(data).hexdigest()
+
+
+def keg_id(slug: str, version: int, digest: str) -> str:
+    """``keg:<slug>:v<N>:<12 hex>``; ``digest`` with or without ``sha256:``."""
+    hexpart = digest.split(":", 1)[1] if ":" in digest else digest
+    return f"keg:{slug}:v{int(version)}:{hexpart[:12]}"
+
+
+def dump_yaml(obj: Mapping[str, Any]) -> bytes:
+    """The ONE serializer for every committed document: sorted keys, UTF-8,
+    block style. Byte-identical for equal mappings."""
+    return yaml.safe_dump(
+        dict(obj), sort_keys=True, allow_unicode=True, default_flow_style=False,
+    ).encode("utf-8")
+
+
+def engine_commit(repo_root: Optional[Path] = None) -> Optional[str]:
+    """The commit of the running checkout, read from ``.git`` without git.
+    None when the code does not run from a checkout."""
+    root = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parent.parent
+    git = root / ".git"
+    try:
+        if git.is_file():       # a worktree: "gitdir: <path>"
+            git = Path(git.read_text(encoding="utf-8").split(":", 1)[1].strip())
+        head = (git / "HEAD").read_text(encoding="utf-8").strip()
+        if not head.startswith("ref:"):
+            return head or None
+        ref = head.split(":", 1)[1].strip()
+        loose = git / ref
+        if loose.exists():
+            return loose.read_text(encoding="utf-8").strip() or None
+        common = git / "commondir"
+        base = (git / common.read_text(encoding="utf-8").strip()).resolve() if common.exists() else git
+        loose = base / ref
+        if loose.exists():
+            return loose.read_text(encoding="utf-8").strip() or None
+        packed = base / "packed-refs"
+        if packed.exists():
+            for line in packed.read_text(encoding="utf-8").splitlines():
+                parts = line.split()
+                if len(parts) == 2 and parts[1] == ref:
+                    return parts[0]
+    except OSError:
+        return None
+    return None
+
+
+# ── one keg, one repository ───────────────────────────────────────────
+
+
+class KegRepo:
+    """One keg's git repository. Versions are commits on ``main``."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+
+    # -- git plumbing ----------------------------------------------------
+
+    def _git(self, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            ["git", "-C", str(self.path), *args],
+            capture_output=True, text=True, check=check,
+            env={**os.environ, **_GIT_ENV},
+        )
+
+    @classmethod
+    def open_or_init(cls, path: Path) -> "KegRepo":
+        repo = cls(path)
+        if not repo.exists():
+            repo.path.mkdir(parents=True, exist_ok=True)
+            repo._git("init", "-q", "--initial-branch=main")
+            repo._git("config", "user.name", "mylo")
+            repo._git("config", "user.email", "mylo@localhost")
+        return repo
+
+    def exists(self) -> bool:
+        return (self.path / ".git").is_dir()
+
+    def head(self) -> Optional[str]:
+        if not self.exists():
+            return None
+        out = self._git("rev-parse", "--verify", "-q", "HEAD", check=False)
+        return out.stdout.strip() or None
+
+    # -- reading ---------------------------------------------------------
+
+    def read(self, path: str, ref: str = "HEAD") -> bytes:
+        """The committed bytes of ``path`` at ``ref``."""
+        out = subprocess.run(
+            ["git", "-C", str(self.path), "show", f"{ref}:{path}"],
+            capture_output=True, check=True, env={**os.environ, **_GIT_ENV},
+        )
+        return out.stdout
+
+    def manifest(self, ref: str = "HEAD") -> Dict[str, Any]:
+        """The manifest at ``ref`` with ``commit`` filled in: the last commit
+        that touched it at or before ``ref``. ``{}`` when there is none."""
+        if self.head() is None:
+            return {}
+        try:
+            raw = self.read(MANIFEST_FILE, ref)
+        except subprocess.CalledProcessError:
+            return {}
+        data = yaml.safe_load(raw.decode("utf-8")) or {}
+        if not isinstance(data, dict):
+            raise ValueError(f"{self.path}: {MANIFEST_FILE} at {ref} is not a mapping")
+        landed = self._git("log", "-1", "--format=%H", ref, "--", MANIFEST_FILE).stdout.strip()
+        data["commit"] = landed or None
+        return data
+
+    def log(self) -> List[Dict[str, Any]]:
+        """Every commit, oldest first: ``{sha, message, manifest}``."""
+        if self.head() is None:
+            return []
+        out = self._git("log", "--reverse", "--format=%H%x1f%B%x1e").stdout
+        entries = []
+        for chunk in out.split("\x1e"):
+            if not chunk.strip():
+                continue
+            sha, message = chunk.lstrip("\n").split("\x1f", 1)
+            entries.append({"sha": sha.strip(), "message": message.strip(),
+                            "manifest": self.manifest(sha.strip())})
+        return entries
+
+    def diff(self, a: str, b: str) -> str:
+        return self._git("diff", a, b, "--").stdout
+
+    # -- writing ---------------------------------------------------------
+
+    def commit(self, files: Mapping[str, bytes], manifest: Mapping[str, Any],
+               message: str) -> str:
+        """Write ``files`` and the manifest, commit, return the sha. The
+        manifest's ``commit`` is never stored (it is the commit being made)."""
+        if not self.exists():
+            raise ValueError(f"{self.path} is not a keg repository")
+        for rel, data in files.items():
+            target = self.path / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        stored = {k: v for k, v in dict(manifest).items() if k != "commit"}
+        (self.path / MANIFEST_FILE).write_bytes(dump_yaml(stored))
+        self._git("add", "-A")
+        if not self._git("status", "--porcelain").stdout.strip():
+            raise ValueError(f"{self.path}: nothing to commit")
+        self._git("commit", "-q", "-m", message)
+        return self.head() or ""
+
+    # -- integrity -------------------------------------------------------
+
+    def verify(self, ref: str = "HEAD") -> None:
+        """The manifest's ``content_hash`` is the hash of its ``content_file``
+        at ``ref``, and (for HEAD) the working tree matches the commit.
+        ValueError naming the keg otherwise."""
+        manifest = self.manifest(ref)
+        if not manifest:
+            raise ValueError(f"{self.path}: no manifest at {ref}")
+        kid = manifest.get("keg_id", "?")
+        content_file = str(manifest.get("content_file") or "")
+        if not content_file:
+            raise ValueError(f"{kid}: manifest names no content_file")
+        committed = self.read(content_file, ref)
+        if content_hash(committed) != manifest.get("content_hash"):
+            raise ValueError(
+                f"{kid}: content_hash {manifest.get('content_hash')!r} does not match "
+                f"{content_file} at {ref} ({content_hash(committed)})")
+        if ref == "HEAD":
+            on_disk = self.path / content_file
+            if not on_disk.exists() or on_disk.read_bytes() != committed:
+                raise ValueError(
+                    f"{kid}: {content_file} on disk differs from the committed version "
+                    f"(hand-edited?)")
+            if self._git("status", "--porcelain").stdout.strip():
+                raise ValueError(f"{kid}: the keg's working tree has uncommitted changes")
