@@ -104,8 +104,14 @@ def _last_record_hash(fh: Any) -> Optional[str]:
     return None
 
 
-def verify_ledger_chain(lines: Any, archived: Any = ()) -> Dict[str, Any]:
+def verify_ledger_chain(lines: Any, archived: Any = (),
+                        external: Any = ()) -> Dict[str, Any]:
     """Verify one ledger file's provenance chain.
+
+    compiler-shapes-v1 — ``external``: record hashes that live in OTHER
+    ledger files. A ``prev_hash`` resolved there is a cross-file link (the
+    signature of a keg follows the Kaizen answer it closes) and is counted
+    in ``cross_links``; one resolved nowhere is a break.
 
     ``lines`` are the file's lines; ``archived`` are the lines the retention
     engine moved to the archive for this same file (it archives before it
@@ -119,8 +125,11 @@ def verify_ledger_chain(lines: Any, archived: Any = ()) -> Dict[str, Any]:
 
     Not detectable from the file alone: removal of the NEWEST events (the
     remaining chain is still whole). Returns ``{events, chained, unchained,
-    problems}``; ``problems`` entries are ``{line, event_type, problem}``."""
-    report: Dict[str, Any] = {"events": 0, "chained": 0, "unchained": 0, "problems": []}
+    cross_links, problems}``; ``problems`` entries are ``{line, event_type,
+    problem}``."""
+    report: Dict[str, Any] = {"events": 0, "chained": 0, "unchained": 0,
+                              "cross_links": 0, "problems": []}
+    outside = set(external or ())
     events: List[Any] = []
     for origin, source in (("ledger", lines), ("archive", archived)):
         for number, raw in enumerate(source, 1):
@@ -155,9 +164,14 @@ def verify_ledger_chain(lines: Any, archived: Any = ()) -> Dict[str, Any]:
         prev = event.get("prev_hash")
         successors[prev] = successors.get(prev, 0) + 1
         if prev is not None and prev not in by_hash:
-            report["problems"].append({
-                "line": number, "event_type": event.get("event_type"),
-                "problem": "the event before this one is missing"})
+            if prev in outside:
+                report["cross_links"] += 1
+            else:
+                report["problems"].append({
+                    "line": number, "event_type": event.get("event_type"),
+                    "problem": ("the event this one follows is in no ledger"
+                                if outside or number == 1 else
+                                "the event before this one is missing")})
     for prev, count in successors.items():
         if count > 1:
             report["problems"].append({
@@ -471,8 +485,14 @@ class KaizenLedger:
     def session_id(self) -> str:
         return self._session_id
 
-    def record(self, event_type: str, **fields: Any) -> Dict[str, Any]:
+    def record(self, event_type: str, first_prev_hash: Optional[str] = None,
+               **fields: Any) -> Dict[str, Any]:
         """Append one event to the ledger and return the persisted event dict.
+
+        compiler-shapes-v1 — ``first_prev_hash``: the hash of an event in
+        ANOTHER ledger file this file's first event follows (the signature
+        that closes a Kaizen answer). Allowed only when this file is empty;
+        the audit resolves it across files (verify_ledger_chain ``external``).
 
         Per GRV-005 § IX(4) "No Mid-Stream Injection": this method is
         write-only from the runtime's perspective. The returned dict is
@@ -519,6 +539,13 @@ class KaizenLedger:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
                 try:
                     event["prev_hash"] = _last_record_hash(fh)
+                    if first_prev_hash is not None:
+                        fh.seek(0, os.SEEK_END)
+                        if fh.tell() != 0:
+                            raise ValueError(
+                                "only the first event of a ledger file may follow "
+                                "an event in another file")
+                        event["prev_hash"] = first_prev_hash
                     event["record_hash"] = ledger_event_digest(event)
                     fh.seek(0, os.SEEK_END)
                     fh.write(json.dumps(event, sort_keys=True, default=str) + "\n")
@@ -573,3 +600,27 @@ class KaizenLedger:
         directly to stream.
         """
         return [e for e in self.events() if e.get("event_type") == event_type]
+
+
+def find_event(ledger_dir: Any, **match: Any) -> Optional[Dict[str, Any]]:
+    """compiler-shapes-v1 — the newest event in any ledger file of the
+    directory whose fields equal every ``match`` item, or None. Files are
+    read newest-modified first; within a file, the last match wins."""
+    directory = Path(ledger_dir)
+    if not directory.is_dir():
+        return None
+    files = sorted(directory.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for path in files:
+        found = None
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            if not raw.strip():
+                continue
+            try:
+                event = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(event, dict) and all(event.get(k) == v for k, v in match.items()):
+                found = event
+        if found is not None:
+            return found
+    return None

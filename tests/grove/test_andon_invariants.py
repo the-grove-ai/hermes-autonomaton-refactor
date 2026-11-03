@@ -439,16 +439,22 @@ def test_invariant_1_every_andon_event_closes_with_exactly_one_answer(env, monke
 
 def test_invariant_1_the_ledger_that_holds_the_closes_is_hash_chained(env):
     env.earn_v1()
-    for path in default_ledger_dir().glob("*.jsonl"):
-        lines = path.read_text().splitlines()
-        report = verify_ledger_chain(lines)
+    files = {p: p.read_text().splitlines() for p in default_ledger_dir().glob("*.jsonl")}
+    # compiler-shapes-v1 — a file's first event may follow an event in
+    # another file (the signature closes the answer); verify with the others.
+    hashes = {p: {json.loads(l)["record_hash"] for l in lines if l.strip()}
+              for p, lines in files.items()}
+    for path, lines in files.items():
+        outside = set().union(*(h for q, h in hashes.items() if q != path))
+        report = verify_ledger_chain(lines, external=outside)
         assert report["problems"] == [] and report["unchained"] == 0, path.name
         if len(lines) > 2:
             tampered = json.loads(lines[1])
             tampered["summary"] = "edited after the fact"
-            broken = verify_ledger_chain([lines[0], json.dumps(tampered)] + lines[2:])
+            broken = verify_ledger_chain([lines[0], json.dumps(tampered)] + lines[2:],
+                                         external=outside)
             assert broken["problems"], f"an edit to {path.name} went undetected"
-            assert verify_ledger_chain([lines[0]] + lines[2:])["problems"], (
+            assert verify_ledger_chain([lines[0]] + lines[2:], external=outside)["problems"], (
                 f"a removal from {path.name} went undetected")
 
 

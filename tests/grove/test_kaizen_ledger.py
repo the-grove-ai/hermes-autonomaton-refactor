@@ -171,3 +171,43 @@ class TestKaizenLedgerThreadSafety:
         assert len(events) == 100
         # Every event has the right fields
         assert all("thread_id" in e and "seq" in e for e in events)
+
+
+# ── compiler-shapes-v1: one chain across ledger files ─────────────────
+
+
+def _lines(path):
+    return path.read_text(encoding="utf-8").splitlines()
+
+
+def test_a_first_event_may_follow_an_event_in_another_file(tmp_path):
+    from grove.kaizen_ledger import KaizenLedger, verify_ledger_chain
+
+    a = KaizenLedger("s1", ledger_dir=tmp_path)
+    e1 = a.record("kaizen_answer", artifact="sha256:p", loop_step="kaizen_answer")
+    b = KaizenLedger("cli-x", ledger_dir=tmp_path)
+    e2 = b.record("kaizen_disposition", proposal_id="sha256:p", disposition="applied",
+                  first_prev_hash=e1["record_hash"])
+    assert e2["prev_hash"] == e1["record_hash"]
+    e3 = b.record("new_standard_work", loop_step="new_standard_work")
+    assert e3["prev_hash"] == e2["record_hash"]
+    with pytest.raises(ValueError, match="first event"):
+        b.record("kaizen_disposition", disposition="x", first_prev_hash="anything")
+    report = verify_ledger_chain(_lines(tmp_path / "cli-x.jsonl"), external={e1["record_hash"]})
+    assert report["problems"] == [] and report["cross_links"] == 1 and report["chained"] == 2
+    alone = verify_ledger_chain(_lines(tmp_path / "cli-x.jsonl"))
+    assert [p["problem"] for p in alone["problems"]] == ["the event this one follows is in no ledger"]
+    assert alone["cross_links"] == 0
+    own = verify_ledger_chain(_lines(tmp_path / "s1.jsonl"))
+    assert own["problems"] == [] and own["cross_links"] == 0
+
+
+def test_find_event_returns_the_newest_match_across_files(tmp_path):
+    from grove.kaizen_ledger import KaizenLedger, find_event
+
+    a = KaizenLedger("s1", ledger_dir=tmp_path)
+    a.record("kaizen_answer", artifact="sha256:p", summary="old")
+    b = KaizenLedger("s2", ledger_dir=tmp_path)
+    newer = b.record("kaizen_answer", artifact="sha256:p", summary="new")
+    assert find_event(tmp_path, event_type="kaizen_answer", artifact="sha256:p") == newer
+    assert find_event(tmp_path, event_type="kaizen_answer", artifact="sha256:none") is None

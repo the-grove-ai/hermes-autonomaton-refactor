@@ -80,7 +80,7 @@ def test_chain_report_is_intact_and_counts_every_decision(home):
     report = audit.chain_report(home)
     assert report["result"] == "intact" and report["problems"] == []
     assert (report["records"], report["chained"]) == (8, 8)
-    assert report["ledger"] == {"files": 1, "chained": 1, "unchained": 0}
+    assert report["ledger"] == {"files": 1, "chained": 1, "unchained": 0, "cross_links": 0}
     assert report["runs"] == [{"goal": GOAL, "run_number": 1, "label": "fixture",
                                "decisions": 4, "with_turn": 4}]
     # One link per decision: who decided, corrected or not, turn on record.
@@ -1323,3 +1323,30 @@ def test_a_disbelieved_zero_charge_is_said_out_loud(caplog):
     msgs = [r.getMessage() for r in caplog.records if r.name == "agent.usage_pricing"]
     assert msgs[0] == "positive-control"
     assert any("charge of $0" in m and "910 tokens" in m for m in msgs[1:])
+
+
+# ── compiler-shapes-v1: the audit verifies the link across ledger files ──
+
+
+def test_chain_report_verifies_the_link_across_files(home):
+    from grove.kaizen_ledger import KaizenLedger
+
+    answer = KaizenLedger("s1", ledger_dir=home / ".kaizen_ledger").record(
+        "kaizen_answer", loop_step="kaizen_answer", artifact="sha256:p", summary="x")
+    cli = KaizenLedger("cli-20260101T000000000000Z", ledger_dir=home / ".kaizen_ledger")
+    cli.record("kaizen_disposition", proposal_id="sha256:p", disposition="applied",
+               loop_step="signed", first_prev_hash=answer["record_hash"])
+    report = audit.chain_report(home)
+    assert report["result"] == "intact" and report["ledger"]["cross_links"] == 1
+    text = "\n".join(audit.format_chain_report(report))
+    assert "1 signature follows the answer it closes, across files" in text
+    # Tamper with the answer: the signature's link breaks, named on the cli file.
+    ledger = home / ".kaizen_ledger" / "s1.jsonl"
+    lines = ledger.read_text().splitlines()
+    event = json.loads(lines[-1])
+    event["summary"] = "y"
+    ledger.write_text("\n".join(lines[:-1] + [json.dumps(event)]) + "\n")
+    broken = audit.chain_report(home)
+    assert broken["result"] == "broken"
+    assert any(p["where"].startswith("ledger cli-") and "in no ledger" in p["problem"]
+               for p in broken["problems"])

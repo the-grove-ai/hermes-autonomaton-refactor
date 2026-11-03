@@ -121,20 +121,44 @@ def _read_anchors(db_path: Path) -> Dict[str, str]:
 
 
 def _ledger_check(home: Path) -> Dict[str, Any]:
-    from grove.kaizen_ledger import verify_ledger_chain
+    from grove.kaizen_ledger import ledger_event_digest, verify_ledger_chain
 
-    out = {"files": 0, "chained": 0, "unchained": 0, "problems": []}
+    out = {"files": 0, "chained": 0, "unchained": 0, "cross_links": 0, "problems": []}
     directory = _ledger_dir(home)
     if not directory.is_dir():
         return out
+    # compiler-shapes-v1 — two passes: every record hash in every file first,
+    # so a file's first event may follow an event in another file (the
+    # signature that closes a Kaizen answer) and the link is verified, not
+    # merely tolerated.
+    files = []
+    hashes: Dict[str, set] = {}
     for path in sorted(directory.glob("*.jsonl")):
         archive = _ledger_archive_dir(home) / path.name
         lines = path.read_text(encoding="utf-8").splitlines()
         archived = archive.read_text(encoding="utf-8").splitlines() if archive.exists() else []
-        report = verify_ledger_chain(lines, archived)
+        own = set()
+        for raw in lines + archived:
+            if not raw.strip():
+                continue
+            try:
+                event = json.loads(raw)
+            except ValueError:
+                continue
+            # Only a hash that still matches its event can be followed: an
+            # altered answer leaves the signature that closed it dangling.
+            if (isinstance(event, dict) and event.get("record_hash")
+                    and ledger_event_digest(event) == event["record_hash"]):
+                own.add(event["record_hash"])
+        hashes[path.name] = own
+        files.append((path, lines, archived))
+    everything = set().union(*hashes.values()) if hashes else set()
+    for path, lines, archived in files:
+        report = verify_ledger_chain(lines, archived, external=everything - hashes[path.name])
         out["files"] += 1
         out["chained"] += report["chained"]
         out["unchained"] += report["unchained"]
+        out["cross_links"] += report["cross_links"]
         for p in report["problems"]:
             out["problems"].append({
                 "where": f"ledger {path.name}" + (f" line {p['line']}" if p.get("line") else ""),
@@ -271,7 +295,7 @@ def chain_report(
         "unchained": chain["unchained"],
         "chained_sessions": sum(1 for s in chain["sessions"].values() if s["chained"]),
         "anchored": chain["anchored"],
-        "ledger": {k: ledger[k] for k in ("files", "chained", "unchained")},
+        "ledger": {k: ledger[k] for k in ("files", "chained", "unchained", "cross_links")},
         "runs": runs,
         "links": links,
         "problems": problems,
@@ -361,7 +385,11 @@ def check_tiles(report: Mapping[str, Any]) -> List[Dict[str, Any]]:
                  + (f" {ledger['unchained']:,} older {_s(ledger['unchained'], 'event')} "
                     f"{_s(ledger['unchained'], 'predates', 'predate')} the chain and "
                     f"{_s(ledger['unchained'], 'is', 'are')} counted, not chained."
-                    if ledger["unchained"] else "")),
+                    if ledger["unchained"] else "")
+                 + (f" {ledger['cross_links']:,} {_s(ledger['cross_links'], 'signature')} "
+                    f"{_s(ledger['cross_links'], 'follows', 'follow')} the answer "
+                    f"{_s(ledger['cross_links'], 'it closes', 'they close')}, across files."
+                    if ledger.get("cross_links") else "")),
     })
     for run in report["runs"]:
         tiles.append({

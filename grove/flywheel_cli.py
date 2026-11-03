@@ -2463,6 +2463,16 @@ def _record_kaizen_disposition(
     now = datetime.now(timezone.utc)
     session_id = "cli-" + now.strftime("%Y%m%dT%H%M%S%fZ")
     ledger = KaizenLedger(session_id, ledger_dir=ledger_dir)
+    # compiler-shapes-v1 — one chain: the disposition of a keg proposal
+    # follows the Kaizen answer that proposed it, across ledger files. With
+    # no answer on record (a draft withdrawn before one; an answer older
+    # than the chain) the file starts its own chain, as before.
+    follows: Optional[str] = None
+    if proposal.type == PROPOSAL_TYPE_PATTERN_PROMOTION:
+        from grove.kaizen_ledger import default_ledger_dir, find_event
+        answer = find_event(ledger_dir or default_ledger_dir(),
+                            event_type="kaizen_answer", artifact=proposal.proposal_id)
+        follows = answer.get("record_hash") if answer else None
     fields: Dict[str, Any] = {
         "proposal_id": proposal.proposal_id,
         "proposal_type": proposal.type,
@@ -2497,7 +2507,7 @@ def _record_kaizen_disposition(
         fields["loop_step"] = "accepted" if disposition == "applied" else "feedback"
     elif proposal.type in (PROPOSAL_TYPE_SESSION_RULE, PROPOSAL_TYPE_KAIZEN_REQUEST):
         fields["loop_step"] = "signed" if disposition == "applied" else "feedback"
-    ledger.record("kaizen_disposition", **fields)
+    ledger.record("kaizen_disposition", first_prev_hash=follows, **fields)
     # A session held for the operator's ruling on this proposal is released,
     # and brought its next item, whatever the ruling was.
     try:

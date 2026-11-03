@@ -351,3 +351,42 @@ def test_feedback_and_rejection_survive_a_rebuild(home):
     store = _reopen(home)
     sync_cache(store=store)
     assert _keg_rows(store) == before
+
+
+# ── Task 8: the signature follows the answer it closes ──────────────────
+
+
+def _disposition_events(home):
+    return [e for e in home.events("kaizen_disposition")]
+
+
+def _applied_result(label_applied):
+    return label_applied[1]
+
+
+def test_signing_a_keg_links_the_disposition_to_its_answer(home):
+    from grove.flywheel_cli import _record_kaizen_disposition
+
+    v1 = home.propose()
+    answer = home.ledger().record(
+        "kaizen_answer", loop_step="kaizen_answer", andon_id="andon-1", closes=["andon-1"],
+        kind="standard_work", artifact=v1.proposal_id, summary="Proposed v1 for your signature.")
+    label, applied = home.sign(v1)
+    [proposal] = [p for p in proposal_queue.read_all(path=home.queue) if p.proposal_id == v1.proposal_id]
+    _record_kaizen_disposition(proposal, disposition="applied", applied_result=applied,
+                               ledger_dir=home.ledger_dir)
+    [disp] = _disposition_events(home)
+    assert disp["prev_hash"] == answer["record_hash"] and disp["loop_step"] == "signed"
+    [work] = home.events("new_standard_work")
+    assert work["prev_hash"] == disp["record_hash"]
+
+
+def test_a_disposition_with_no_answer_on_record_starts_its_own_chain(home):
+    from grove.flywheel_cli import _record_kaizen_disposition
+
+    v1 = home.propose()
+    [proposal] = [p for p in proposal_queue.read_all(path=home.queue) if p.proposal_id == v1.proposal_id]
+    _record_kaizen_disposition(proposal, disposition="withdrawn", reason="replaced",
+                               ledger_dir=home.ledger_dir)
+    [disp] = _disposition_events(home)
+    assert disp["prev_hash"] is None
