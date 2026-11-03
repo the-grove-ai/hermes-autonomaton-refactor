@@ -7,7 +7,8 @@
 # origin/main (never diverges), reinstall the package, and restart the gateway.
 # Prints the deployed commit. Exits non-zero on any failure.
 #
-# Usage: scripts/deploy.sh [--zone ZONE] [--instance NAME]
+# Usage: scripts/deploy.sh [--zone ZONE] [--instance NAME] [--ref BRANCH]
+#   --ref: the origin branch to put on the VM (default main).
 #
 # Sprint 59 — gcp-hosting-v1. Dashboard UI build/ship added in Sprint 61 and
 # removed again post-Sprint 64: the upstream dashboard is disabled and Open
@@ -19,11 +20,13 @@ cd "$(dirname "$0")/.."   # run from repo root: web/ + hermes_cli/ live there
 ZONE="us-central1-a"
 INSTANCE="hermes-gateway"
 REPO_DIR="/home/hermes/hermes-autonomaton-refactor"
+REF="main"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --zone)     ZONE="$2"; shift 2 ;;
     --instance) INSTANCE="$2"; shift 2 ;;
+    --ref)      REF="$2"; shift 2 ;;
     -h|--help)
       grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "Unknown argument: $1" >&2; exit 2 ;;
@@ -94,8 +97,8 @@ set -euo pipefail
 cd "${REPO_DIR}"
 ${GUARD_SRC}
 check_capability_drift "${REPO_DIR}"
-git fetch origin main
-git reset --hard origin/main
+git fetch origin "${REF}"
+git reset --hard "origin/${REF}"
 .venv/bin/pip install -e ".[web,mcp,dev]" --quiet
 
 # No routing sync: ~/.grove operational/authority are operator-owned
@@ -112,6 +115,7 @@ echo "=== capability admission recon (base <-> overlay) ==="
   || echo "ANDON: admission recon failed (deploy proceeds; investigate)" >&2
 HERMES
 sudo systemctl restart hermes-gateway
+echo "DEPLOYED_REF=${REF}"
 echo "DEPLOYED_COMMIT=\$(sudo -u hermes git -C '${REPO_DIR}' rev-parse --short HEAD)"
 REMOTE
 )"
