@@ -1813,10 +1813,16 @@ def _approve_pattern_promotion(
         raise ValueError(
             f"pattern_promotion payload missing 'pattern_id': {proposal.payload!r}"
         )
-    from grove.keg_store import signing
+    from grove.keg_store import check_signable, signing
 
     store = PatternCacheStore()
     now = datetime.now(timezone.utc).isoformat()
+    keg_payload = proposal.payload.get("keg")
+    if isinstance(keg_payload, dict):
+        # compiler-shapes-v1 — the cellar is checked BEFORE the cache flips:
+        # a draft that is no longer at its keg's HEAD is refused whole.
+        from grove import keg as keg_mod
+        check_signable(keg_mod.keg_slug(str(keg_payload.get("name") or "")), pattern_id)
     with signing():
         # compiler-shapes-v1 — activation and the superseding below are the
         # signature's own changes; the sign commit records them.

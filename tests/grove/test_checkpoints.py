@@ -465,6 +465,7 @@ def test_the_model_call_count_includes_the_call_that_writes_the_reply():
 
 
 def test_the_cellar_is_part_of_a_checkpoint(node):
+    from pathlib import Path
     from grove.keg_store import KegRepo, content_hash
 
     repo = KegRepo.open_or_init(node.home / "cellar" / "kegs" / "demo")
@@ -479,3 +480,29 @@ def test_the_cellar_is_part_of_a_checkpoint(node):
     result = checkpoints.apply_pending()
     assert result["identical"] is True
     assert KegRepo(node.home / "cellar" / "kegs" / "demo").head() == v1
+
+
+def test_a_restore_of_a_checkpoint_saved_before_the_cellar_removes_it(node):
+    """Review finding: an older checkpoint has no entry for cellar/kegs at
+    all, so a restore used to leave the live cellar alone — and a re-run of
+    the demo would bring the earlier run's kegs back from it."""
+    from pathlib import Path
+    from grove.keg_store import KegRepo, content_hash
+
+    manifest = checkpoints.save("pre-cellar", "saved by an older node", surface="test")
+    path = node.home / "checkpoints" / "pre-cellar" / "manifest.json"
+    older = json.loads(path.read_text())
+    older["entries"] = [e for e in older["entries"] if e["path"] != "cellar/kegs"]
+    path.write_text(json.dumps(older, sort_keys=True, indent=1))
+    repo = KegRepo.open_or_init(node.home / "cellar" / "kegs" / "demo")
+    repo.commit({"SKILL.md": b"v1"}, {"keg_id": "keg:demo:v1:aaaaaaaaaaaa", "slug": "demo",
+                                      "version": 1, "kind": "skill", "scope": "reserved",
+                                      "authority_level": "green", "content_file": "SKILL.md",
+                                      "content_hash": content_hash(b"v1"), "status": "active"},
+                "seed v1")
+    checkpoints.request_restore("pre-cellar", surface="test")
+    result = checkpoints.apply_pending()
+    assert result["identical"] is True
+    assert not (node.home / "cellar" / "kegs").exists()
+    assert "cellar/kegs" in result["moved_to_archive"]
+    assert (Path(result["archive"]) / "cellar" / "kegs" / "demo" / ".git").is_dir()

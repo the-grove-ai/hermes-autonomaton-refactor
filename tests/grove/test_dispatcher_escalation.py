@@ -375,7 +375,14 @@ class TestEscalationGrantHotSwap:
             # Capture for assertion via closure variable.
             captured["user_message"] = user_message
             captured["conversation_history"] = conversation_history
+            captured["agent"] = self
             yield FinalResponse(content="escalated reply")
+
+        # compiler-shapes-v1 — the goal's skill rides the hot-swap: the
+        # escalated turn runs under the same procedure.
+        skill = {"slug": "s", "body": "# S", "keg_id": "keg:s-skill:v1:abcabcabcabc",
+                 "version": 1, "content_hash": "sha256:ab", "commit": "c"}
+        monkeypatch.setattr(Dispatcher, "_turn_goal_skills", lambda self: [skill])
 
         captured: Dict[str, Any] = {}
         monkeypatch.setattr(
@@ -389,6 +396,7 @@ class TestEscalationGrantHotSwap:
         # A new Agent was constructed with the escalated model.
         assert len(constructed) == 1
         assert constructed[0]["model"] == "opus-stub"  # T3 in our config
+        assert captured["agent"]._goal_skills == [skill]
         # Carry kit preserved the session.
         assert constructed[0]["session_id"] == "esc-test-session"
 

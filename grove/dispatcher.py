@@ -2270,7 +2270,7 @@ class Dispatcher:
         # be loaded stops the turn loud: the procedure is not in force, so no
         # model runs for the goal.
         try:
-            agent._goal_skills = self._turn_goal_skills()
+            goal_skills = self._turn_goal_skills()
         except (LookupError, ValueError) as skill_exc:
             logger.error(
                 "[grove.dispatcher] turn %s: the goal's skill could not be loaded "
@@ -2278,9 +2278,11 @@ class Dispatcher:
             )
             self._write_intent_record(
                 agent, outcome="error", failure_kind="skill_keg_fault",
-                failure_summary=type(skill_exc).__name__,
+                failure_summary=f"{type(skill_exc).__name__}: {skill_exc}"[:200],
             )
             raise
+        try:
+            agent._goal_skills = goal_skills
         except AttributeError:  # a frozen / exotic agent stand-in
             pass
         self._current_turn_t0_handback = None
@@ -3591,6 +3593,9 @@ class Dispatcher:
         new_agent._sovereign_prompt_handler = getattr(
             agent, "_sovereign_prompt_handler", None,
         )
+        # compiler-shapes-v1 — the goal's skill rides the hot-swap: the
+        # escalated turn runs under the same procedure, and records it.
+        new_agent._goal_skills = list(getattr(agent, "_goal_skills", None) or ())
         # Sprint 73 Phase 4a — the escalated tier is a new routing decision;
         # re-apply the budget carriers on the fresh agent (PER-TURN WIPE +
         # SINGLE SOURCE) so context gating reflects target_tier, not the

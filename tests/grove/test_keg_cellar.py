@@ -390,3 +390,60 @@ def test_a_disposition_with_no_answer_on_record_starts_its_own_chain(home):
                                ledger_dir=home.ledger_dir)
     [disp] = _disposition_events(home)
     assert disp["prev_hash"] is None
+
+
+# ── fix pass: signing checks the cellar first; imported drafts sign ──────
+
+
+def test_signing_refuses_before_any_database_write_when_the_draft_is_not_at_head(home):
+    from grove.flywheel_cli import _approve_pattern_promotion
+
+    a = home.propose()
+    b = home.propose(rules=[{"if": "channel == 'social'", "then": {"tag": "other"}}] + RULES_V1,
+                     evidence=("t1", "t2", "t3", "t9"))
+    assert a.pattern_id != b.pattern_id and home.repo().manifest()["keg_id"] == b.pattern_id
+    [proposal_a] = [p for p in proposal_queue.read_all(path=home.queue) if p.proposal_id == a.proposal_id]
+    with pytest.raises(ValueError, match="not the version being signed"):
+        _approve_pattern_promotion(proposal_a)
+    assert home.store.get(a.pattern_id).status == "suspended"
+    assert home.store.get(a.pattern_id).promoted_at is None
+    assert [e["message"][:7] for e in home.repo().log()] == ["propose", "propose"]
+
+
+def test_an_imported_draft_can_be_signed_and_rebuilt(home):
+    from types import SimpleNamespace
+    from grove.keg_store import signing
+
+    draft = _legacy_keg_row(version=1, status="suspended", promoted=None)
+    home.store.upsert(draft)
+    assert sync_cache(store=home.store) == {"imported": 1, "rebuilt": 0}
+    keg = json.loads(draft.compiled_invocation)["args"]["keg"]
+    now = "2026-11-03T19:00:00+00:00"
+    with signing():
+        home.store.set_status(draft.pattern_id, pc.STATUS_ACTIVE, promoted_at=now)
+        label, applied = _sign_keg(SimpleNamespace(proposal_id="sha256:imported"), home.store,
+                                   draft.pattern_id, {**keg, "lineage": "run-43"}, now)
+    m = home.repo().manifest()
+    assert m["status"] == "active" and m["signed_at"] == now and m["imported"] is True
+    assert home.repo().log()[-1]["message"].startswith("sign v1: proposal sha256:imported; signed_by operator; replay")
+    before = _keg_rows(home.store)
+    assert before[draft.pattern_id]["status"] == "active"
+    assert json.loads(before[draft.pattern_id]["promotion_evidence"])["signed"]["proposal_id"] == "sha256:imported"
+    store = _reopen(home)
+    sync_cache(store=store)
+    assert _keg_rows(store) == before
+
+
+def test_an_unreadable_keg_row_is_skipped_loud_on_import(home, caplog):
+    import logging
+
+    broken = CompiledPattern(
+        pattern_id="keg:message-tagging:v9:deadbeefdead", t0_key="k", intent_class="analysis",
+        cacheable_type="executable", cached_response=None,
+        compiled_invocation=json.dumps({"tool": "tag_message", "args": {"verb": "apply_keg"}}),
+        evidence_hash="sha256:" + "00" * 32, status="demoted", created_at="2026-10-01T00:00:00+00:00")
+    home.store.upsert(broken)
+    with caplog.at_level(logging.WARNING):
+        assert sync_cache(store=home.store) == {"imported": 0, "rebuilt": 0}
+    assert any("keg:message-tagging:v9:deadbeefdead" in r.getMessage() and "no keg document" in r.getMessage()
+               for r in caplog.records)

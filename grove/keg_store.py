@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -34,6 +35,8 @@ import yaml
 
 CELLAR_DIRNAME = "cellar"
 MANIFEST_FILE = "manifest.yaml"
+
+logger = logging.getLogger(__name__)
 
 KIND_SKILL = "skill"
 KIND_HELPER = "helper"
@@ -147,10 +150,19 @@ class KegRepo:
         return (self.path / ".git").is_dir()
 
     def head(self) -> Optional[str]:
+        """The HEAD commit, or None for a repository with no commit yet. A
+        git error (a corrupt repository, a permissions fault, dubious
+        ownership) is raised, never read as "empty"."""
         if not self.exists():
             return None
         out = self._git("rev-parse", "--verify", "-q", "HEAD", check=False)
-        return out.stdout.strip() or None
+        if out.returncode == 0:
+            return out.stdout.strip() or None
+        if out.stderr.strip() or out.returncode != 1:
+            raise RuntimeError(
+                f"{self.path}: git could not read HEAD (exit {out.returncode}): "
+                f"{out.stderr.strip() or 'no message'}")
+        return None
 
     # -- reading ---------------------------------------------------------
 
@@ -391,7 +403,9 @@ def _replay_tallies(lines: List[Dict[str, Any]]) -> Dict[str, int]:
     return {"replayed": len(lines), **counts}
 
 
-def _replay_text(tallies: Mapping[str, int]) -> str:
+def _replay_text(tallies: Optional[Mapping[str, Any]]) -> str:
+    if not tallies or tallies.get("replayed") is None:
+        return "replay none on record"      # an imported, pre-cellar version
     return (f"replay {tallies['replayed']} replayed, {tallies['held']} held, "
             f"{tallies['would_change']} would change, {tallies['reserved']} reserved")
 
@@ -481,19 +495,28 @@ def write_helper_proposal(
     return repo.manifest()
 
 
+def check_signable(slug: str, pattern_id: str, *, home: Optional[Path] = None) -> Dict[str, Any]:
+    """The version at the keg's HEAD must be the one being signed, or
+    ValueError. Called BEFORE anything is written, so a refusal leaves no
+    half-signed state behind."""
+    repo = KegRepo(helper_repo_path(slug, home))
+    current = repo.manifest() if repo.exists() else {}
+    if not current or current.get("keg_id") != pattern_id:
+        raise ValueError(
+            f"{pattern_id}: the keg at {repo.path} has {current.get('keg_id')!r} at HEAD, "
+            f"not the version being signed")
+    return current
+
+
 def sign_helper(*, slug: str, pattern_id: str, proposal_id: str, signed_by: str,
                 signed_at: str, replaces: Any, home: Optional[Path] = None) -> Dict[str, Any]:
     """The operator signed the version at HEAD: commit its manifest as
     ``active``. HEAD must be that version, or ValueError."""
     repo = KegRepo(helper_repo_path(slug, home))
-    current = repo.manifest()
-    if not current or current.get("keg_id") != pattern_id:
-        raise ValueError(
-            f"{pattern_id}: the keg at {repo.path} has {current.get('keg_id')!r} at HEAD, "
-            f"not the version being signed")
+    current = check_signable(slug, pattern_id, home=home)
     manifest = {**current, "status": "active", "signed_by": signed_by, "signed_at": signed_at,
                 "proposal_id": proposal_id, "replaces": [str(r) for r in (replaces or ())]}
-    tallies = {k: int(v) for k, v in (current.get("replay") or {}).items() if k != "file"}
+    tallies = {k: v for k, v in (current.get("replay") or {}).items() if k != "file"}
     message = (f"sign v{manifest['version']}: proposal {proposal_id}; signed_by {signed_by}; "
                f"{_replay_text(tallies)}; "
                f"supersedes {', '.join(manifest['replaces']) or 'nothing'}")
@@ -626,8 +649,7 @@ def rows_from_repo(repo: KegRepo) -> List[Any]:
                 promotion_evidence=json.dumps(record, sort_keys=True),
             )
         row = rows[kid]
-        if (not m.get("imported") and m.get("signed_at") and m.get("status") == "active"
-                and row["promoted_at"] is None):
+        if m.get("signed_at") and m.get("status") == "active" and row["promoted_at"] is None:
             row["status"] = STATUS_ACTIVE
             row["promoted_at"] = m["signed_at"]
             record = json.loads(row["promotion_evidence"])
@@ -681,6 +703,9 @@ def import_cache_rows(store: Any, *, home: Optional[Path] = None) -> List[str]:
             continue
         spec = keg_of(row)
         if not spec:
+            logger.warning(
+                "[keg_store] %s: no keg document in its compiled_invocation — not imported, "
+                "and not rebuilt from the cellar; the row stays cache-native", row.pattern_id)
             continue
         record = keg_record(row)
         keg_meta = record.get("keg") or {}

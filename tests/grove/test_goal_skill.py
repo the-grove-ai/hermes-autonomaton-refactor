@@ -178,3 +178,24 @@ def test_a_non_string_isolation_value_loads_no_skill():
     assert d._turn_goal_skills() == []
     d._current_turn_isolation = ""
     assert d._turn_goal_skills() == []
+
+
+def test_a_fault_inside_the_skill_lookup_is_not_swallowed(monkeypatch, tmp_path):
+    from grove.intent_store import IntentStore
+    from tests.grove.test_dispatcher_intent_records import (
+        _bare_agent_with_exec, _patch_classifier_green, _set_current_classification,
+        _synthetic_generator,
+    )
+
+    _patch_classifier_green(monkeypatch)
+    _set_current_classification(monkeypatch, intent_class="analysis")
+
+    def boom(self):
+        raise AttributeError("a fault inside skill_kegs_for_goal")
+    monkeypatch.setattr(Dispatcher, "_turn_goal_skills", boom)
+    agent = _bare_agent_with_exec([])
+    agent._run_turn_generator = lambda **kw: _synthetic_generator(
+        None, {"final_response": "done"}, final_text="done")
+    d = Dispatcher(intent_store=IntentStore(store_path=tmp_path / "r.jsonl"))
+    with pytest.raises(AttributeError, match="inside skill_kegs_for_goal"):
+        d.dispatch_turn(agent, user_message="x")

@@ -426,7 +426,16 @@ def restore_now(name: str, *, home: Any = None, surface: str = "cli") -> Dict[st
     archive = root(base) / "_archive" / f"{stamp}-before-restore-{name}"
     archive.mkdir(parents=True, exist_ok=True)
     moved = []
-    for entry in manifest.get("entries") or []:
+    # A store this node keeps that the checkpoint never knew (saved by an
+    # older node, before the store existed) is absent in the checkpoint: it
+    # goes to the archive like any other, never left in place. (Found in
+    # review, 2026-11-03: a re-run from a pre-cellar checkpoint kept the
+    # earlier run's kegs.)
+    declared = {e["path"] for e in (manifest.get("entries") or [])}
+    entries = list(manifest.get("entries") or []) + [
+        {"path": rel, "present": False, "undeclared": True}
+        for rel in _state_paths(base) if rel not in declared]
+    for entry in entries:
         rel = entry["path"]
         if rel in NOT_RESTORED:
             continue
@@ -443,7 +452,7 @@ def restore_now(name: str, *, home: Any = None, surface: str = "cli") -> Dict[st
         if entry.get("present"):
             _copy(source / "state" / rel, current, sqlite=False)
     mismatches = []
-    for entry in manifest.get("entries") or []:
+    for entry in entries:
         if entry["path"] in NOT_RESTORED:
             continue
         if not entry.get("present"):

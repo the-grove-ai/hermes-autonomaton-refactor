@@ -191,3 +191,14 @@ def test_a_goal_the_dock_does_not_know_is_a_lookup_error(tmp_path, monkeypatch):
     monkeypatch.setenv("GROVE_HOME", str(tmp_path))
     with pytest.raises(LookupError, match="no-such-goal"):
         skill_kegs_for_goal("no-such-goal", dock=_dock(tmp_path))
+
+
+def test_head_raises_on_a_git_error_rather_than_reading_as_empty(tmp_path):
+    repo = KegRepo.open_or_init(tmp_path / "demo")
+    repo.commit({"SKILL.md": b"v1"}, _manifest(b"v1"), "seed")
+    (tmp_path / "demo" / ".git" / "HEAD").write_text("garbage\n")
+    assert repo.exists()
+    with pytest.raises(RuntimeError, match="git"):
+        repo.head()
+    with pytest.raises(RuntimeError):
+        repo.manifest()
