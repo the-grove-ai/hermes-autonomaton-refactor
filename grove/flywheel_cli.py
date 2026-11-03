@@ -1813,13 +1813,27 @@ def _approve_pattern_promotion(
         raise ValueError(
             f"pattern_promotion payload missing 'pattern_id': {proposal.payload!r}"
         )
+    from grove.keg_store import signing
+
     store = PatternCacheStore()
     now = datetime.now(timezone.utc).isoformat()
-    if not store.set_status(pattern_id, STATUS_ACTIVE, promoted_at=now):
-        raise ValueError(
-            f"compiled pattern {pattern_id!r} not found in pattern_cache.db — "
-            f"cannot activate (was it compiled?)."
-        )
+    with signing():
+        # compiler-shapes-v1 — activation and the superseding below are the
+        # signature's own changes; the sign commit records them.
+        if not store.set_status(pattern_id, STATUS_ACTIVE, promoted_at=now):
+            raise ValueError(
+                f"compiled pattern {pattern_id!r} not found in pattern_cache.db — "
+                f"cannot activate (was it compiled?)."
+            )
+        return _activate(proposal, store, pattern_id, now)
+
+
+def _activate(proposal: RoutingProposal, store: Any, pattern_id: str,
+              now: str) -> Tuple[str, Dict[str, Any]]:
+    """The second half of _approve_pattern_promotion: what the operator sees,
+    and — for a keg — the signature (inside the caller's ``signing()``)."""
+    from grove.pattern_cache import STATUS_ACTIVE
+
     intent_class = proposal.payload.get("intent_class", "?")
     cacheable_type = proposal.payload.get("cacheable_type", "?")
     samples = proposal.payload.get("sample_queries") or []

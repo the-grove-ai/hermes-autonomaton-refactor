@@ -846,7 +846,7 @@ def propose_keg(
     # evidence), so identical rules on identical evidence in the same run are
     # the identical keg, and a version can be verified from its file alone.
     from grove.keg_store import helper_document_hash, keg_id as _keg_id
-    digest = helper_document_hash(spec, lineage, evidence_ids)
+    digest = helper_document_hash(spec, lineage)
     pattern_id = _keg_id(slug, version, digest)
     # The slug in a keg's bookkeeping is what ties versions together; read it
     # with its lineage (see keg_record) rather than by parsing this id.
@@ -961,7 +961,7 @@ def propose_keg(
             approved_signature=invocation["approved_signature"],
             proposal_id=proposal.proposal_id, replaces=[prior_id] if prior_id else [],
             goal=dock_goal, now=now, tool=tool_name, intent_class=intent_class,
-            andon_id=andon_id, flag=flag, feedback=feedback,
+            andon_id=andon_id, flag=flag, feedback=feedback, tool_args=tool_args,
         )
     except Exception:
         logger.error(

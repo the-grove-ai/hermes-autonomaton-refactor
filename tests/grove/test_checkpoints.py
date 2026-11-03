@@ -462,3 +462,20 @@ def test_the_model_call_count_includes_the_call_that_writes_the_reply():
     assert _completed_model_calls(SimpleNamespace(_turn_call_ms=[]), 0) == 0      # no model ran
     assert _completed_model_calls(SimpleNamespace(), 2) == 2                      # no list kept
     assert _completed_model_calls(None, None) == 0
+
+
+def test_the_cellar_is_part_of_a_checkpoint(node):
+    from grove.keg_store import KegRepo, content_hash
+
+    repo = KegRepo.open_or_init(node.home / "cellar" / "kegs" / "demo")
+    manifest = {"keg_id": "keg:demo:v1:aaaaaaaaaaaa", "slug": "demo", "version": 1,
+                "kind": "skill", "scope": "reserved", "authority_level": "green",
+                "content_file": "SKILL.md", "content_hash": content_hash(b"v1"), "status": "active"}
+    v1 = repo.commit({"SKILL.md": b"v1"}, manifest, "seed v1")
+    checkpoints.save("with-cellar", "cellar seeded", surface="test")
+    repo.commit({"SKILL.md": b"v2"}, {**manifest, "version": 2, "content_hash": content_hash(b"v2")}, "seed v2")
+    assert repo.head() != v1
+    checkpoints.request_restore("with-cellar", surface="test")
+    result = checkpoints.apply_pending()
+    assert result["identical"] is True
+    assert KegRepo(node.home / "cellar" / "kegs" / "demo").head() == v1

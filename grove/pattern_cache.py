@@ -342,7 +342,10 @@ class PatternCacheStore:
                     "UPDATE t0_patterns SET status = ? WHERE pattern_id = ?",
                     (status, pattern_id),
                 )
-            return cur.rowcount > 0
+            changed = cur.rowcount > 0
+        if changed:
+            self._note_transition(pattern_id, status=status, promoted_at=promoted_at)
+        return changed
 
     def set_promotion_evidence(self, pattern_id: str, promotion_evidence: str) -> bool:
         """Replace the entry's ``promotion_evidence`` JSON (a keg keeps its
@@ -352,7 +355,20 @@ class PatternCacheStore:
                 "UPDATE t0_patterns SET promotion_evidence = ? WHERE pattern_id = ?",
                 (promotion_evidence, pattern_id),
             )
-            return cur.rowcount > 0
+            changed = cur.rowcount > 0
+        if changed:
+            self._note_transition(pattern_id, promotion_evidence=promotion_evidence)
+        return changed
+
+    def _note_transition(self, pattern_id: str, **changes: Any) -> None:
+        """compiler-shapes-v1 — the cache is derived from the cellar: a keg
+        row's status or bookkeeping change outside a signature is recorded
+        in its keg so a rebuild replays it. Lazy import: keg_store imports
+        this module."""
+        if not str(pattern_id).startswith("keg:"):
+            return
+        from grove.keg_store import note_cache_transition
+        note_cache_transition(self, pattern_id, **changes)
 
     @staticmethod
     def _row_to_pattern(row: sqlite3.Row) -> CompiledPattern:

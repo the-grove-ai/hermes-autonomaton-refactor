@@ -345,20 +345,19 @@ def helper_repo_path(slug: str, home: Optional[Path] = None) -> Path:
     return kegs_dir(home) / slug
 
 
-def helper_document(spec: Mapping[str, Any], lineage: Any,
-                    evidence_turn_ids: Any) -> bytes:
+def helper_document(spec: Mapping[str, Any], lineage: Any) -> bytes:
     """The committed keg document: the GRV-004 spec plus the run it was
-    earned in and the turns it rests on. Its bytes are the version's hash."""
-    return dump_yaml({
-        **dict(spec),
-        "lineage": lineage,
-        "evidence": sorted(str(e) for e in (evidence_turn_ids or ())),
-    })
+    earned in. Its bytes are the version's hash. The turns and decisions it
+    rests on are provenance and live in the manifest, so two versions of one
+    keg differ in the document only where the rules differ."""
+    return dump_yaml({**dict(spec), "lineage": lineage})
 
 
-def helper_document_hash(spec: Mapping[str, Any], lineage: Any,
-                         evidence_turn_ids: Any) -> str:
-    return content_hash(helper_document(spec, lineage, evidence_turn_ids))
+def helper_document_hash(spec: Mapping[str, Any], lineage: Any) -> str:
+    return content_hash(helper_document(spec, lineage))
+
+
+TRANSITIONS_FILE = "transitions.jsonl"
 
 
 _REPLAY_STATUS = {"unchanged": "held", "would_change": "would_change",
@@ -421,11 +420,12 @@ def write_helper_proposal(
     evidence_decisions: Any, backtest: Mapping[str, Any], pattern_id: str,
     evidence_hash: str, approved_signature: str, proposal_id: str, replaces: Any,
     goal: str, now: str, tool: str, intent_class: str, andon_id: Any, flag: str,
-    feedback: Any, home: Optional[Path] = None,
+    feedback: Any, tool_args: Optional[Mapping[str, Any]] = None,
+    home: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """Commit a proposed helper version: ``keg.yaml``, its replay and the
     manifest (status ``proposed``). Returns the manifest."""
-    document = helper_document(spec, lineage, evidence_turn_ids)
+    document = helper_document(spec, lineage)
     digest = content_hash(document)
     if keg_id(slug, int(spec["version"]), digest) != pattern_id:
         raise ValueError(
@@ -445,14 +445,19 @@ def write_helper_proposal(
         "content_hash": digest,
         "status": "proposed",
         "goal": goal,
+        "name": spec.get("name"),
         "compiled_by": {"kaizen": "grove.eval.pattern_compiler",
                         "engine_commit": engine_commit()},
         "compiled_under": compiled_under_for_goal(goal, home=home),
         "evidence": [str(d) for d in (evidence_decisions or ())],
+        "evidence_turns": sorted(str(t) for t in (evidence_turn_ids or ())),
         "evidence_hash": evidence_hash,
         "approved_signature": approved_signature,
         "proposal_id": proposal_id,
         "replaces": [str(r) for r in (replaces or ())],
+        # The version this draft revises, as proposed (the cache row's
+        # ``supersedes``); ``replaces`` is settled at signature.
+        "supersedes": (str(list(replaces)[0]) if replaces else None),
         "replay": {"file": replay_file, **tallies},
         "proposed_at": now,
         "signed_at": None,
@@ -460,6 +465,7 @@ def write_helper_proposal(
         "imported": False,
         # What the build cache needs to be rebuilt from this manifest alone.
         "tool": tool,
+        "tool_args": {k: v for k, v in (tool_args or {}).items() if k != "keg"},
         "intent_class": intent_class,
         "andon_id": andon_id,
         "flag": flag,
@@ -493,3 +499,256 @@ def sign_helper(*, slug: str, pattern_id: str, proposal_id: str, signed_by: str,
                f"supersedes {', '.join(manifest['replaces']) or 'nothing'}")
     repo.commit({}, manifest, message)
     return repo.manifest()
+
+
+# ── the build cache: derived from the cellar ─────────────────────────────
+
+import contextvars
+import contextlib
+import subprocess as _subprocess
+from datetime import datetime, timezone
+
+_signing: contextvars.ContextVar[bool] = contextvars.ContextVar("keg_signing", default=False)
+
+
+@contextlib.contextmanager
+def signing():
+    """Inside: cache status changes are the signature's own (active, and the
+    superseded versions), recorded by the sign commit and derived on
+    rebuild — not as transitions."""
+    token = _signing.set(True)
+    try:
+        yield
+    finally:
+        _signing.reset(token)
+
+
+def _slug_of_row(row: Any) -> str:
+    from grove.keg import keg_record
+    slug = ((keg_record(row).get("keg") or {}).get("slug"))
+    if not slug:
+        parts = str(row.pattern_id).split(":")
+        slug = parts[1] if len(parts) > 2 else ""
+    return str(slug)
+
+
+def note_cache_transition(store: Any, pattern_id: str, *, status: Optional[str] = None,
+                          promoted_at: Optional[str] = None,
+                          promotion_evidence: Optional[str] = None,
+                          home: Optional[Path] = None) -> Optional[str]:
+    """A cache row's status or bookkeeping changed outside a signature (a
+    halt, a demotion, a rejection, feedback): append it to the keg's
+    ``transitions.jsonl`` and commit, so a rebuild replays it. Returns the
+    commit, or None when the row is not a keg the cellar knows (a pre-cellar
+    row before import; a signature in progress)."""
+    if _signing.get() or not str(pattern_id).startswith("keg:"):
+        return None
+    row = store.get(pattern_id)
+    if row is None:
+        return None
+    repo = KegRepo(helper_repo_path(_slug_of_row(row), home))
+    if not repo.exists() or repo.head() is None or pattern_id not in repo.keg_ids():
+        return None
+    line = {"keg_id": pattern_id, "at": datetime.now(timezone.utc).isoformat()}
+    if status is not None:
+        line["status"] = status
+    if promoted_at is not None:
+        line["promoted_at"] = promoted_at
+    if promotion_evidence is not None:
+        line["promotion_evidence"] = promotion_evidence
+    path = repo.path / TRANSITIONS_FILE
+    existing = path.read_bytes() if path.exists() else b""
+    data = existing + (json.dumps(line, sort_keys=True, default=str) + "\n").encode("utf-8")
+    what = f"status {pattern_id} → {status}" if status else f"evidence {pattern_id}"
+    return repo.commit({TRANSITIONS_FILE: data}, repo.manifest(), what)
+
+
+def _keg_ids(self: "KegRepo") -> List[str]:
+    """Every version id this keg's history names, oldest first."""
+    if self.head() is None:
+        return []
+    shas = self._git("log", "--reverse", "--format=%H", "--", MANIFEST_FILE).stdout.split()
+    out: List[str] = []
+    for sha in shas:
+        try:
+            data = yaml.safe_load(self.read(MANIFEST_FILE, sha).decode("utf-8")) or {}
+        except _subprocess.CalledProcessError:
+            continue
+        kid = data.get("keg_id")
+        if kid and kid not in out:
+            out.append(str(kid))
+    return out
+
+
+KegRepo.keg_ids = _keg_ids
+
+
+def rows_from_repo(repo: KegRepo) -> List[Any]:
+    """Replay a helper keg's history into cache rows: a proposal commit makes
+    a suspended row; a sign commit makes it active (and supersedes the active
+    or halted versions of the same lineage, as the signature did); an
+    imported commit is the row as it was; transitions apply in commit order.
+    ``hit_count`` and ``last_hit_at`` are runtime counters, not in the cellar."""
+    from grove.intent_store import normalize_message_stem
+    from grove.pattern_cache import CompiledPattern, STATUS_ACTIVE, STATUS_HALTED, STATUS_SUPERSEDED, STATUS_SUSPENDED, t0_key
+
+    rows: Dict[str, Dict[str, Any]] = {}
+    seen_transitions = 0
+    for entry in repo.log():
+        sha, m = entry["sha"], entry["manifest"]
+        if m.get("kind") != KIND_HELPER:
+            continue
+        kid = str(m["keg_id"])
+        if m.get("imported"):
+            if kid not in rows:
+                rows[kid] = {**dict(m["cache_row"]), "hit_count": 0, "last_hit_at": None}
+        elif kid not in rows:
+            doc = yaml.safe_load(repo.read("keg.yaml", sha).decode("utf-8")) or {}
+            spec = {k: v for k, v in doc.items() if k != "lineage"}
+            args = {**dict(m.get("tool_args") or {}), "keg": spec}
+            invocation = {"tool": m["tool"], "args": args,
+                          "approved_signature": m["approved_signature"]}
+            record = {
+                "keg": {"name": spec.get("name"), "slug": m["slug"], "version": int(m["version"]),
+                        "lineage": doc.get("lineage"), "dock_goal": spec.get("dock_goal")},
+                "andon_id": m.get("andon_id"), "repetition_count": m.get("repetition_count"),
+                "flag": m.get("flag"), "supersedes": m.get("supersedes"),
+                "feedback": list(m.get("feedback") or []),
+            }
+            rows[kid] = dict(
+                pattern_id=kid,
+                t0_key=t0_key(str(m["intent_class"]),
+                              normalize_message_stem(str((spec.get("trigger") or {}).get("request") or ""))),
+                intent_class=str(m["intent_class"]), cacheable_type="executable",
+                cached_response=None, compiled_invocation=json.dumps(invocation, sort_keys=True),
+                evidence_hash=m["evidence_hash"], status=STATUS_SUSPENDED,
+                created_at=m["proposed_at"], promoted_at=None, last_hit_at=None, hit_count=0,
+                promotion_evidence=json.dumps(record, sort_keys=True),
+            )
+        row = rows[kid]
+        if (not m.get("imported") and m.get("signed_at") and m.get("status") == "active"
+                and row["promoted_at"] is None):
+            row["status"] = STATUS_ACTIVE
+            row["promoted_at"] = m["signed_at"]
+            record = json.loads(row["promotion_evidence"])
+            record["signed"] = {"by": m.get("signed_by"), "at": m["signed_at"],
+                                "proposal_id": m.get("proposal_id")}
+            row["promotion_evidence"] = json.dumps(record, sort_keys=True)
+            lineage = (record.get("keg") or {}).get("lineage")
+            for other_id, other in rows.items():
+                if other_id == kid:
+                    continue
+                okeg = (json.loads(other["promotion_evidence"] or "{}").get("keg") or {})
+                if (okeg.get("slug") == m["slug"] and okeg.get("lineage") == lineage
+                        and other["status"] in (STATUS_ACTIVE, STATUS_HALTED)):
+                    other["status"] = STATUS_SUPERSEDED
+        try:
+            lines = repo.read(TRANSITIONS_FILE, sha).decode("utf-8").splitlines()
+        except _subprocess.CalledProcessError:
+            lines = []
+        for raw in lines[seen_transitions:]:
+            t = json.loads(raw)
+            target = rows.get(str(t.get("keg_id")))
+            if target is None:
+                continue
+            for key in ("status", "promoted_at", "promotion_evidence"):
+                if t.get(key) is not None:
+                    target[key] = t[key]
+        seen_transitions = len(lines)
+    return [CompiledPattern(**r) for r in rows.values()]
+
+
+_COUNTERS = ("hit_count", "last_hit_at")
+
+
+def import_cache_rows(store: Any, *, home: Optional[Path] = None) -> List[str]:
+    """Pre-cellar keg rows (no version of theirs in any keg repository) are
+    imported into their slug's repository, one commit each in ``created_at``
+    order, carrying the row so a rebuild reproduces it. Idempotent."""
+    from dataclasses import asdict
+    from grove.keg import keg_of, keg_record
+
+    known: Dict[str, List[str]] = {}
+    imported: List[str] = []
+    rows = [r for r in store.all() if str(r.pattern_id).startswith("keg:")]
+    rows.sort(key=lambda r: (r.created_at or "", r.pattern_id))
+    for row in rows:
+        slug = _slug_of_row(row)
+        if slug not in known:
+            repo = KegRepo(helper_repo_path(slug, home))
+            known[slug] = repo.keg_ids() if repo.exists() else []
+        if row.pattern_id in known[slug]:
+            continue
+        spec = keg_of(row)
+        if not spec:
+            continue
+        record = keg_record(row)
+        keg_meta = record.get("keg") or {}
+        document = helper_document(spec, keg_meta.get("lineage"))
+        invocation = json.loads(row.compiled_invocation or "{}")
+        cache_row = {k: v for k, v in asdict(row).items() if k not in _COUNTERS}
+        manifest = {
+            "keg_id": row.pattern_id,
+            "slug": slug,
+            "version": int(spec.get("version") or keg_meta.get("version") or 0),
+            "kind": KIND_HELPER,
+            "scope": spec.get("scope"),
+            "authority_level": spec.get("authority_level"),
+            "content_file": "keg.yaml",
+            "content_hash": content_hash(document),
+            "status": row.status,
+            "goal": spec.get("dock_goal"),
+            "name": spec.get("name"),
+            "compiled_by": None,
+            "compiled_under": None,
+            "evidence": [],
+            "evidence_turns": [],
+            "evidence_hash": row.evidence_hash,
+            "approved_signature": invocation.get("approved_signature"),
+            "proposal_id": (record.get("signed") or {}).get("proposal_id"),
+            "replaces": [record["supersedes"]] if record.get("supersedes") else [],
+            "supersedes": record.get("supersedes"),
+            "replay": None,
+            "proposed_at": row.created_at,
+            "signed_at": row.promoted_at,
+            "signed_by": (record.get("signed") or {}).get("by"),
+            "imported": True,
+            "imported_from": "pattern_cache.db",
+            "cache_row": cache_row,
+            "tool": invocation.get("tool"),
+            "tool_args": {k: v for k, v in (invocation.get("args") or {}).items() if k != "keg"},
+            "intent_class": row.intent_class,
+            "andon_id": record.get("andon_id"),
+            "flag": record.get("flag"),
+            "repetition_count": record.get("repetition_count"),
+            "feedback": list(record.get("feedback") or []),
+        }
+        repo = KegRepo.open_or_init(helper_repo_path(slug, home))
+        repo.commit({"keg.yaml": document}, manifest,
+                    f"import {row.pattern_id} from pattern_cache.db (pre-cellar, status {row.status})")
+        known[slug].append(row.pattern_id)
+        imported.append(row.pattern_id)
+    return imported
+
+
+def sync_cache(*, home: Optional[Path] = None, store: Any = None) -> Dict[str, int]:
+    """At start-up: import pre-cellar keg rows, then rebuild every keg row the
+    cellar holds that the cache does not. Returns the counts."""
+    from grove.pattern_cache import PatternCacheStore
+
+    store = store if store is not None else PatternCacheStore()
+    imported = import_cache_rows(store, home=home)
+    rebuilt = 0
+    root = kegs_dir(home)
+    if root.is_dir():
+        for path in sorted(p for p in root.iterdir() if p.is_dir()):
+            repo = KegRepo(path)
+            if not repo.exists() or repo.head() is None:
+                continue
+            if repo.manifest().get("kind") != KIND_HELPER:
+                continue
+            for row in rows_from_repo(repo):
+                if store.get(row.pattern_id) is None:
+                    store.upsert(row)
+                    rebuilt += 1
+    return {"imported": len(imported), "rebuilt": rebuilt}

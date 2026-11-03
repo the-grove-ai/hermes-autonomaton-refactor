@@ -17359,6 +17359,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 (_restored.get("audit_check") or {}).get("result"))
     except Exception as _restore_exc:  # noqa: BLE001 — never keeps the gateway down
         logger.critical("checkpoint restore at start-up failed: %r", _restore_exc)
+    # compiler-shapes-v1 — the pattern cache is derived from the cellar: import
+    # any pre-cellar keg rows, then rebuild every keg row the cellar holds.
+    try:
+        from grove.keg_store import sync_cache as _sync_cache
+        _synced = _sync_cache()
+        if _synced.get("imported") or _synced.get("rebuilt"):
+            logger.warning("cache sync at start-up: imported=%d rebuilt=%d",
+                           _synced["imported"], _synced["rebuilt"])
+    except Exception as _sync_exc:  # noqa: BLE001 — never keeps the gateway down
+        logger.critical("cache sync at start-up failed: %r", _sync_exc)
 
     runner = GatewayRunner(config)
     

@@ -86,11 +86,15 @@ def home(tmp_path, monkeypatch):
             )
 
         def sign(self, result, now="2026-11-03T18:05:00+00:00"):
+            """What _approve_pattern_promotion does, at a fixed time."""
+            from grove.keg_store import signing
+
             [proposal] = [p for p in proposal_queue.read_all(path=self.queue)
                           if p.proposal_id == result.proposal_id]
-            self.store.set_status(result.pattern_id, pc.STATUS_ACTIVE, promoted_at=now)
-            return _sign_keg(proposal, self.store, result.pattern_id,
-                             proposal.payload["keg"], now)
+            with signing():
+                self.store.set_status(result.pattern_id, pc.STATUS_ACTIVE, promoted_at=now)
+                return _sign_keg(proposal, self.store, result.pattern_id,
+                                 proposal.payload["keg"], now)
 
         def repo(self):
             return KegRepo(self.root / "cellar" / "kegs" / "message-tagging")
@@ -128,7 +132,8 @@ def test_propose_keg_commits_the_document_and_the_replay(home):
     assert m["content_hash"] == content_hash(repo.read("keg.yaml"))
     doc = yaml.safe_load(repo.read("keg.yaml"))
     assert doc["conditions"] == RULES_V1 and doc["lineage"] == "run-1"
-    assert doc["evidence"] == ["t1", "t2", "t3"] and doc["protocol"] == "GRV-004"
+    assert "evidence" not in doc and doc["protocol"] == "GRV-004"
+    assert m["evidence_turns"] == ["t1", "t2", "t3"]
     lines = [json.loads(l) for l in repo.read(m["replay"]["file"]).decode().splitlines()]
     assert m["replay"]["file"] == "replay/v1.jsonl" and len(lines) == len(HISTORY)
     [event] = home.events("kaizen_proposal")
@@ -192,3 +197,157 @@ def test_history_cases_carry_the_decision_ids(tmp_path, monkeypatch):
     decided = work.decide(decision=dw.DECISION_CONFIRM, provenance=prov)
     [case] = work.history()
     assert case["proposed_id"] == proposed["id"] and case["decided_id"] == decided["id"]
+
+
+# ── Task 5: pattern_cache.db is a derived cache ─────────────────────────
+
+import os
+from dataclasses import asdict
+
+from grove.keg_store import import_cache_rows, sync_cache
+from grove.pattern_cache import CompiledPattern
+
+
+def _without_counters(row):
+    d = dict(row)
+    d.pop("hit_count", None)
+    d.pop("last_hit_at", None)
+    return d
+
+
+def _keg_rows(store):
+    return {r.pattern_id: _without_counters(asdict(r)) for r in store.all()
+            if r.pattern_id.startswith("keg:")}
+
+
+def _reopen(home):
+    os.remove(home.store.path)
+    for extra in ("-wal", "-shm"):
+        p = home.store.path.with_name(home.store.path.name + extra)
+        if p.exists():
+            os.remove(p)
+    home.store = PatternCacheStore(home.store.path)
+    return home.store
+
+
+def _legacy_keg_row(*, version=4, lineage="run-43", status="active",
+                    conditions=None, created="2026-10-09T01:43:35.809997+00:00",
+                    promoted="2026-10-09T01:43:40.340806+00:00"):
+    """A row shaped like the Oct 9 V4 row on the live node: pre-cellar."""
+    from grove.effect_signature import canonical_effect_signature
+    from grove.pattern_cache import t0_key
+
+    spec = {"protocol": "GRV-004", "protocolVersion": "1.1", "name": "Message tagging",
+            "version": version, "scope": "reserved", "authority_level": "green",
+            "dock_goal": GOAL, "reserve": "Channels outside the table.",
+            "trigger": {"request": REQUEST, "intent_class": "analysis",
+                        "match_threshold": 0.8, "sessions": "goal_isolated"},
+            "inputs": INPUTS, "outputs": OUTPUTS,
+            "conditions": conditions or RULES_V1}
+    args = {"verb": "apply_keg", "keg": spec}
+    invocation = {"tool": "tag_message", "args": args,
+                  "approved_signature": canonical_effect_signature("tag_message", args)}
+    record = {"keg": {"name": "Message tagging", "slug": "message-tagging", "version": version,
+                      "lineage": lineage, "dock_goal": GOAL},
+              "andon_id": "andon-old", "repetition_count": 4, "flag": "tier_down_pattern",
+              "supersedes": f"keg:message-tagging:v{version-1}:000000000000", "feedback": []}
+    if promoted:
+        record["signed"] = {"by": "operator", "at": promoted, "proposal_id": "sha256:old"}
+    return CompiledPattern(
+        pattern_id=f"keg:message-tagging:v{version}:17e9800ec15d",
+        t0_key=t0_key("analysis", REQUEST), intent_class="analysis",
+        cacheable_type="executable", cached_response=None,
+        compiled_invocation=json.dumps(invocation, sort_keys=True),
+        evidence_hash="sha256:" + "e7" * 32, status=status, created_at=created,
+        promoted_at=promoted, last_hit_at=None, hit_count=0,
+        promotion_evidence=json.dumps(record, sort_keys=True),
+    )
+
+
+def test_deleting_the_cache_and_syncing_reproduces_every_keg_row(home):
+    v1 = home.propose()
+    home.sign(v1)
+    v2 = home.propose(rules=RULES_V1 + [{"if": "channel == 'social'", "then": {"tag": "other"}}],
+                      evidence=("t1", "t2", "t3", "t9"))
+    home.sign(v2)
+    v3 = home.propose(rules=RULES_V1 + [{"if": "channel == 'social'", "then": {"tag": "other"}},
+                                         {"if": "channel == 'incident'", "then": {"tag": "ops"}}],
+                      evidence=("t1", "t2", "t3", "t5", "t9"))
+    home.store.set_status(v2.pattern_id, pc.STATUS_HALTED)          # an andon stopped the line
+    before = _keg_rows(home.store)
+    assert v3.status == "proposed", v3.detail
+    assert {r["status"] for r in before.values()} == {"superseded", "halted", "suspended"}
+    store = _reopen(home)
+    assert _keg_rows(store) == {}
+    assert sync_cache(store=store) == {"imported": 0, "rebuilt": 3}
+    assert _keg_rows(store) == before
+    assert sync_cache(store=store) == {"imported": 0, "rebuilt": 0}
+    assert v3.pattern_id in before and before[v3.pattern_id]["status"] == "suspended"
+
+
+def test_sync_imports_pre_cellar_rows_once_and_rebuilds_them(home):
+    legacy = _legacy_keg_row()
+    home.store.upsert(legacy)
+    assert sync_cache(store=home.store) == {"imported": 1, "rebuilt": 0}
+    assert sync_cache(store=home.store) == {"imported": 0, "rebuilt": 0}
+    repo = home.repo()
+    m = repo.manifest()
+    assert m["imported"] is True and m["keg_id"] == legacy.pattern_id and m["status"] == "active"
+    [commit] = repo.log()
+    assert commit["message"] == f"import {legacy.pattern_id} from pattern_cache.db (pre-cellar, status active)"
+    doc = yaml.safe_load(repo.read("keg.yaml"))
+    assert doc["lineage"] == "run-43" and "evidence" not in doc and doc["version"] == 4
+    store = _reopen(home)
+    sync_cache(store=store)
+    assert _without_counters(asdict(store.get(legacy.pattern_id))) == _without_counters(asdict(legacy))
+
+
+def test_a_proposal_after_an_import_diffs_against_the_imported_version(home):
+    home.store.upsert(_legacy_keg_row())
+    sync_cache(store=home.store)
+    v5 = home.propose(rules=[{"if": "channel == 'social'", "then": {"tag": "other"}}] + RULES_V1,
+                      lineage="run-43", evidence=("t7",))
+    assert v5.pattern_id.startswith("keg:message-tagging:v5:")
+    repo = home.repo()
+    log = repo.log()
+    assert len(log) == 2
+    d = repo.diff(log[0]["sha"], log[1]["sha"])
+    keg_diff = d[d.index("diff --git a/keg.yaml"):]
+    keg_diff = keg_diff[:keg_diff.index("diff --git", 10)] if "diff --git" in keg_diff[10:] else keg_diff
+    assert keg_diff.count("\n@@") == 2                      # the condition, and the version
+    assert "+- if: channel == 'social'" in keg_diff
+    assert "-version: 4" in keg_diff and "+version: 5" in keg_diff
+    assert "lineage" not in keg_diff and "evidence" not in keg_diff
+    # After signing, the imported version is superseded on rebuild too.
+    home.sign(v5)
+    assert home.store.get("keg:message-tagging:v4:17e9800ec15d").status == "superseded"
+    before = _keg_rows(home.store)
+    store = _reopen(home)
+    sync_cache(store=store)
+    assert _keg_rows(store) == before
+
+
+def test_non_keg_rows_are_left_alone(home):
+    static = CompiledPattern(
+        pattern_id="sha256:" + "ab" * 32, t0_key="sha256:" + "ab" * 32,
+        intent_class="conversation", cacheable_type="static", cached_response="hi",
+        compiled_invocation=None, evidence_hash="sha256:" + "cd" * 32, status="active",
+        created_at="2026-10-01T00:00:00+00:00")
+    home.store.upsert(static)
+    assert sync_cache(store=home.store) == {"imported": 0, "rebuilt": 0}
+    assert not (home.root / "cellar" / "kegs").exists() or not list((home.root / "cellar" / "kegs").glob("sha256*"))
+    assert home.store.get(static.pattern_id) == static
+
+
+def test_feedback_and_rejection_survive_a_rebuild(home):
+    from grove.flywheel_cli import _keg_feedback
+
+    v1 = home.propose()
+    [proposal] = proposal_queue.read_all(path=home.queue)
+    _keg_feedback(proposal, "wrong account for social")
+    home.store.set_status(v1.pattern_id, pc.STATUS_REJECTED)
+    before = _keg_rows(home.store)
+    assert json.loads(before[v1.pattern_id]["promotion_evidence"])["rejected"]["reason"] == "wrong account for social"
+    store = _reopen(home)
+    sync_cache(store=store)
+    assert _keg_rows(store) == before

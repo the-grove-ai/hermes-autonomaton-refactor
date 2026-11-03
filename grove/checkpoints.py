@@ -53,6 +53,7 @@ STATE = (
     ".kaizen_ledger_archive",               # ...and what retention moved out of it
     ".kaizen_ledger_retention_state.json",
     "pattern_cache.db",                     # kegs and their versions; watches
+    "cellar/kegs",                          # each keg's repository: the skill and the helper, versions as commits
     "proposals.jsonl",                      # proposals waiting for a signature
     "memory_proposals.jsonl",               # memory suggestions waiting
     "dock/dock.yaml",                       # the goals and their declared work
